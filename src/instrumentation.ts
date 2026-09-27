@@ -78,8 +78,20 @@ export async function register() {
        */
       try {
         const { pushCogneeProviderConfig } = await import('@/lib/cognee-config-push')
+        const { enterWithOrg } = await import('@/lib/prisma-tenant')
         for (const org of orgs) {
-          const pushed = await bypassOrg(() => pushCogneeProviderConfig())
+          /*
+           * ENTER the org, do NOT bypass it.
+           *
+           * `bypassOrg` runs the callback with `orgStorage.run(undefined, …)` — it REMOVES the org
+           * context. Both things this push needs are org-scoped: `getCogneeSettings()` returns
+           * DISABLED_SETTINGS without a context, and `getLlmRuntimeConfig()` reads the org's
+           * LlmConfig row. Wrapping in `bypassOrg` therefore made the push report
+           * "Memory is off (no COGNEE_SERVER_URL)" on a deployment where that variable was set —
+           * measured on production, and the irony is that the bypass was the cause.
+           */
+          enterWithOrg(org.id)
+          const pushed = await pushCogneeProviderConfig()
           if (pushed.ok) {
             console.log(`[instrumentation] Memory provider shared with cognee: ${pushed.detail}`)
           } else {

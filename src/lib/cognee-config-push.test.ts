@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, mock, test } from 'bun:test'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 /**
  * Pushing the org's provider credentials into the cognee sidecar.
@@ -192,4 +194,31 @@ describe('cognee provider push — reading back the sidecar truth', () => {
 // Restore so a later test file in the same process is not affected by this module's stub.
 process.on('exit', () => {
   globalThis.fetch = realFetch
+})
+
+describe('cognee provider push — REQUIRES an org context (the boot-time trap)', () => {
+  /**
+   * INCIDENT (2026-09-27), found in the production boot log:
+   *
+   *     [instrumentation] Memory provider not shared (Memory is off (no COGNEE_SERVER_URL).)
+   *
+   * on a deployment where `COGNEE_SERVER_URL=http://cognee:8000` was demonstrably set in the
+   * container. The cause was the call site wrapping the push in `bypassOrg`, which runs the callback
+   * with `orgStorage.run(undefined, …)` — it REMOVES the org context. Both things the push needs are
+   * org-scoped: `getCogneeSettings()` returns DISABLED_SETTINGS without a context, and
+   * `getLlmRuntimeConfig()` reads the org's row. So the bypass made it report "memory is off".
+   *
+   * The symptom is the dangerous part: the message names a MISSING ENV VAR, so the obvious response is
+   * to set an env var that is already set. A guard is worth more than the fix here.
+   */
+  const instrumentSrc = readFileSync(join(import.meta.dir, '..', 'instrumentation.ts'), 'utf-8')
+
+  test('the boot-time push ENTERS the org and never bypasses it', () => {
+    const block = instrumentSrc.slice(instrumentSrc.indexOf('pushCogneeProviderConfig'))
+    const call = block.slice(0, 1600)
+    // `enterWithOrg(org.id)` must be what precedes the push.
+    expect(call).toMatch(/enterWithOrg\(org\.id\)/)
+    // And the push must not be inside a bypass. This is the exact shape that broke it.
+    expect(call).not.toMatch(/bypassOrg\(\(\) => pushCogneeProviderConfig\(\)\)/)
+  })
 })
