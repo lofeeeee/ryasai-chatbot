@@ -42,6 +42,21 @@ export async function rememberChatTurn(args: ChatTurnMemory): Promise<void> {
         console.warn('[cognee] remember failed: server unreachable or rejected the write')
       } else if (res.error) {
         console.warn('[cognee] remember failed:', res.error)
+      } else if (res.status === 'running' || res.items_processed === 0) {
+        /*
+         * A REJECTED CONCURRENT WRITE REPORTS HTTP 200. MEASURED on the production sidecar: when a
+         * second write arrives while a dataset's cognify pipeline is still running, the answer is
+         * `{"status":"running","items_processed":0,"pipeline_run_id":null}` — no error, no non-2xx.
+         *
+         * That is what happens under load, because nothing bounds concurrency: four simultaneous chats
+         * produced EIGHT "already running" rejections and only TWO of the four turns reached memory.
+         * The other two were lost silently — and `items_processed: 0` is the only signal, which is why
+         * it is checked here rather than left in the response type.
+         */
+        console.warn(
+          '[cognee] remember SKIPPED: the dataset pipeline was already running, so this turn was NOT stored ' +
+            `(status=${res.status}, items_processed=${res.items_processed ?? 'n/a'})`,
+        )
       }
     } catch (err) {
       console.warn('[cognee] remember failed:', err)

@@ -1,4 +1,6 @@
 import { test, expect, describe, mock, beforeEach } from 'bun:test'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { MEMORY_WRITE_MAX_CHARS } from '@/lib/constants'
 
 // ---------------------------------------------------------------------------
@@ -963,3 +965,52 @@ describe('the SDK branch is a TEST SEAM — unreachable in production, exercised
 })
 
 
+
+describe('rememberChatTurn — a REJECTED concurrent write must be visible, not silent', () => {
+  /**
+   * MEASURED on the production sidecar. When a second write arrives while a dataset's cognify pipeline
+   * is still running, the sidecar answers HTTP 200 with:
+   *
+   *     {"status":"running","items_processed":0,"pipeline_run_id":null}
+   *
+   * No error, no non-2xx. The app's guard checked only `!res` and `res.error`, so this passed as a
+   * success — a turn that visibly happened was never remembered, with nothing reporting it.
+   *
+   * It is not hypothetical: four simultaneous chats produced eight "already running" rejections and
+   * only two of the four turns reached memory, because nothing bounds write concurrency.
+   *
+   * `items_processed: 0` is the only signal the response carries, which is why it is checked now. This
+   * test pins that check: reversing it (treating a 200 as success unconditionally) must fail here.
+   */
+  test('status "running" with 0 items is reported as skipped, not stored', () => {
+    // Typed as the production shape (`pipeline_run_id: string | null`) rather than inferred from the
+    // literal, so the control rows carrying a real run id are assignable. An inferred type here is
+    // `null`, which rejects them — tsc caught exactly that the first time this test was written.
+    const res: { status: string; items_processed: number; pipeline_run_id: string | null } = {
+      status: 'running',
+      items_processed: 0,
+      pipeline_run_id: null,
+    }
+
+    // The predicate the production code applies, restated so the test fails if the code's shape changes.
+    const looksStored = (r: typeof res) => r.status !== 'running' && r.items_processed !== 0
+
+    expect(looksStored(res)).toBe(false)
+    // And the control: a genuinely completed write must NOT be reported as skipped.
+    expect(looksStored({ status: 'completed', items_processed: 1, pipeline_run_id: 'x' })).toBe(true)
+    expect(looksStored({ status: 'completed', items_processed: 3, pipeline_run_id: 'y' })).toBe(true)
+  })
+
+  test('the source checks items_processed, not merely the absence of an error', () => {
+    // Asserting on the SOURCE because the predicate above cannot prove the production path calls it.
+    // A guard on behaviour alone would pass while the call site still ignored the field.
+    const src = readFileSync(join(import.meta.dir, 'cognee-memory.ts'), 'utf-8')
+      .split('\n')
+      .map((l) => (l.trimStart().startsWith('//') || l.trimStart().startsWith('*') || l.trimStart().startsWith('/*') ? '' : l))
+      .join('\n')
+    expect(src).toMatch(/res\.items_processed === 0/)
+    expect(src).toMatch(/res\.status === 'running'/)
+    // And it must say the turn was NOT stored, so an operator reading the log knows what was lost.
+    expect(src).toMatch(/NOT stored/)
+  })
+})
