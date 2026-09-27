@@ -61,6 +61,22 @@ export function KnowledgeBaseView() {
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [, setRebuildingEmbeddings] = useState(false)
   const [, setRebuildingFts] = useState(false)
+  // Controlled so another view can open a specific tab directly — the dashboard's AI Memory card
+  // sends people here, and an uncontrolled `defaultValue` would ignore that target.
+  const [tab, setTab] = useState('documents')
+
+  useEffect(() => {
+    const applyTab = (raw: string | null | undefined) => {
+      if (raw === 'documents' || raw === 'vector' || raw === 'cognee') setTab(raw)
+    }
+    applyTab(new URLSearchParams(window.location.search).get('tab'))
+    const onNavigate = (e: Event) => {
+      const detail = (e as CustomEvent).detail as { view?: string; tab?: string } | undefined
+      if (detail?.view === 'knowledge') applyTab(detail.tab)
+    }
+    window.addEventListener('navigate-view', onNavigate as EventListener)
+    return () => window.removeEventListener('navigate-view', onNavigate as EventListener)
+  }, [])
 
   const fetchDocs = useCallback(async () => {
     setLoading(true)
@@ -230,7 +246,7 @@ export function KnowledgeBaseView() {
         <StatCard label="Error / Processing" value={errorCount} icon={AlertCircle} iconClass="text-destructive" />
       </div>
 
-      <Tabs defaultValue="documents">
+      <Tabs value={tab} onValueChange={setTab}>
         <div className="flex items-center justify-between gap-2">
           <div className="min-w-0 overflow-x-auto -mx-1 px-1 pb-1">
             <TabsList className="w-max">

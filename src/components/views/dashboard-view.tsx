@@ -15,6 +15,7 @@ import {
 import { format } from 'date-fns'
 
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { ErrorState, StatGridSkeleton } from '@/components/ui/view-states'
 import { AnimatedNumber, Stagger, StaggerItem } from '@/components/motion'
@@ -341,6 +342,19 @@ function CogneeStatusBar() {
 
   if (!cognee) return null
 
+  /**
+   * Take the operator to the AI Memory configuration.
+   *
+   * The banner used to say "enable in Settings", and there is no AI Memory tab in Settings — the
+   * card lives under AI Configuration and Knowledge. Following that instruction to the letter left
+   * people hunting through the wrong menu, which is the same complaint as "the submenu is not
+   * reachable". It now navigates to the exact view AND tab.
+   */
+  const openMemorySettings = () =>
+    window.dispatchEvent(
+      new CustomEvent('navigate-view', { detail: { view: 'ai-config', tab: 'memory' } }),
+    )
+
   if (!cognee.enabled) {
     // DB-side "enabled" (config.enabled) can still be true while the effective
     // `enabled` stays false — COGNEE_ENABLED=false is a server kill switch that
@@ -357,9 +371,19 @@ function CogneeStatusBar() {
           </Badge>
           <span className="text-[10px]">
             {envBlocked
-              ? '— enabled in Settings, but the server runs with COGNEE_ENABLED=false, which force-disables it'
-              : '— enable in Settings for cross-session memory & knowledge graph'}
+              ? '— enabled here, but the server runs with COGNEE_ENABLED=false, which force-disables it'
+              : '— enable it for cross-session memory & knowledge graph'}
           </span>
+          {/* The action is a BUTTON, not a sentence naming a menu. The old copy pointed at
+              "Settings", where no memory tab exists — so the instruction itself was the bug. */}
+          <Button
+            size="sm"
+            variant="outline"
+            className="ml-auto h-6 px-2 text-[10px]"
+            onClick={openMemorySettings}
+          >
+            Open AI Memory
+          </Button>
         </CardContent>
       </Card>
     )
@@ -385,6 +409,14 @@ function CogneeStatusBar() {
             <span>· batch {cognee.batchSize}</span>
           </div>
         )}
+        <Button
+          size="sm"
+          variant="ghost"
+          className="ml-auto h-6 px-2 text-[10px]"
+          onClick={openMemorySettings}
+        >
+          Manage
+        </Button>
       </CardContent>
     </Card>
   )

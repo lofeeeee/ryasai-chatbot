@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import {
   Bot,
+  Brain,
   KeyRound,
   Server,
   RefreshCw,
@@ -33,6 +34,7 @@ import {
 import { cn } from '@/lib/utils'
 import type { PublicLlmConfig } from '@/lib/types'
 import { extractError } from '@/lib/extract-error'
+import { CogneeCard } from '@/components/views/cognee-card'
 
 /**
  * AI Configuration view — provider, model, and embedding settings.
@@ -57,6 +59,28 @@ export function AIConfigurationView() {
   const [showEmbeddingKey, setShowEmbeddingKey] = useState(false)
   const [saving, setSaving] = useState(false)
   const [syncing, setSyncing] = useState(false)
+  // Controlled so an external navigation can land on a specific tab (e.g. the dashboard's AI
+  // Memory card opening the `memory` tab). An uncontrolled `defaultValue` would ignore the target.
+  const [tab, setTab] = useState('llm')
+
+  /**
+   * Accept a tab selected from outside.
+   *
+   * Two ways in, both used by callers that already exist: the `navigate-view` event (the sidebar
+   * and topbar dispatch it) and a `?tab=` query parameter for links that survive a reload.
+   */
+  useEffect(() => {
+    const applyTab = (raw: string | null | undefined) => {
+      if (raw === 'llm' || raw === 'embedding' || raw === 'memory') setTab(raw)
+    }
+    applyTab(new URLSearchParams(window.location.search).get('tab'))
+    const onNavigate = (e: Event) => {
+      const detail = (e as CustomEvent).detail as { view?: string; tab?: string } | undefined
+      if (detail?.view === 'ai-config') applyTab(detail.tab)
+    }
+    window.addEventListener('navigate-view', onNavigate as EventListener)
+    return () => window.removeEventListener('navigate-view', onNavigate as EventListener)
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -154,7 +178,7 @@ export function AIConfigurationView() {
 
   return (
     <div className="space-y-3">
-      <Tabs defaultValue="llm" className="min-h-[500px]">
+      <Tabs value={tab} onValueChange={setTab} className="min-h-[500px]">
         <TabsList className="w-max">
           <TabsTrigger value="llm" className="gap-1.5 text-xs">
             <Bot className="h-3.5 w-3.5" />
@@ -163,6 +187,19 @@ export function AIConfigurationView() {
           <TabsTrigger value="embedding" className="gap-1.5 text-xs">
             <Server className="h-3.5 w-3.5" />
             Embedding
+          </TabsTrigger>
+          {/*
+            AI Memory lives here as well as under Knowledge.
+
+            WHY BOTH: this view is where an admin already goes to configure the model and embedding
+            endpoint, and memory needs its OWN model credentials — so the tab that explains that
+            belongs beside the two settings it is adjacent to. Knowledge keeps its tab because that
+            is where the memory's EFFECT is visible (documents, graph, cognify status). Neither is a
+            duplicate link: they show the same card for two different tasks.
+          */}
+          <TabsTrigger value="memory" className="gap-1.5 text-xs">
+            <Brain className="h-3.5 w-3.5" />
+            AI Memory
           </TabsTrigger>
         </TabsList>
 
@@ -431,6 +468,10 @@ export function AIConfigurationView() {
               </div>
             </CardContent>
           </Card>
+        </TabsContent>
+
+        <TabsContent value="memory" className="mt-2">
+          <CogneeCard />
         </TabsContent>
       </Tabs>
     </div>
