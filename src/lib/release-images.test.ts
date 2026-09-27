@@ -144,3 +144,62 @@ describe('installer: a failed database backup must not be reported as saved', ()
     expect(installSh).toMatch(/-name 'ryasai-\*\.sql' -size 0 -delete/)
   })
 })
+
+describe('installer: the cognee healthcheck window must exceed its measured boot time', () => {
+  /**
+   * MEASURED on the production host: the cognee sidecar's server does not listen until its boot work
+   * is done — ~125s with `OPENAI_API_BASE` set, longer when the three `LLM_*` vars are also filled
+   * (cognee validates them at startup).
+   *
+   * The original `start_period: 90s` + `interval: 30s` × `retries: 3` gave a ~180s budget, and the
+   * container was observed flapping to `unhealthy` on a boot that finished shortly after. A healthy
+   * sidecar reported as broken is the failure this guards: it is the operator's first impression of
+   * memory, and it sends them debugging a container that is fine.
+   *
+   * SCOPED TO THE COGNEE BLOCK. `install.sh` defines THREE healthchecks (app, a first-boot-downloads
+   * service, cognee) with different windows; my first version of this guard regexed the whole file and
+   * matched the app's 60s, failing while the cognee value was already correct. A file-wide number
+   * match measures whichever service happens to come first.
+   */
+  const installRaw = readFileSync(join(import.meta.dir, '..', '..', 'install.sh'), 'utf-8')
+
+  /**
+   * The cognee service block: from `  cognee:` to the next service at the same indent, WITH COMMENTS
+   * STRIPPED.
+   *
+   * The comment stripping is load-bearing and was added after this guard failed on itself: the note
+   * above the value quotes the OLD setting ("The previous `start_period: 90s` ..."), and a regex over
+   * the raw block matched that PROSE instead of `start_period: 180s` nine lines below. Matching a
+   * number that appears in an explanation of the number is this repo's most repeated defect, and it
+   * is why every guard here runs against comment-stripped source.
+   */
+  function cogneeBlock(): string {
+    const start = installRaw.search(/^\s{2}cognee:\s*$/m)
+    expect(start).toBeGreaterThan(-1)
+    const rest = installRaw.slice(start)
+    const end = rest.slice(1).search(/^\s{2}[a-z][a-z0-9_-]*:\s*$/m)
+    const block = end === -1 ? rest : rest.slice(0, end + 1)
+    return block
+      .split('\n')
+      .map((l) => (l.trimStart().startsWith('#') ? '' : l))
+      .join('\n')
+  }
+
+  test('the start_period exceeds the measured 125s boot', () => {
+    // Assert on the NUMBER, not on the presence of a key: a smaller value would satisfy a mere
+    // `toContain('start_period')` while reintroducing the flap.
+    const m = cogneeBlock().match(/start_period:\s*(\d+)s/)
+    expect(m).not.toBeNull()
+    expect(Number(m![1])).toBeGreaterThanOrEqual(180)
+  })
+
+  test('the total budget (start_period + interval × retries) leaves real margin', () => {
+    // start_period is a grace window; the retries that follow are what actually mark it unhealthy, so
+    // the guard checks the SUM rather than one field.
+    const block = cogneeBlock()
+    const sp = Number(block.match(/start_period:\s*(\d+)s/)![1])
+    const interval = Number(block.match(/interval:\s*(\d+)s/)?.[1] ?? 0)
+    const retries = Number(block.match(/retries:\s*(\d+)/)?.[1] ?? 0)
+    expect(sp + interval * retries).toBeGreaterThanOrEqual(300)
+  })
+})

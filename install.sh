@@ -801,10 +801,20 @@ services:
       - cogneedata:/cognee-storage
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
+      # WINDOW MEASURED, NOT GUESSED. The sidecar's server does not listen until its boot work is
+      # done: ~125s with OPENAI_API_BASE set, and longer when the three LLM_* vars are also filled
+      # (cognee validates them at startup). The previous `start_period: 90s` with `interval: 30s` ×
+      # `retries: 3` reported the container UNHEALTHY at ~180s on a boot that was still running — so
+      # a healthy sidecar read as broken, on every install, and the operator's first impression of
+      # memory was a red status.
+      #
+      # An A/B on isolated containers established there is NO hang: at 120s NEITHER an LLM_* probe nor
+      # its control had finished booting, and both answered 200 shortly after. The defect was always
+      # this window, so it is widened once here rather than chased per deployment.
+      interval: 60s
       timeout: 10s
-      retries: 3
-      start_period: 90s
+      retries: 5
+      start_period: 180s
     restart: unless-stopped
     networks:
       - ryasai-net
