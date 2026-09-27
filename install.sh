@@ -325,6 +325,144 @@ else
   printf '\n# Private SearXNG for web_search (empty = DuckDuckGo fallback)\nSEARXNG_URL=%s\n' "$SEARXNG_TARGET" >> .env
 fi
 
+# --- Cognee sidecar config (.env.cognee) ------------------------------------
+#
+# A SEPARATE file, because cognee needs its own model credentials and they are not the app's.
+#
+# WHY IT CANNOT SHARE `.env`: the app stores its LLM/embedding config in the DATABASE
+# (`LlmConfig`, encrypted with ENCRYPTION_SECRET_KEY) and reads it through the tenant's own row.
+# Cognee is a separate process with no access to that row and no access to the key, so it needs a
+# plaintext copy of a provider endpoint + key. Keeping that copy OUT of `.env` means:
+#   * the app's config and the sidecar's config can be rotated independently;
+#   * `.env` (which also carries ENCRYPTION_SECRET_KEY and the license key) is not the file an
+#     operator has to hand to a memory-tuning change;
+#   * a cognee credential cannot be accidentally exposed by anything that summarises `.env`.
+#
+# MEMORY IS OPT-IN. An empty skeleton is written when no key is supplied, and comments out every
+# value. Cognee then starts, /health reports healthy, and every WRITE fails — documented here and in
+# docs/RELEASE.md rather than papered over with a placeholder key that would fail differently.
+#
+# The embedding block IS pre-filled, because it works without customer input: it points at the
+# bundled `local-embeddings` service. Only the chat LLM needs a decision.
+COGNEE_ENV_FILE=".env.cognee"
+if [ ! -f "$COGNEE_ENV_FILE" ]; then
+  info "Writing $COGNEE_ENV_FILE (separate cognee credential file)..."
+  cat > "$COGNEE_ENV_FILE" <<'COGNEEEOF'
+# Cognee sidecar credentials — SEPARATE from .env, and read only by the `cognee` service.
+#
+# The app does NOT read this file. Cognee runs its own extraction pipeline and therefore needs its
+# own chat LLM; it cannot borrow the app's config, which lives encrypted in the database.
+#
+# Leave LLM_API_KEY empty to run with MEMORY DISABLED. Cognee will start and report healthy, but
+# every memory write fails — there is no partial mode.
+
+# --- Chat LLM used for entity/relation extraction -----------------------------
+# Any OpenAI-compatible endpoint. LLM_MODEL needs the `openai/` prefix: litellm reads the part
+# before the slash as a PROVIDER, so a bare model id is treated as an unknown provider and the
+# endpoint is never called — a failure that names the wrong cause.
+#
+# These names are cognee's OWN (`LLM_*`, not `COGNEE_LLM_*`): this file is passed straight to the
+# sidecar, so the variable it reads is the variable to set. That is what makes the separation work —
+# nothing in the compose file re-interprets them.
+LLM_PROVIDER=openai
+LLM_ENDPOINT=
+LLM_MODEL=
+LLM_API_KEY=
+
+# --- Embeddings (pre-filled: the bundled local server needs no key) -----------
+# 384-dim. This is shared with RAG's embedder, which is why the dimension must not change here
+# alone: a mismatch stores no vectors and degrades retrieval silently.
+# EMBEDDING_API_KEY must be NON-EMPTY: litellm keys off PROVIDER, not ENDPOINT, so with provider
+# `openai` and an empty key it ignores EMBEDDING_ENDPOINT and calls api.openai.com, failing every
+# write with "No credentials for provider: openai" — a message pointing at OpenAI when the real
+# problem is our own server never being contacted. The value is never validated.
+EMBEDDING_PROVIDER=openai
+EMBEDDING_ENDPOINT=http://local-embeddings:8081/v1
+EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+EMBEDDING_DIMENSIONS=384
+EMBEDDING_API_KEY=local-no-auth
+
+# --- Outbound SSRF allow-list for the sidecar's own calls ---------------------
+# `*` matches the shipped default. Narrow it to your gateway hostname if you prefer.
+LLM_ALLOWED_HOSTS=*
+
+# --- Latency: keep these OFF unless you have measured the cost ----------------
+# MEASURED with the defaults: write 22-30s, search 24-95s — the cost was NOT retrieval
+# ("Found 3 chunks from vector search" took 49 MILLISECONDS) but SessionTurnAnalysis calling the
+# LLM and retrying on a schema-validation error. With these off: write 9s, search 0.21s.
+# AUTO_FEEDBACK is the load-bearing one; IMPROVE_AUTO_ENABLED stops the post-remember improve()
+# pass. USAGE_LOGGING is set in the compose file and is not a per-install choice.
+AUTO_FEEDBACK=false
+IMPROVE_AUTO_ENABLED=false
+COGNEEEOF
+  chmod 600 "$COGNEE_ENV_FILE"
+  warn "Memory is configured OFF: $COGNEE_ENV_FILE has no LLM_API_KEY."
+  warn "  Memory stays disabled until you set LLM_ENDPOINT, LLM_MODEL and"
+  warn "  LLM_API_KEY in $APP_DIR/$COGNEE_ENV_FILE, then: docker compose up -d cognee"
+else
+  info "$COGNEE_ENV_FILE already exists — keeping it."
+  # Ensure the file is never EMPTY. Compose refuses to start when a listed env_file is absent, and a
+  # zero-byte file is the shape most likely to be produced by a failed edit; a comment keeps it valid.
+  [ -s "$COGNEE_ENV_FILE" ] || printf '# cognee config (empty — memory disabled)\n' > "$COGNEE_ENV_FILE"
+fi
+
+# --- Migrate a pre-separation cognee config out of .env ----------------------
+#
+# Before .env.cognee existed, cognee's credentials were read from `.env` through
+# `COGNEE_*` variables that compose interpolated. Those are now DEAD: the cognee service takes
+# its config from .env.cognee only, so an install updating from an older release would keep a
+# working-looking `.env` and silently lose its memory credentials.
+#
+# The values are COPIED, never moved or deleted. `.env` is the file holding the license key and
+# ENCRYPTION_SECRET_KEY; editing it during an update is the exact operation that already caused one
+# incident. Leaving the old lines costs nothing — nothing reads them — so they stay as a record.
+if grep -qE '^COGNEE_(LLM|EMBEDDING)_' .env 2>/dev/null; then
+  MIGRATED=0
+  for pair in \
+    "COGNEE_LLM_PROVIDER:LLM_PROVIDER" \
+    "COGNEE_LLM_ENDPOINT:LLM_ENDPOINT" \
+    "COGNEE_LLM_MODEL:LLM_MODEL" \
+    "COGNEE_LLM_API_KEY:LLM_API_KEY" \
+    "COGNEE_EMBEDDING_PROVIDER:EMBEDDING_PROVIDER" \
+    "COGNEE_EMBEDDING_ENDPOINT:EMBEDDING_ENDPOINT" \
+    "COGNEE_EMBEDDING_MODEL:EMBEDDING_MODEL" \
+    "COGNEE_EMBEDDING_DIMENSIONS:EMBEDDING_DIMENSIONS" \
+    "COGNEE_EMBEDDING_API_KEY:EMBEDDING_API_KEY" \
+    "COGNEE_LLM_ALLOWED_HOSTS:LLM_ALLOWED_HOSTS" \
+    "COGNEE_AUTO_FEEDBACK:AUTO_FEEDBACK" \
+    "COGNEE_IMPROVE_AUTO:IMPROVE_AUTO_ENABLED"
+  do
+    SRC_KEY="${pair%%:*}"; DST_KEY="${pair##*:}"
+    # Only when the destination is absent or empty: never clobber a value already set here.
+    if grep -qE "^${DST_KEY}=.+" "$COGNEE_ENV_FILE" 2>/dev/null; then continue; fi
+    VAL="$(grep -E "^${SRC_KEY}=" .env 2>/dev/null | head -1 | cut -d= -f2-)"
+    [ -n "$VAL" ] || continue
+    if grep -qE "^${DST_KEY}=" "$COGNEE_ENV_FILE" 2>/dev/null; then
+      sed -i "s|^${DST_KEY}=.*|${DST_KEY}=${VAL}|" "$COGNEE_ENV_FILE"
+    else
+      printf '%s=%s\n' "$DST_KEY" "$VAL" >> "$COGNEE_ENV_FILE"
+    fi
+    MIGRATED=$((MIGRATED+1))
+  done
+  if [ "$MIGRATED" -gt 0 ]; then
+    info "Migrated $MIGRATED cognee setting(s) from .env to $COGNEE_ENV_FILE."
+    warn "  The old COGNEE_* lines remain in .env but are NO LONGER READ — edit $COGNEE_ENV_FILE"
+    warn "  from now on. (They are left in place because .env holds your license key and"
+    warn "  ENCRYPTION_SECRET_KEY, and rewriting that file during an update is how data is lost.)"
+  fi
+fi
+
+if [ "$IS_UPDATE" = true ] || [ -f "$COGNEE_ENV_FILE" ]; then
+  # Report whether memory can actually write, so "configured" is never inferred from the container
+  # being up. A running sidecar with no key is the exact state this file exists to make visible.
+  if grep -qE '^LLM_API_KEY=.+' "$COGNEE_ENV_FILE" 2>/dev/null; then
+    info "Memory credentials present in $COGNEE_ENV_FILE."
+  else
+    warn "Memory is OFF: $COGNEE_ENV_FILE has no LLM_API_KEY (the sidecar will report"
+    warn "  healthy but cannot store anything). See docs/RELEASE.md section 5c."
+  fi
+fi
+
 # --- Pre-update backup (UPDATE only) ---------------------------------------
 if [ "$IS_UPDATE" = true ]; then
   mkdir -p "$BACKUP_DIR"
@@ -508,51 +646,39 @@ services:
 
   cognee:
     image: cognee/cognee:1.6.0
+    # TWO env files, and this is the only arrangement in which a SEPARATE cognee config works.
+    #
+    # MEASURED PRECEDENCE (docker compose v5.5.1, tested directly rather than assumed):
+    #   * `env_file: [a, b]`  -> b wins on conflicts; keys unique to either file survive.
+    #   * `environment:`      -> OVERRIDES env_file, always.
+    # So the previous `- LLM_API_KEY=${COGNEE_LLM_API_KEY:-}` line did not "default" anything. With
+    # cognee's config in a file and no COGNEE_LLM_API_KEY exported in the shell, `${...:-}` resolves
+    # EMPTY and the override BLANKS the file's value. Reproduced: an env file holding
+    # `LLM_API_KEY=sk-real-key` still reached the container as `[]`.
+    #
+    # `.env.cognee` MUST EXIST: compose fails the entire `up` when a listed env_file is absent.
+    # install.sh therefore always writes it, an empty skeleton when there is nothing to configure.
+    # Verified by starting a stack whose .env.cognee contained only comments.
+    env_file:
+      - .env
+      - .env.cognee
     environment:
+      # STRUCTURAL ONLY — these are properties of this image and this compose topology, not
+      # per-install choices, so they are hardcoded rather than routed through a variable. Each one
+      # would otherwise be a `${VAR:-default}` line that SILENTLY OVERRIDES .env.cognee (see above).
       - SYSTEM_ROOT_DIRECTORY=/cognee-storage/system
       - DATA_ROOT_DIRECTORY=/cognee-storage/data
       - DB_PROVIDER=sqlite
       - GRAPH_DATABASE_PROVIDER=kuzu
       - VECTOR_DB_PROVIDER=lancedb
       - ENABLE_BACKEND_ACCESS_CONTROL=false
-      - LLM_PROVIDER=${COGNEE_LLM_PROVIDER:-openai}
-      - LLM_API_KEY=${COGNEE_LLM_API_KEY:-}
-      - LLM_ENDPOINT=${COGNEE_LLM_ENDPOINT:-}
-      - LLM_MODEL=${COGNEE_LLM_MODEL:-}
-      - EMBEDDING_PROVIDER=${COGNEE_EMBEDDING_PROVIDER:-openai}
-      # MEASURED: litellm keys off PROVIDER, not ENDPOINT. With provider `openai`
-      # and an EMPTY key it ignores EMBEDDING_ENDPOINT and calls api.openai.com,
-      # which fails every write with `No credentials for provider: openai` and an
-      # HTTP 400 — a message that points at OpenAI when the real problem is our
-      # own local server never being contacted. A non-empty placeholder keeps it
-      # on the OpenAI-compatible path (api_base) where the local server is used.
-      # The value is never validated: local-embeddings does not authenticate.
-      - EMBEDDING_API_KEY=${COGNEE_EMBEDDING_API_KEY:-local-no-auth}
-      - EMBEDDING_ENDPOINT=${COGNEE_EMBEDDING_ENDPOINT:-http://local-embeddings:8081/v1}
-      - EMBEDDING_MODEL=${COGNEE_EMBEDDING_MODEL:-sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2}
-      # 384, NOT 1536: cognee shares the local embedding server with RAG, whose
-      # model is 384-dim. cognee stores vectors separately from DocumentChunk, so
-      # this does not have to match the pgvector column — but it MUST match what
-      # the endpoint actually returns, or every write fails with a pydantic
-      # "List should have at least N items" error that names the wrong cause.
-      - EMBEDDING_DIMENSIONS=${COGNEE_EMBEDDING_DIMENSIONS:-384}
       - COGNEE_SKIP_CONNECTION_TEST=true
       - LITELLM_DROP_PARAMS=true
-      - LLM_ALLOWED_HOSTS=${COGNEE_LLM_ALLOWED_HOSTS:-*}
-      # --- v1.6.0 latency: turn OFF the per-turn session analysis -----------------
-      # MEASURED against this sidecar and a real store, before these three:
-      #   write 22-30s, search 24-95s (two consecutive searches took 81s each).
-      # The server log showed the cause was NOT retrieval: "Found 3 chunks from
-      # vector search" took 49 MILLISECONDS, then `SessionTurnAnalysis` ran, failed
-      # schema validation and retried — "litellm_native validation retry 1/3: 1
-      # validation error for SessionTurnAnalysis", six times in one log. WITH these
-      # three off: write 9s, search 0.21s, and the stored token is still recalled.
-      # AUTO_FEEDBACK=false is the load-bearing one; IMPROVE_AUTO_ENABLED=false stops
-      # the post-remember improve() pass; USAGE_LOGGING=false drops usage rows we do
-      # not bill on (the licence is flat, so nothing consumes them).
-      - AUTO_FEEDBACK=${COGNEE_AUTO_FEEDBACK:-false}
-      - IMPROVE_AUTO_ENABLED=${COGNEE_IMPROVE_AUTO:-false}
+      # Not billable: the licence is flat, so nothing consumes usage rows.
       - USAGE_LOGGING=false
+      # EVERYTHING ELSE — LLM_*, EMBEDDING_*, LLM_ALLOWED_HOSTS, AUTO_FEEDBACK, IMPROVE_AUTO_ENABLED —
+      # lives in .env.cognee under cognee's own variable names. That is the separation: one file an
+      # operator edits for memory, and a compose block that cannot contradict it.
     # The sidecar must reach the customer's own model endpoints. On a single-host install
     # those are usually on the host itself (an on-prem gateway, a local embedding server),
     # and a container cannot resolve `localhost` to its host — without this, writes fail
