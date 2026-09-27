@@ -50,6 +50,14 @@ export async function runNonStreamingChatCompletion(args: {
   skipClarification?: boolean
   systemPromptPrefix?: string
   signal?: AbortSignal
+  /**
+   * Restrict retrieval to these documents. `null`/absent = every document.
+   *
+   * Declared on BOTH public signatures and copied into `branchArgs` by spread, so every branch that
+   * reads documents receives it — including a branch added later, which cannot silently miss it by
+   * forgetting a field. Returning to the caller is what makes the API-key scope reach retrieval.
+   */
+  documentIds?: string[] | null
 }): Promise<CompletionResult> {
   return withUsageTracking(() => _runNonStreamingChatCompletion(args))
 }
@@ -64,6 +72,7 @@ async function _runNonStreamingChatCompletion(args: {
   skipClarification?: boolean
   systemPromptPrefix?: string
   signal?: AbortSignal
+  documentIds?: string[] | null
 }): Promise<CompletionResult> {
   if (args.allowMultiStepDag && args.chatHistory && args.chatHistory.length > 0) {
     const result = await runAgenticLoop({
@@ -192,6 +201,8 @@ export async function runStreamingChatCompletion(args: {
   allowMultiStepDag?: boolean
   skipClarification?: boolean
   systemPromptPrefix?: string
+  /** See `runNonStreamingChatCompletion` — same contract, both transports. */
+  documentIds?: string[] | null
 }): Promise<StreamingCompletionResult> {
   return withUsageTracking(() => _runStreamingChatCompletion(args))
 }
@@ -205,6 +216,8 @@ async function _runStreamingChatCompletion(args: {
   allowMultiStepDag?: boolean
   skipClarification?: boolean
   systemPromptPrefix?: string
+  /** See `runNonStreamingChatCompletion` — same contract, both transports. */
+  documentIds?: string[] | null
 }): Promise<StreamingCompletionResult> {
   if (args.allowMultiStepDag && args.chatHistory && args.chatHistory.length > 0) {
     return runStreamingAgenticLoop({

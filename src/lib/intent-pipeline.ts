@@ -757,6 +757,14 @@ export function mergeRetrievalResults(results: RetrievalResult[]): RetrievalResu
 export async function retrieveWithReflection(args: {
   query: string
   topK: number
+  /**
+   * Restrict EVERY pass to these documents. `null`/absent = every document.
+   *
+   * Forwarded to each query expansion AND to the second reflection pass. A scope applied to the
+   * first pass only would let the reflection step widen the search back out — a gap that leaves no
+   * trace, because the answer still reads as plausible and its citations are all real.
+   */
+  documentIds?: string[] | null
 }): Promise<RetrievalResult & {
   reflection: ReflectionResult
   retrievalPasses: number
@@ -766,7 +774,7 @@ export async function retrieveWithReflection(args: {
 
   // 2. Retrieve with all expansions in parallel, merge + dedupe by chunkId
   const allResults = await Promise.all(
-    expansions.map((q) => retrieveRelevantChunks({ query: q, topK: args.topK })),
+    expansions.map((q) => retrieveRelevantChunks({ query: q, topK: args.topK, documentIds: args.documentIds })),
   )
   const merged = mergeRetrievalResults(allResults)
 
@@ -791,6 +799,9 @@ export async function retrieveWithReflection(args: {
     const secondPass = await retrieveRelevantChunks({
       query: args.query,
       topK: args.topK * 2,
+      // Same scope as the first pass. Omitting it here is the subtle form of the bug: the first pass
+      // would respect the scope and the reflection pass would quietly widen it back out.
+      documentIds: args.documentIds,
     })
     const merged2 = mergeRetrievalResults([merged, secondPass])
     return {

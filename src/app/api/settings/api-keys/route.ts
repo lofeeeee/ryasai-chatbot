@@ -3,11 +3,17 @@ import { db } from '@/lib/db'
 import { generateApiKey, maskApiKey } from '@/lib/api-keys'
 import { getActiveUser, requireRole, handleApiError, writeAudit } from '@/lib/session'
 import { enterWithOrg } from '@/lib/prisma-tenant'
+import { readKeyScope, describeScope } from '@/lib/api-key-scope'
+import { describeScopeProblems } from '@/lib/api-key-scope-guard'
 
 interface CreateApiKeyBody {
   label?: string
   requestLimitPerMinute?: number | null
   dailyRequestLimit?: number | null
+  /** Source scope. Omit or pass empty arrays for "all sources". */
+  allowedIntegrationIds?: unknown
+  allowedDocumentIds?: unknown
+  allowedTools?: unknown
 }
 
 export async function GET() {
@@ -55,6 +61,32 @@ export async function POST(req: NextRequest) {
       )
     }
 
+    // Resolve the requested scope through the same reader the auth path uses, so what is SAVED is
+    // exactly what will be ENFORCED. Parsing it differently here (e.g. keeping unknown tool names)
+    // would create a key whose stored scope and effective scope disagree.
+    const scope = readKeyScope({
+      allowedIntegrationIds: body.allowedIntegrationIds,
+      allowedDocumentIds: body.allowedDocumentIds,
+      allowedTools: body.allowedTools,
+    })
+
+    // Refuse a scope that is ALREADY broken, before the key exists.
+    //
+    // A key issued pointing at a deleted source fails every request with an error its owner cannot
+    // act on, and the admin only finds out from a support ticket. Failing here turns a runtime
+    // mystery into a form message. (Runtime enforcement still exists — a source can disappear later
+    // — but this catches the case we can see coming.)
+    const scopeProblem = await describeScopeProblems(scope)
+    if (scopeProblem) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: { code: 'SCOPE_SOURCE_MISSING', message: `This scope cannot be used: ${scopeProblem}` },
+        },
+        { status: 400 },
+      )
+    }
+
     const generated = generateApiKey()
     const item = await db.apiKey.create({
       data: {
@@ -64,6 +96,9 @@ export async function POST(req: NextRequest) {
         keyHash: generated.hash,
         requestLimitPerMinute: normalizeLimit(body.requestLimitPerMinute),
         dailyRequestLimit: normalizeLimit(body.dailyRequestLimit),
+        allowedIntegrationIds: scope.allowedIntegrationIds,
+        allowedDocumentIds: scope.allowedDocumentIds,
+        allowedTools: scope.allowedTools,
       },
       select: {
         id: true,
@@ -73,6 +108,9 @@ export async function POST(req: NextRequest) {
         requestLimitPerMinute: true,
         dailyRequestLimit: true,
         createdAt: true,
+        allowedIntegrationIds: true,
+        allowedDocumentIds: true,
+        allowedTools: true,
       },
     })
 

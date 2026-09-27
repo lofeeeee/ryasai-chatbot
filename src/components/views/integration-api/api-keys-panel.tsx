@@ -18,6 +18,8 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
+import { SourcePicker } from '@/components/views/integration-api/source-picker'
+import { describeScope, readKeyScope } from '@/lib/api-key-scope'
 import { ListRowsSkeleton } from '@/components/ui/view-states'
 import { useDelayedLoading } from '@/hooks/use-delayed-loading'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
@@ -53,6 +55,9 @@ export function ApiKeysPanel() {
   const [label, setLabel] = useState('')
   const [rateLimit, setRateLimit] = useState('')
   const [dailyLimit, setDailyLimit] = useState('')
+  // Empty arrays mean "all sources" — the same convention the server enforces, so the form and the
+  // runtime cannot disagree about what an untouched picker means.
+  const [scope, setScope] = useState({ allowedIntegrationIds: [] as string[], allowedDocumentIds: [] as string[], allowedTools: [] as string[] })
   const [newKey, setNewKey] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
   const [revokingId, setRevokingId] = useState<string | null>(null)
@@ -93,6 +98,9 @@ export function ApiKeysPanel() {
           label: clean,
           requestLimitPerMinute: rateLimit ? Number(rateLimit) : null,
           dailyRequestLimit: dailyLimit ? Number(dailyLimit) : null,
+          // Sent even when empty: the server treats empty arrays as "all sources", so sending them
+          // is the honest representation of an untouched picker rather than an omission.
+          ...scope,
         }),
       })
       const json = await res.json()
@@ -193,6 +201,9 @@ export function ApiKeysPanel() {
               />
             </div>
           </div>
+          {/* Source scope. Placed ABOVE the create button so the decision is made before the key
+              exists — a scope chosen after issuance would mean revoke-and-reissue. */}
+          <SourcePicker value={scope} onChange={setScope} disabled={creating} />
           <Button
             size="sm"
             icon={creating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
@@ -241,6 +252,7 @@ export function ApiKeysPanel() {
                   <TableHead className="min-w-[160px]">Name</TableHead>
                   <TableHead className="w-[140px]">Key</TableHead>
                   <TableHead className="w-[100px]">Status</TableHead>
+                  <TableHead className="w-[150px]">Access</TableHead>
                   <TableHead className="w-[120px]">Rate Limit</TableHead>
                   <TableHead className="w-[140px]">Last Used</TableHead>
                   <TableHead className="w-[110px]">Created</TableHead>
@@ -269,6 +281,21 @@ export function ApiKeysPanel() {
                           </Badge>
                         ) : (
                           <Badge variant="secondary">Revoked</Badge>
+                        )}
+                      </TableCell>
+                      {/*
+                        Scope at a glance, so an operator can audit "which key can read what" without
+                        opening each one. `describeScope` says "All sources" explicitly for an
+                        unrestricted key: a blank cell would read as "nothing configured" and invite
+                        both over-trust and needless worry.
+                      */}
+                      <TableCell className="text-[11px] text-muted-foreground">
+                        {describeScope(
+                          readKeyScope({
+                            allowedIntegrationIds: item.allowedIntegrationIds,
+                            allowedDocumentIds: item.allowedDocumentIds,
+                            allowedTools: item.allowedTools,
+                          }),
                         )}
                       </TableCell>
                       <TableCell className="text-xs text-muted-foreground">

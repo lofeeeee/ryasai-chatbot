@@ -18,8 +18,9 @@
  *   3. API persists the user + AI messages and runs the shared production router.
  *   4. UI replaces optimistic placeholders with persisted messages.
  */
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import {
+  Database,
   Loader2,
   MessageSquarePlus,
   Send,
@@ -81,6 +82,35 @@ export function ChatView() {
     messagesEndRef,
     abortControllerRef,
   } = useChatSend()
+
+  /**
+   * Data sources the user can pin a question to.
+   *
+   * Fetched lazily and kept small: the picker only needs id + name. Loading it here (rather than in
+   * the composer) means one fetch for the whole view instead of one per keystroke.
+   */
+  const [chatSources, setChatSources] = useState<{ id: string; name: string }[]>([])
+  const [pinnedSource, setPinnedSource] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/integrations', { cache: 'no-store' })
+      .then((r) => r.json())
+      .then((j) => {
+        if (cancelled) return
+        const list = (j?.integrations ?? j?.data ?? []) as Array<{ id: string; name: string; status?: string }>
+        setChatSources(
+          list.filter((i) => !i.status || i.status === 'active').map((i) => ({ id: i.id, name: i.name })),
+        )
+      })
+      .catch(() => {
+        // Non-fatal: without the list the picker is hidden and the router auto-selects, which is the
+        // behaviour before this feature. Failing the composer over a convenience fetch would be worse.
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const hasMessages = store.messages.length > 0
   const isStreaming = store.isStreaming
@@ -233,6 +263,39 @@ export function ChatView() {
 
           {/* input area */}
           <div className="p-3 border-t">
+            {/*
+              Source pin, rendered ONLY when more than one source exists.
+
+              With zero or one source there is nothing to choose between, and an always-visible
+              dropdown that can never change the answer is noise that trains people to ignore the
+              whole area.
+            */}
+            {chatSources.length > 1 && (
+              <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px]">
+                <Database className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                <span className="text-muted-foreground">Answer from:</span>
+                <select
+                  value={pinnedSource}
+                  onChange={(e) => setPinnedSource(e.target.value)}
+                  disabled={isStreaming || sending}
+                  className="rounded-sm border bg-background px-1.5 py-0.5 text-[11px] disabled:opacity-50"
+                >
+                  <option value="">Auto — let the router choose</option>
+                  {chatSources.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))}
+                </select>
+                {pinnedSource && (
+                  // States plainly that this pins the SOURCE, not just the wording. Without it a user
+                  // cannot tell why a question stopped reaching the document they expected.
+                  <span className="text-muted-foreground">
+                    — other sources are excluded for this turn
+                  </span>
+                )}
+              </div>
+            )}
             <div className="flex items-center gap-2 h-[84px] bg-input rounded-lg px-3">
               <Textarea
                 value={input}
@@ -254,7 +317,7 @@ export function ChatView() {
                 </Button>
               ) : (
                 <Button
-                  onClick={() => void handleSend()}
+                  onClick={() => void handleSend(undefined, undefined, pinnedSource || null)}
                   disabled={!canSend}
                   className="h-12 w-12 shrink-0 rounded-xl bg-primary hover:bg-primary/90 p-0"
                   aria-label="Send message"

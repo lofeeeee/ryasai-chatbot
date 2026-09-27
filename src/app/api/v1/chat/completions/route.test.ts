@@ -16,6 +16,16 @@ mock.module('@/lib/session', () => ({
   UnauthorizedError: MockUnauthorizedError,
 }))
 
+/**
+ * Mutable scope holder.
+ *
+ * The auth mock reads this instead of returning a literal, so a single test can simulate a
+ * RESTRICTED key without re-declaring the mock (Bun's `mock.module` is per-file, not per-test).
+ */
+const scopeHolder: {
+  value: { allowedIntegrationIds: string[]; allowedDocumentIds: string[]; allowedTools: string[] }
+} = { value: { allowedIntegrationIds: [], allowedDocumentIds: [], allowedTools: [] } }
+
 mock.module('@/lib/api-keys', () => ({
   requireExternalApiKey: async (req: Request) => {
     const raw = req.headers.get('authorization') ?? ''
@@ -25,7 +35,17 @@ mock.module('@/lib/api-keys', () => ({
     // identity.organizationId, not to getOrgContext(). Omitting it made a tool run
     // persist with organizationId undefined, and my first assertion on 'org1' failed
     // for the right reason — the mock, not the route, was incomplete.
-    return { apiKeyId: 'key1', label: 'test', organizationId: 'org1', requestLimitPerMinute: 60 }
+    //
+    // `scope` is now part of the identity: the route resolves and enforces it BEFORE the pipeline
+    // runs. Empty arrays mean UNRESTRICTED, so these tests keep their existing behaviour (every
+    // source readable) instead of needing a new fixture per assertion.
+    return {
+      apiKeyId: 'key1',
+      label: 'test',
+      organizationId: 'org1',
+      requestLimitPerMinute: 60,
+      scope: scopeHolder.value,
+    }
   },
   getBearerToken: (req: Request) => {
     const raw = req.headers.get('authorization') ?? ''
@@ -656,6 +676,84 @@ describe('POST /api/v1/chat/completions — the idle watchdog', () => {
       expect(dbState.messageCreates.filter((m: any) => m.data?.sender === 'ai')).toHaveLength(0)
     } finally {
       globalThis.setTimeout = realSetTimeout
+    }
+  })
+})
+
+describe('POST /api/v1/chat/completions — source scoping', () => {
+  /**
+   * The route resolves and enforces the key's scope BEFORE the pipeline runs, so a request naming a
+   * source outside the key is refused instead of being answered from whatever else is allowed.
+   *
+   * `requireExternalApiKey` is mocked at the top of this file with an UNRESTRICTED scope; these tests
+   * override it per case by mutating the shared holder, which is why the mock reads a variable rather
+   * than returning a literal.
+   */
+  test('a request for a source OUTSIDE the key is refused with 403, not answered', async () => {
+    scopeHolder.value = { allowedIntegrationIds: ['erp'], allowedDocumentIds: [], allowedTools: [] }
+    try {
+      const res = await POST(
+        new Request('http://x/api/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: 'Bearer k' },
+          body: JSON.stringify({ messages: [{ role: 'user', content: 'hi' }], sources: { integrationIds: ['payroll'] } }),
+        }) as never,
+      )
+      expect(res.status).toBe(403)
+      const json = await res.json()
+      expect(json.error.code).toBe('SCOPE_DENIED')
+      // Must name what was refused, or the client cannot act on it.
+      expect(json.error.message).toContain('payroll')
+    } finally {
+      scopeHolder.value = { allowedIntegrationIds: [], allowedDocumentIds: [], allowedTools: [] }
+    }
+  })
+
+  test('a request for a document OUTSIDE the key is refused', async () => {
+    scopeHolder.value = { allowedIntegrationIds: [], allowedDocumentIds: ['doc-1'], allowedTools: [] }
+    try {
+      const res = await POST(
+        new Request('http://x/api/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: 'Bearer k' },
+          body: JSON.stringify({ messages: [{ role: 'user', content: 'hi' }], sources: { documentIds: ['doc-999'] } }),
+        }) as never,
+      )
+      expect(res.status).toBe(403)
+    } finally {
+      scopeHolder.value = { allowedIntegrationIds: [], allowedDocumentIds: [], allowedTools: [] }
+    }
+  })
+
+  test('a request WITHIN the key scope is allowed through', async () => {
+    scopeHolder.value = { allowedIntegrationIds: ['erp'], allowedDocumentIds: [], allowedTools: [] }
+    try {
+      const res = await POST(
+        new Request('http://x/api/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: 'Bearer k' },
+          body: JSON.stringify({ messages: [{ role: 'user', content: 'hi' }], sources: { integrationIds: ['erp'] } }),
+        }) as never,
+      )
+      // Not 403: the scope permitted it. The exact downstream status depends on the provider mock.
+      expect(res.status).not.toBe(403)
+    } finally {
+      scopeHolder.value = { allowedIntegrationIds: [], allowedDocumentIds: [], allowedTools: [] }
+    }
+  })
+
+  test('a malformed sources field is treated as no narrowing, not as an empty filter', async () => {
+    // A client sending `sources: "erp"` or an object of nonsense must not silently match nothing —
+    // that would look like "no documents found" rather than a bad request.
+    for (const bad of ['erp', 123, { nope: true }, [null, 7]]) {
+      const res = await POST(
+        new Request('http://x/api/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: 'Bearer k' },
+          body: JSON.stringify({ messages: [{ role: 'user', content: 'hi' }], sources: { integrationIds: bad } }),
+        }) as never,
+      )
+      expect(res.status).not.toBe(403)
     }
   })
 })

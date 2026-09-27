@@ -210,7 +210,11 @@ export function useChatSend() {
 
   /* ----- send message ----- */
   const handleSend = useCallback(
-    async (override?: string, retryMessageId?: string) => {
+    /**
+     * @param sourceId Optional data source to pin this turn to. The server has always accepted it;
+     *   nothing sent it, so a multi-database install could not direct a question at one of them.
+     */
+    async (override?: string, retryMessageId?: string, sourceId?: string | null) => {
       const text = (override ?? input).trim()
       if (!text || sending || store.isStreaming) return
       if (!user) {
@@ -290,6 +294,15 @@ export function useChatSend() {
             text,
             timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
             ...(retryMessageId ? { messageId: retryMessageId } : {}),
+            /*
+             * The source pinned for this session, if any.
+             *
+             * The API has accepted `integrationId` since it was written — `chat-view.tsx`'s own header
+             * comment documents it — but NOTHING ever sent it, so a user with three connected
+             * databases had no way to say "answer from ERP". The router guessed on every turn.
+             * Omitted when unset, so the server keeps its existing auto-selection.
+             */
+            ...(sourceId ? { integrationId: sourceId } : {}),
           }),
           signal: ac.signal,
         })

@@ -116,12 +116,15 @@ export async function runRagBranch(args: {
   systemPromptPrefix?: string
   memoryContext?: string
   chatHistory?: ChatHistoryEntry[]
+  /** Retrieval scope from the caller's API key and request. `null`/absent = every document. */
+  documentIds?: string[] | null
 }): Promise<CompletionResult> {
   const started = Date.now()
   let retrieval: Awaited<ReturnType<typeof retrieveWithReflection>>
   try {
     retrieval = await retrieveWithReflection({
       query: args.question,
+      documentIds: args.documentIds,
       topK: 4,
     })
   } catch {

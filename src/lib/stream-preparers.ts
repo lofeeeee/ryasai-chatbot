@@ -107,11 +107,13 @@ export async function prepareRagStream(args: {
   systemPromptPrefix?: string
   memoryContext?: string
   chatHistory?: ChatHistoryEntry[]
+  /** Retrieval scope from the caller's API key and request. `null`/absent = every document. */
+  documentIds?: string[] | null
 }): Promise<StreamingCompletionResult> {
   const started = Date.now()
   let retrieval: Awaited<ReturnType<typeof retrieveWithReflection>>
   try {
-    retrieval = await retrieveWithReflection({ query: args.question, topK: 4 })
+    retrieval = await retrieveWithReflection({ query: args.question, topK: 4, documentIds: args.documentIds })
   } catch {
     // ponytail: RAG is best-effort — if the knowledge backend is down, degrade
     // to plain chat instead of failing the whole stream.

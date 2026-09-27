@@ -9,12 +9,26 @@ import { runNonStreamingChatCompletion, runStreamingChatCompletion } from '@/lib
 import { rateLimit } from '@/lib/redis'
 import { inc, observe } from '@/lib/metrics'
 import { getOrgContext } from '@/lib/prisma-tenant'
+import { resolveScope, ScopeDeniedError } from '@/lib/api-key-scope'
+import { ScopeSourceMissingError, validateKeyScopeSources } from '@/lib/api-key-scope-guard'
+import { AppError } from '@/lib/errors'
 
 interface ChatCompletionBody {
   model?: string
   messages?: Array<{ role?: string; content?: string }>
   stream?: boolean
   session_id?: string
+  /**
+   * Optional narrowing, and it can only NARROW. A client may ask for a subset of what its key
+   * allows; asking for anything outside is refused rather than quietly trimmed.
+   *
+   * Named `sources` because that is what an integrator thinks they are choosing. `integrationIds`
+   * is also accepted, matching the internal name, so an existing caller is not broken by the
+   * friendlier spelling.
+   */
+  sources?: { integrationIds?: unknown; documentIds?: unknown }
+  integrationIds?: unknown
+  documentIds?: unknown
 }
 
 interface ChatCompletionPayload {
@@ -76,6 +90,34 @@ export async function POST(req: NextRequest) {
     }
 
     const body = (await req.json().catch(() => ({}))) as ChatCompletionBody
+
+    /*
+     * SOURCE SCOPING — enforced BEFORE any retrieval or routing runs.
+     *
+     * Order matters: validating after the pipeline would mean the model had already seen content the
+     * key is not allowed to read. `resolveScope` refuses a request that reaches outside the key, and
+     * `validateKeyScopeSources` refuses a key whose own scope names a source that no longer exists
+     * (fail-closed) — both before a single document is loaded.
+     */
+    let effectiveScope
+    try {
+      const requested = {
+        integrationIds: normalizeIdList(body.sources?.integrationIds ?? body.integrationIds),
+        documentIds: normalizeIdList(body.sources?.documentIds ?? body.documentIds),
+      }
+      effectiveScope = resolveScope(identity.scope, requested)
+      await validateKeyScopeSources(identity.scope)
+    } catch (e) {
+      if (e instanceof ScopeDeniedError || e instanceof ScopeSourceMissingError) {
+        // 403, not 500: the key is valid and the server is healthy — the request asked for something
+        // this key may not have, which is client-actionable.
+        return NextResponse.json(
+          { error: { code: e.code, message: e.message } },
+          { status: 403 },
+        )
+      }
+      throw e
+    }
     const question = latestUserMessage(body.messages ?? [])
     if (!question) {
       await writeApiLog({
@@ -161,6 +203,8 @@ export async function POST(req: NextRequest) {
         userId: admin.id,
         sessionId: session.id,
         chatHistory,
+        // The resolved scope reaches retrieval, which applies it at the query.
+        documentIds: effectiveScope.documentIds,
       })
 
       const completionId = `chatcmpl_${session.id}_${started}`
@@ -336,6 +380,7 @@ export async function POST(req: NextRequest) {
       sessionId: session.id,
       chatHistory,
       allowMultiStepDag: true,
+      documentIds: effectiveScope.documentIds,
     })
 
     const aiMessage = await db.chatMessage.create({
@@ -524,4 +569,20 @@ async function writeApiLog(args: {
       errorMessage: args.errorMessage ?? null,
     },
   })
+}
+
+/**
+ * Coerce an untrusted body field into a list of ids.
+ *
+ * A JSON body can send anything: a string, a number, an object, an array of mixed types. Returning
+ * only non-empty strings means a malformed value becomes "no narrowing requested" rather than a
+ * crash or — worse — a value that silently matches nothing and looks like an empty source.
+ */
+function normalizeIdList(raw: unknown): string[] {
+  const arr = Array.isArray(raw) ? raw : raw === undefined || raw === null ? [] : [raw]
+  const out: string[] = []
+  for (const v of arr) {
+    if (typeof v === 'string' && v.trim()) out.push(v.trim())
+  }
+  return [...new Set(out)]
 }
