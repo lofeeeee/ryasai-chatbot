@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   Bot,
   Brain,
@@ -69,6 +69,31 @@ export function AIConfigurationView() {
    * can still leave the two out of step: a write that failed.
    */
   const [modelUnsaved, setModelUnsaved] = useState(false)
+  /**
+   * The value to rescue if this view unmounts mid-edit, and whether a write is still owed.
+   *
+   * WHY A REF AND AN UNMOUNT EFFECT, rather than relying on blur: on the free-text path a user can type
+   * a model and switch menus WITHOUT ever blurring the field — clicking the sidebar does not necessarily
+   * fire blur before the view unmounts. The typed value then died with the component, which is the same
+   * reported symptom through the other input.
+   *
+   * A fetch started during unmount still completes: switching views is a client-side route change, not a
+   * page unload, so the request is not cancelled. `navigator.sendBeacon` would be needed only for a real
+   * unload, which is a different case and not what was reported.
+   */
+  const pendingModelRef = useRef<{ value: string; owed: boolean }>({ value: '', owed: false })
+  useEffect(() => {
+    return () => {
+      const pending = pendingModelRef.current
+      if (!pending.owed || !pending.value.trim()) return
+      // Fire and forget: the component is going away, so nothing can await this.
+      void fetch('/api/llm-config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: pending.value.trim() }),
+      }).catch(() => null)
+    }
+  }, [])
   // Controlled so an external navigation can land on a specific tab (e.g. the dashboard's AI
   // Memory card opening the `memory` tab). An uncontrolled `defaultValue` would ignore the target.
   const [tab, setTab] = useState('llm')
@@ -134,9 +159,11 @@ export function AIConfigurationView() {
    * from local state, so a stale value for any of them would overwrite a good one. Choosing a model must
    * not be able to corrupt the rest of the form.
    */
+
   async function persistModel(next: string) {
     setModel(next)
     setModelUnsaved(true)
+    pendingModelRef.current = { value: next, owed: true }
     try {
       const res = await fetch('/api/llm-config', {
         method: 'PUT',
@@ -148,6 +175,7 @@ export function AIConfigurationView() {
         throw new Error(extractError(json?.error, 'Could not save the model.'))
       }
       setModelUnsaved(false)
+      pendingModelRef.current = { value: '', owed: false }
       if (json.data) setCfg(json.data)
       toast.success('Model saved', { description: next })
     } catch (e) {
@@ -368,7 +396,12 @@ export function AIConfigurationView() {
                       id="llm-model"
                       placeholder="gpt-4o-mini  (click 'Fetch Models' for list)"
                       value={model}
-                      onChange={(e) => setModel(e.target.value)}
+                      onChange={(e) => {
+                        setModel(e.target.value)
+                        // Recorded as OWED but not yet written: reading the value from local state in the
+                        // unmount cleanup would read a stale closure, so the ref is the source of truth.
+                        pendingModelRef.current = { value: e.target.value, owed: true }
+                      }}
                       /*
                        * Committed on BLUR, not per keystroke: a PUT per character would persist
                        * half-typed model names, and a partial name is a real value the runtime would

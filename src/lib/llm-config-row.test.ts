@@ -35,6 +35,19 @@ const strip = (s: string) =>
     })
     .join('\n')
 
+
+/**
+ * The AI Configuration view, stripped, at MODULE SCOPE.
+ *
+ * WHY MODULE SCOPE: a `describe`-local declaration is invisible to a LATER `describe`, so the
+ * unmount-safety block below threw `ReferenceError: viewSrc is not defined` at COLLECTION time and
+ * every test in it failed — a test-configuration mistake that reads exactly like a code defect.
+ * The same trap caught a `root` constant in a sibling file.
+ */
+const VIEW_SRC = strip(
+  readFileSync(join(import.meta.dir, '..', 'components', 'views', 'ai-configuration-view.tsx'), 'utf-8'),
+)
+
 describe('llm config — the chat row is resolved in exactly one place', () => {
   test('the resolver filters on purpose, with a documented fallback', () => {
     const src = strip(libSrc)
@@ -72,9 +85,7 @@ describe('model picker — a choice must survive navigation', () => {
    * The picker now persists immediately, and the failure path (a rejected write) keeps the value in the
    * control AND flags it, so a control never displays a value the server does not have.
    */
-  const viewSrc = strip(
-    readFileSync(join(import.meta.dir, '..', 'components', 'views', 'ai-configuration-view.tsx'), 'utf-8'),
-  )
+  const viewSrc = VIEW_SRC
 
   test('the dropdown commits the choice instead of staging it', () => {
     expect(viewSrc).toMatch(/onValueChange=\{\(v\) => void persistModel\(v\)\}/)
@@ -111,5 +122,53 @@ describe('model picker — a choice must survive navigation', () => {
     const input = viewSrc.slice(at, at + 900)
     expect(input).toMatch(/onBlur=/)
     expect(input).toMatch(/void persistModel\(next\)/)
+  })
+})
+
+
+describe('model picker — an unmount mid-edit must not lose the value', () => {
+  /**
+   * The free-text path had a hole the immediate save does not cover: a user can type a model and switch
+   * menus WITHOUT blurring the field, so `onBlur` never fired and the value died with the component —
+   * the same reported symptom through the other input.
+   *
+   * The view records what is owed in a REF and writes it from the unmount cleanup. A ref rather than
+   * state, because the cleanup closure would otherwise read a stale value. A fetch started during a
+   * CLIENT-SIDE route change still completes; this is not a page unload, so no beacon is needed.
+   */
+  test('a pending value is written from the unmount cleanup', () => {
+    /*
+     * ANCHORED ON THE RESCUE WRITE, NOT ON THE REF.
+     *
+     * The first version sliced 900 characters from the first `pendingModelRef` and asserted the slice
+     * contained the words "owed" and "/api/llm-config". DELETING THE ENTIRE CLEANUP LEFT IT PASSING:
+     * "owed" appears in the ref's own declaration, and the endpoint appears elsewhere in the window. The
+     * guard could not fail for the defect it was written for — the third time this session that a
+     * text-proximity assertion proved vacuous, which is why this one anchors on the CALL.
+     */
+    const rescue = VIEW_SRC.slice(VIEW_SRC.indexOf("void fetch('/api/llm-config'"))
+    expect(rescue.length).toBeGreaterThan(0)
+    const call = rescue.slice(0, 400)
+    // It must send the PENDING value, not a value read from a closure that has already gone stale.
+    expect(call).toContain('pending.value.trim()')
+    expect(call).toContain("method: 'PUT'")
+  })
+
+  test('the debt is cleared only on a SUCCESSFUL write', () => {
+    const fn = VIEW_SRC.slice(VIEW_SRC.indexOf('async function persistModel'))
+    const body = fn.slice(0, fn.indexOf('async function handleFetchModels'))
+    const cleared = body.indexOf('owed: false')
+    const marked = body.indexOf('owed: true')
+    expect(marked).toBeGreaterThan(-1)
+    expect(cleared).toBeGreaterThan(marked)
+    // The clear must sit after the success check, never before it.
+    expect(body.indexOf('setModelUnsaved(false)')).toBeGreaterThan(-1)
+  })
+
+  test('typing marks the value as owed, so an unblurred edit is still rescued', () => {
+    const at = VIEW_SRC.lastIndexOf('id="llm-model"')
+    const input = VIEW_SRC.slice(at, at + 900)
+    expect(input).toMatch(/onChange=/)
+    expect(input).toContain('owed: true')
   })
 })
