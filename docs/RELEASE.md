@@ -354,6 +354,38 @@ database and is unreachable from the sidecar. With `LLM_API_KEY` empty the conta
 `{"status":"ready","health":"healthy"}` and every *write* still fails — health is not proof that
 memory works. Confirm with a real write, not with the health check.
 
+### The UI shows per-component diagnosis, not just a badge
+
+Knowledge → "Cognee Memory & Knowledge Graph" now renders a Diagnostics panel sourced from the
+sidecar's `/health/detailed`. It exists because a single status cannot be acted on: measured on this
+install, the sidecar answered `{"status":"ready","health":"healthy"}` while every memory write FAILED.
+
+What an operator sees on a half-broken sidecar:
+
+```
+Diagnostics  [degraded]  How to fix
+2 of 6 dependencies need attention — and the extraction LLM is one of them,
+so memory writes will FAIL even though the container is up.
+  Relational store   sqlite   22ms
+  Vector store       lancedb   0ms
+  Knowledge graph    kuzu      7ms
+  File storage       local     2ms
+  Extraction LLM     unknown  17ms      <- click for the server's own error text
+  Embedding service  unknown  30002ms   <- "Likely a false alarm — click for details."
+```
+
+Two behaviours worth knowing before reading the panel:
+
+- **`/health/detailed` returns HTTP 503 with a complete JSON body.** That is the server's verdict, not
+  a transport failure. The client parses 503 deliberately; a 500 or an HTML error page still yields
+  "no diagnosis" rather than a partial one.
+- **`embedding_service` cries wolf.** Its probe uses a 30s budget and reports `degraded` while the
+  same container returns valid 384-dimension embeddings. The panel says so inline, so it is not
+  mistaken for a real fault. If documents embed normally, ignore it.
+
+The header badge reads **"Cannot store"** instead of "Connected" when the diagnosis names a broken
+extraction LLM: reachability and usability are different claims, and only the second one matters.
+
 ## 6. What is deliberately NOT covered
 
 - **Answer quality is not gated in CI.** `rag-eval` / `sql-eval` run via the manual `eval.yml`
