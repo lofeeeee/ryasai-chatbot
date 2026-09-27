@@ -11,7 +11,7 @@ ryasai is a self-hosted, multi-tenant enterprise AI assistant. It routes natural
 ```bash
 git clone <repo> && cd Chatbot
 bun install
-cp .env.example .env          # fill in DATABASE_URL, ENCRYPTION_SECRET_KEY, ADMIN_INITIAL_PASSWORD
+cp .env.example .env          # fill in DATABASE_URL + ENCRYPTION_SECRET_KEY
 bunx prisma db push            # apply schema to Postgres
 bunx prisma generate           # generate Prisma client
 bun run scripts/seed.ts        # seed: admin user, ERP tables, documents, 9 plugins
@@ -144,3 +144,6 @@ Architecture decisions are documented in [`docs/adr/`](./adr/). Read these to un
 ## Glossary
 
 See [`docs/glossary.md`](./glossary.md) for term definitions (RAG, GraphRAG, Agentic loop, AST guardrails, etc.).
+
+
+> **Nothing reads `ADMIN_EMAIL` / `ADMIN_INITIAL_PASSWORD`.** They appear only in `install.sh`, `.env.example` and docs; `POST /api/auth/signup` creates the organization and the first admin from what the USER types in the browser. There is no default login — register through the UI. The installer still writes the values to `.env` for older deployments, but no longer presents them as credentials.

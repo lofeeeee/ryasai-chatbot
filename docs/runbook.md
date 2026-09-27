@@ -10,7 +10,7 @@ Operational procedures for ryasai Chatbot — deploy, rollback, rotate secrets, 
 
 ```bash
 cp .env.example .env
-# Set: DATABASE_URL, ENCRYPTION_SECRET_KEY, ADMIN_INITIAL_PASSWORD, AUTH_DEMO_FALLBACK=false
+# Set: DATABASE_URL, ENCRYPTION_SECRET_KEY, AUTH_DEMO_FALLBACK=false
 docker compose up -d
 ```
 
@@ -320,3 +320,6 @@ redis-cli --scan --pattern 'bull:scheduled-runs:*'
 - Verify `DATABASE_URL` and `REDIS_URL` are correct in scheduler environment
 - Re-sync schedules: the scheduler calls `syncAllSchedules()` on startup — restarting re-creates all BullMQ repeatable jobs
 - Manually trigger: `POST /api/schedules/{id}/run`
+
+
+> **Nothing reads `ADMIN_EMAIL` / `ADMIN_INITIAL_PASSWORD`.** They appear only in `install.sh`, `.env.example` and docs; `POST /api/auth/signup` creates the organization and the first admin from what the USER types in the browser. There is no default login — register through the UI. The installer still writes the values to `.env` for older deployments, but no longer presents them as credentials.

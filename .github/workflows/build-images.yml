@@ -38,13 +38,56 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Emit the VERSION SUFFIX appended to each image's tag list, computed once so all three agree.
+      #
+      # WHY VERSIONED TAGS EXIST. Until this step the only tags were `:app`, `:scheduler` and
+      # `:embeddings` — moving pointers with no version in them. Two consequences, both bad for a
+      # product sold per install:
+      #   1. A customer could not PIN a release. `docker compose pull` on an existing install
+      #      silently advanced to whatever `main` last produced, so "the version I tested" and "the
+      #      version I am running" were different things wearing the same name.
+      #   2. There was no way to ROLL BACK. Overwriting a moving tag destroys the previous artifact;
+      #      an immutable `:1.0.0` does not.
+      #
+      # The moving tag stays a LITERAL in each `tags:` line, with this suffix appended. It would be
+      # tidier to compute the whole tag list here, but the literal is what
+      # `src/lib/release-images.test.ts` matches to prove every tag the installer references is a
+      # build target; computing the string instead would leave that guard matching a word inside a
+      # shell script rather than an actual build tag.
+      - name: Resolve version suffix
+        id: version
+        run: |
+          set -euo pipefail
+          BASE=ghcr.io/ryasrk/ryasai-chatbot
+          REF="${GITHUB_REF}"
+          SUFFIX=""
+          VERSION=""
+          if [[ "$REF" == refs/tags/v*.*.* ]]; then
+            VERSION="${REF#refs/tags/v}"
+            # A malformed tag would otherwise mint a nonsense image name that still pushes fine.
+            if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::tag '${REF#refs/tags/}' is not v<major>.<minor>.<patch>"
+              exit 1
+            fi
+            SUFFIX=",${BASE}:${VERSION}"
+            echo "Publishing versioned release ${VERSION}"
+          else
+            echo "Not a version tag (${REF}) — publishing moving tags only"
+          fi
+          {
+            echo "suffix=${SUFFIX}"
+            echo "scheduler_suffix=${SUFFIX:+${SUFFIX/:${VERSION}/:${VERSION}-scheduler}}"
+            echo "embeddings_suffix=${SUFFIX:+${SUFFIX/:${VERSION}/:${VERSION}-embeddings}}"
+            echo "version=${VERSION}"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build & push app
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile
           push: true
-          tags: ghcr.io/ryasrk/ryasai-chatbot:app
+          tags: ghcr.io/ryasrk/ryasai-chatbot:app${{ steps.version.outputs.suffix }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -54,7 +97,7 @@ jobs:
           context: .
           file: Dockerfile.scheduler
           push: true
-          tags: ghcr.io/ryasrk/ryasai-chatbot:scheduler
+          tags: ghcr.io/ryasrk/ryasai-chatbot:scheduler${{ steps.version.outputs.scheduler_suffix }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -72,6 +115,29 @@ jobs:
           context: tools/local-embeddings
           file: tools/local-embeddings/Dockerfile
           push: true
-          tags: ghcr.io/ryasrk/ryasai-chatbot:embeddings
+          tags: ghcr.io/ryasrk/ryasai-chatbot:embeddings${{ steps.version.outputs.embeddings_suffix }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # A release that published only SOME of its images is precisely the class-19 defect this
+      # workflow exists to prevent — the `:embeddings` tag was missing while the other two shipped,
+      # and every install died at `docker compose pull` with no build fallback. Ask the REGISTRY what
+      # it actually has, per image, instead of trusting that three pushes all reported success.
+      # `docker manifest inspect` needs no local pull, so this is cheap.
+      - name: Verify published images resolve
+        if: steps.version.outputs.version != ''
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          BASE=ghcr.io/ryasrk/ryasai-chatbot
+          fail=0
+          for tag in "$VERSION" "$VERSION-scheduler" "$VERSION-embeddings"; do
+            if docker manifest inspect "$BASE:$tag" >/dev/null 2>&1; then
+              echo "OK   $BASE:$tag"
+            else
+              echo "::error::$BASE:$tag did not resolve after push"
+              fail=1
+            fi
+          done
+          exit "$fail"

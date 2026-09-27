@@ -94,6 +94,46 @@ exactly what happened (steps 5, 6, then 8 — step 7 did not exist yet).
 Tags NOT ours and therefore not built by us, but still required:
 `cognee/cognee:1.6.0`, `pgvector/pgvector:pg16`, `redis:7-alpine`, `searxng/searxng:latest`.
 
+## 3b. Version tags — publish a pinnable, rollback-able release
+
+The moving tags (`:app`, `:scheduler`, `:embeddings`) are what `install.sh` pulls. They are pointers,
+not releases: a `docker compose pull` on an existing install silently advances to whatever `main`
+last produced, so "the version I tested" and "the version I am running" are different artifacts
+wearing one name — and overwriting a moving tag destroys the previous one, so there is nothing to
+roll back TO.
+
+Pushing a `v*.*.*` tag fixes both. `build-images.yml` appends the version to each image:
+
+| Ref pushed | Tags published |
+|---|---|
+| `main` | `:app`, `:scheduler`, `:embeddings` |
+| `v1.0.0` | the three above **plus** `:1.0.0`, `:1.0.0-scheduler`, `:1.0.0-embeddings` |
+
+```bash
+git tag -a v1.0.0 -m "Release 1.0.0"
+git push origin v1.0.0
+```
+
+Then confirm the versioned tags exist — the workflow now does this itself in a
+"Verify published images resolve" step that fails the release if any of the three is absent, because
+a release publishing only SOME of its images is the exact defect that blocked installs:
+
+```bash
+for t in 1.0.0 1.0.0-scheduler 1.0.0-embeddings; do
+  docker manifest inspect ghcr.io/ryasrk/ryasai-chatbot:$t >/dev/null && echo "$t OK"
+done
+```
+
+**A release tag must match `package.json`.** `src/lib/release-version.test.ts` enforces that the tag
+you push, the `version` field, and the four other places the version is stamped all agree — see step 2.
+A tag that disagrees with the artifact produces an image whose name says one version and whose UI
+displays another.
+
+**To pin a customer to a release**, edit the generated `/opt/ryasai-chatbot/docker-compose.prod.yml`
+tags from `:app` → `:1.0.0` (and the matching `-scheduler` / `-embeddings` forms), then
+`docker compose pull && docker compose up -d`. That is the rollback path too: point the tags at the
+previous version and re-pull.
+
 ## 4. External services — **(network)**
 
 ```bash
@@ -142,6 +182,52 @@ A port can also be published yet unreachable after repeated container start/stop
 (`HostConfig.PortBindings` present, `.NetworkSettings.Networks` empty). `docker compose up -d
 --force-recreate <service>` cleared it. Worth knowing so a networking artifact is not mistaken for a
 product failure, which is what happened here first.
+
+## 5b. Shipping an update to an existing install
+
+Same command as a fresh install — the installer detects `/opt/ryasai-chatbot/.env` and takes the
+update path:
+
+```bash
+curl -sSL https://ryasai.my.id/install.sh | bash          # upgrade to latest
+git tag -a v1.0.1 -m "Release 1.0.1" && git push origin v1.0.1   # then publish, per step 3b
+```
+
+What the update path does, in order:
+
+1. **Keeps the existing port** from `.env` unless `--port` was passed.
+2. **Backs up the database** with `pg_dump` into `backups/`, keeping the newest 5.
+3. **Reports environment drift** against `.install-manifest` (written by the previous run, below) and
+   names any setting the new version expects that this install does not set. It **changes nothing** —
+   `.env` holds the license key, secrets and port, so regenerating it would destroy the install.
+4. **Regenerates the compose file** from the current installer, then pulls. A failed pull **leaves the
+   running containers untouched** and exits non-zero, so an unreachable registry does not take a
+   working deployment down.
+5. **Migrates** via the `migrate` one-shot, gated on `db`/`redis` health and on
+   `service_completed_successfully`, then starts `app`/`scheduler`.
+
+`.env` is NEVER rewritten on update. The consequence is that a variable added by a newer release
+never reaches an existing install unless an operator sets it — which is why step 3 exists. The
+installer records `.install-manifest` (version + generated variable names, **names only, never
+values**) so the next update can diff against it. An install predating the manifest is told
+"cannot report env drift" rather than being falsely reported as clean.
+
+Verify after an update, on the customer host:
+
+```bash
+grep '^NEXT_PUBLIC_APP_VERSION=' /opt/ryasai-chatbot/.env    # expect the new version
+grep -E '^version=' /opt/ryasai-chatbot/.install-manifest    # what the installer last wrote
+curl -s http://127.0.0.1:38180/api/v1/health                 # {"ok":true,"version":"..."}
+ls -1t /opt/ryasai-chatbot/backups/ | head -3                # a fresh dump exists
+```
+
+**Rollback**: point the compose tags at the previous version (step 3b), `docker compose pull && docker
+compose up -d`, then restore the dump if the schema moved:
+
+```bash
+docker compose -f /opt/ryasai-chatbot/docker-compose.prod.yml exec -T db \
+  psql -U ryasai -d ryasai < /opt/ryasai-chatbot/backups/ryasai-<stamp>.sql
+```
 
 ## 6. What is deliberately NOT covered
 

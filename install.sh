@@ -30,6 +30,73 @@ info()  { echo -e "${C_GREEN}==>${C_NC} $*"; }
 warn()  { echo -e "${C_YELLOW}WARN:${C_NC} $*"; }
 fail()  { echo -e "${C_RED}ERROR:${C_NC} $*" >&2; exit 1; }
 
+# --- Version identity -------------------------------------------------------
+#
+# KEEP IN STEP with package.json, .env.example, src/lib/public-config.ts,
+# src/components/views/topbar.tsx, src/lib/otel.ts and CHANGELOG.md.
+# `src/lib/release-version.test.ts` fails the build when they disagree, and also when a pushed
+# `v<version>` tag disagrees — so a release published as `:1.1.0` cannot report `1.0.0` in its UI.
+INSTALLER_VERSION="1.0.0"
+
+# The set of variable NAMES this installer's generated .env defines, one per line.
+#
+# Printed by `render_env` below, which is also what WRITES `.env` — so the list cannot drift from
+# what the installer actually does. A hand-maintained second copy is exactly the defect this function
+# exists to avoid, and reading the file back (awk on "$0") does not work here: `$0` is the string
+# "bash" when the installer is piped from curl, which is the documented install path.
+installer_env_keys() {
+  render_env | grep -oE '^[A-Z_][A-Z_0-9]*=' | tr -d '='
+}
+
+# Emits the generated .env to stdout. Values come from globals set by the caller; on an update the
+# caller only needs the KEY NAMES, so empty values are fine.
+render_env() {
+  cat <<EOF
+# Database — change to an external host if you already run PostgreSQL elsewhere
+DATABASE_URL=postgresql://ryasai:ryasai@db:5432/ryasai
+
+# Internal container port matches standard Next.js (3000)
+PORT=3000
+
+# Unique host ports (avoids collisions with 80, 443, 3000, 8080, etc.)
+APP_PORT=${APP_PORT}
+WS_PORT=${WS_PORT}
+CADDY_PORT=${CADDY_PORT}
+WEB_PORT=${APP_PORT}
+
+# Security
+ENCRYPTION_SECRET_KEY=${ENC_KEY}
+AUTH_DEMO_FALLBACK=false
+DB_QUERY_LOG=false
+WS_CORS_ORIGIN=http://localhost:${APP_PORT}
+
+# Toggles
+# COGNEE_SERVER_URL connects to the internal compose cognee sidecar
+COGNEE_SERVER_URL=http://cognee:8000
+CONTEXTUAL_RETRIEVAL=true
+NEXT_PUBLIC_APP_VERSION=${INSTALLER_VERSION}
+NEXT_PUBLIC_WS_PORT=${WS_PORT}
+
+# Bootstrap admin. NOTE: nothing reads these — signup creates the org and the first admin.
+# Kept only as a template for older deployments; the installer no longer presents them as logins.
+ADMIN_EMAIL=admin@ryasai.local
+ADMIN_INITIAL_PASSWORD=${ADMIN_PASS}
+
+# License validation — central ryasai license server.
+LICENSE_VALIDATOR_URL=https://license.ryasai.my.id
+LICENSE_PRODUCT=ryasai-chatbot
+LICENSE_SIGNING_PUBLIC_KEY=${LICENSE_PUBKEY_ARG}
+LICENSE_GRACE_PERIOD_DAYS=7
+LICENSE_REVALIDATION_INTERVAL_HOURS=24
+
+# Data-source DB (optional, for Text-to-SQL on your own DB)
+RELATIONAL_DB_URL=
+
+# Private SearXNG for web_search. Empty = fall back to scraping DuckDuckGo.
+SEARXNG_URL=
+EOF
+}
+
 # --- Options ---------------------------------------------------------------
 WITH_SEARXNG=false
 LICENSE_PUBKEY_ARG="${LICENSE_SIGNING_PUBLIC_KEY:-}"
@@ -154,51 +221,9 @@ if [ ! -f .env ]; then
   info "Generating .env with unique port configuration..."
   ENC_KEY=$(openssl rand -hex 32)
   ADMIN_PASS=$(openssl rand -hex 8)
-  cat > .env <<EOF
-# Database — change to an external host if you already run PostgreSQL elsewhere
-DATABASE_URL=postgresql://ryasai:ryasai@db:5432/ryasai
-
-# Internal container port matches standard Next.js (3000)
-PORT=3000
-
-# Unique host ports (avoids collisions with 80, 443, 3000, 8080, etc.)
-APP_PORT=$APP_PORT
-WS_PORT=$WS_PORT
-CADDY_PORT=$CADDY_PORT
-WEB_PORT=$APP_PORT
-
-# Security
-ENCRYPTION_SECRET_KEY=$ENC_KEY
-AUTH_DEMO_FALLBACK=false
-DB_QUERY_LOG=false
-WS_CORS_ORIGIN=http://localhost:$APP_PORT
-
-# Toggles
-# COGNEE_SERVER_URL connects to the internal compose cognee sidecar
-COGNEE_SERVER_URL=http://cognee:8000
-CONTEXTUAL_RETRIEVAL=true
-NEXT_PUBLIC_APP_VERSION=1.0.0
-NEXT_PUBLIC_WS_PORT=$WS_PORT
-
-# Bootstrap admin (sign up with these credentials after install)
-ADMIN_EMAIL=admin@ryasai.local
-ADMIN_INITIAL_PASSWORD=$ADMIN_PASS
-
-# License validation — central ryasai license server.
-LICENSE_VALIDATOR_URL=https://license.ryasai.my.id
-LICENSE_PRODUCT=ryasai-chatbot
-LICENSE_SIGNING_PUBLIC_KEY=${LICENSE_PUBKEY_ARG}
-LICENSE_GRACE_PERIOD_DAYS=7
-LICENSE_REVALIDATION_INTERVAL_HOURS=24
-
-# Data-source DB (optional, for Text-to-SQL on your own DB)
-RELATIONAL_DB_URL=
-
-# Private SearXNG for web_search. Empty = fall back to scraping DuckDuckGo.
-SEARXNG_URL=
-EOF
+  render_env > .env
   chmod 600 .env
-  warn "Generated admin password: $ADMIN_PASS  (save this NOW, or run: grep ADMIN_INITIAL_PASSWORD .env)"
+  warn "Generated admin password: $ADMIN_PASS  (saved to .env; NOT a login — see the end of this output)"
 else
   info ".env already exists — keeping it."
   # Ensure APP_PORT line is set
@@ -241,6 +266,51 @@ if [ "$IS_UPDATE" = true ]; then
   fi
   # Keep newest 5 dumps
   ls -1t "$BACKUP_DIR"/ryasai-*.sql 2>/dev/null | tail -n +6 | xargs -r rm -f || true
+
+  # --- Environment drift check ----------------------------------------------
+  #
+  # WHY THIS EXISTS. `.env` is generated ONCE (the write above is guarded by `[ ! -f .env ]`) and
+  # never rewritten, which is correct — it holds the customer's license key, secrets and port, and an
+  # update that regenerated it would destroy all three. The cost is that a variable ADDED in a later
+  # release never reaches an existing install: the app reads its default, and if the release expected
+  # the operator to have set it, the feature is silently off.
+  #
+  # The comparison is against the MANIFEST the PREVIOUS installer wrote (`.install-manifest`), not
+  # against anything fetched now: the running installer has no checkout to read `.env.example` from,
+  # and comparing against its OWN list would report zero drift by construction. A manifest that does
+  # not exist (an install predating this feature) is reported as unknown rather than as "no drift" —
+  # silence would imply a clean comparison that never happened.
+  #
+  # This only REPORTS. It deliberately appends nothing: guessing a value a release needs is worse than
+  # saying nothing, because a wrong value fails in ways that look like a product bug. The operator
+  # decides.
+  PREV_MANIFEST="$APP_DIR/.install-manifest"
+  if [ -f "$PREV_MANIFEST" ]; then
+    PREV_KEYS=$(grep -v '^#' "$PREV_MANIFEST" | grep -v '^$' | grep -v '^version=' | sort -u)
+    ISSUE_KEYS=$(printf '%s\n' "$(installer_env_keys)" | sort -u)
+    DRIFT=$(comm -13 <(printf '%s\n' "$PREV_KEYS") <(printf '%s\n' "$ISSUE_KEYS") | tr '\n' ' ')
+    if [ -n "$DRIFT" ]; then
+      warn "New settings this version documents that your .env does not set:"
+      for v in $DRIFT; do warn "    - $v"; done
+      warn "  They default to OFF/unset. Set any you need, then re-run this installer."
+      warn "  Nothing was changed automatically — your .env is preserved as-is."
+    else
+      info "No new settings in this version."
+    fi
+    PREV_VER=$(grep -E '^version=' "$PREV_MANIFEST" | cut -d= -f2)
+    info "Updating from ${PREV_VER:-an earlier version} -> $INSTALLER_VERSION"
+  else
+    warn "No install manifest found (pre-dates this installer) — cannot report env drift."
+    warn "  Your .env is preserved. To see what this version adds:"
+    warn "    https://github.com/ryasrk/ryasai-chatbot/blob/main/.env.example"
+  fi
+
+  # Record what THIS version expects, so the NEXT update can compare against it.
+  {
+    echo "# Written by install.sh — do not edit. Used to report env drift on update."
+    echo "version=$INSTALLER_VERSION"
+    installer_env_keys
+  } > "$PREV_MANIFEST"
 fi
 
 # --- Compose (Pure Prebuilt Images, NO source code build directives) --------
@@ -751,8 +821,18 @@ echo "  ryasai Chatbot installed (Prebuilt Images Only)."
 echo "=============================================================="
 echo
 echo "  Access (local):   http://127.0.0.1:${APP_PORT}"
-echo "  Admin email:      $(grep -E '^ADMIN_EMAIL=' .env | cut -d= -f2)"
-echo "  Admin password:   $(grep -E '^ADMIN_INITIAL_PASSWORD=' .env | cut -d= -f2)"
+echo
+# These two lines used to read "Admin email / Admin password" and print values from .env. NO CODE
+# reads ADMIN_EMAIL or ADMIN_INITIAL_PASSWORD — verified by grepping the whole tree: they appear only
+# in install.sh, .env.example and docs, and POST /api/auth/signup creates the organization and the
+# first admin from what the USER types. The old output therefore invited a customer to log in with an
+# account that does not exist, and when that failed they would reasonably conclude the install was
+# broken. The values are still generated and left in .env (harmless), but are no longer presented as
+# credentials.
+echo "  First run: register in the browser — there is no default account."
+echo "             1. Open the URL above"
+echo "             2. Sign up   (creates the organization + the first admin)"
+echo "             3. Setup Wizard: LLM -> test -> documents -> data sources -> chat"
 echo
 if [ "$LICENSE_KEY_CONFIGURED" != true ]; then
   echo "**************************************************************"

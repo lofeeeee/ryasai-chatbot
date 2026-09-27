@@ -10,7 +10,8 @@ The fastest path — Postgres + app in two containers:
 
 ```bash
 cp .env.example .env
-# Edit .env: set ENCRYPTION_SECRET_KEY and ADMIN_INITIAL_PASSWORD (see below)
+# Edit .env: set ENCRYPTION_SECRET_KEY (required). ADMIN_INITIAL_PASSWORD is NOT read
+# by anything — see the note in the env table below.
 docker compose up -d
 ```
 
@@ -37,7 +38,7 @@ Copy `.env.example` to `.env` and set **at minimum** these variables:
 |----------|----------|---------|-------|
 | `DATABASE_URL` | Yes | `postgresql://ryasai:STRONG_PW@db:5432/ryasai` | Postgres URL (compose default) or `file:./db/custom.db` for SQLite |
 | `ENCRYPTION_SECRET_KEY` | Yes | `openssl rand -hex 32` | 64-char hex string for AES-256-GCM. App refuses to start without it. |
-| `ADMIN_INITIAL_PASSWORD` | Yes | (strong password) | Initial admin password — change after first login via Settings > Profil |
+| `ADMIN_INITIAL_PASSWORD` | **No** | (unused) | Not read by any code. The first admin is created by the signup form, not from this value |
 | `ADMIN_EMAIL` | No | `admin@yourcompany.com` | Default: `admin@example.com` |
 | `AUTH_DEMO_FALLBACK` | Yes (prod) | `false` | **Must be `false` in production.** When `true`, unauthenticated requests impersonate the admin. |
 | `NODE_ENV` | Set by compose | `production` | Enables secure cookies, disables dev overlays |
@@ -130,7 +131,7 @@ bun install
 
 # 2. Configure environment
 cp .env.example .env
-# Edit .env: set DATABASE_URL, ENCRYPTION_SECRET_KEY, ADMIN_INITIAL_PASSWORD, AUTH_DEMO_FALLBACK=false
+# Edit .env: set DATABASE_URL, ENCRYPTION_SECRET_KEY, AUTH_DEMO_FALLBACK=false
 
 # 3. Apply database schema
 bunx prisma db push --accept-data-loss
@@ -299,7 +300,8 @@ The current implementation stores embeddings as JSON strings in SQLite and compu
 Run through this before exposing the deployment to the internet.
 
 - [ ] **Rotate `ENCRYPTION_SECRET_KEY`** — generate a fresh 64-char hex key. Never reuse the default/empty value. App refuses to start without it.
-- [ ] **Set strong `ADMIN_INITIAL_PASSWORD`** — then change it immediately after first login via Settings > Profil > Ganti Sandi.
+- [ ] **Register the first admin through the UI** — there is no seeded account and no default
+      password. **Nothing reads `ADMIN_EMAIL` / `ADMIN_INITIAL_PASSWORD`.** They appear only in `install.sh`, `.env.example` and docs; `POST /api/auth/signup` creates the organization and the first admin from what the USER types in the browser. There is no default login — register through the UI. The installer still writes the values to `.env` for older deployments, but no longer presents them as credentials.
 - [ ] **Set `AUTH_DEMO_FALLBACK=false`** — when `true`, unauthenticated requests impersonate the admin. This **must** be `false` in any production deployment.
 - [ ] **Configure CORS for external API** — set `CHAT_API_CORS_ORIGIN` env var to your specific origin(s). Defaults to `*` (all origins) for development. For production, restrict to your integration's origin.
 - [ ] **Enable audit logging** — on by default. All security-relevant actions (login, SQL execute, guardrail block, API key creation, integration create) are written to `AuditLog`. View via Security > Audit Log.

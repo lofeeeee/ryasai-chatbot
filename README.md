@@ -1,6 +1,6 @@
 # ryasai — Enterprise AI Assistant
 
-![CI](https://github.com/ryasai/Chatbot/actions/workflows/ci.yml/badge.svg) ![License](https://img.shields.io/badge/license-Proprietary-red) ![Version](https://img.shields.io/badge/version-1.0.0-blue) ![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)
+[![CI](https://github.com/ryasrk/ryasai-chatbot/actions/workflows/ci.yml/badge.svg)](https://github.com/ryasrk/ryasai-chatbot/actions/workflows/ci.yml) [![Build Images](https://github.com/ryasrk/ryasai-chatbot/actions/workflows/build-images.yml/badge.svg)](https://github.com/ryasrk/ryasai-chatbot/actions/workflows/build-images.yml) ![License](https://img.shields.io/badge/license-Proprietary-red) ![Version](https://img.shields.io/badge/version-1.0.0-blue)
 
 **On-prem, multi-tenant** AI assistant that answers questions by routing to the right tool: SQL queries, document RAG, REST API calls, external plugins, or general chat. Built for enterprises that need data-grounded AI with security guardrails and organizational isolation.
 
@@ -15,24 +15,44 @@ Multiple `Organization` rows within one install are supported and fully isolated
 
 See [ARCHITECTURE.md](./ARCHITECTURE.md) for full system design. See [MULTI-TENANT-GUIDE.md](./MULTI-TENANT-GUIDE.md) for org isolation details.
 
-## Quick Start
+## Install (customer)
+
+One command. It pulls prebuilt images, generates `.env`, backs up any existing database, and starts
+all services — **the customer host never clones this repository and never builds from source.**
 
 ```bash
-# Install dependencies
-bun install
-
-# Apply database schema
-bunx prisma db push --accept-data-loss
-bunx prisma generate
-
-# Seed demo data
-bun run scripts/seed.ts
-
-# Start dev server
-bash start.sh
+curl -sSL https://ryasai.my.id/install.sh | bash
 ```
 
-Default: `admin@ryas.ai` / `admin12345`
+| Flag | Effect |
+|------|--------|
+| `--port <number>` | Host port for the web app (default `38180`, auto-advances if taken) |
+| `--with-searxng` | Private SearXNG for the `web_search` tool (~256 MB RAM) |
+| `--license-signing-public-key <hex>` | Ed25519 public key (DER hex) for license verification |
+
+Re-running the same command **updates** an existing install: it detects `/opt/ryasai-chatbot/.env`,
+preserves your `.env` and data, dumps a database backup (last 5 kept in `backups/`), pulls the new
+images, and runs migrations behind a health gate. If the pull fails, your running containers are left
+alone rather than taken down. See **[docs/RELEASE.md](./docs/RELEASE.md)** for the release checklist.
+
+**There is no default login.** The database starts empty and the installer's generated
+`ADMIN_INITIAL_PASSWORD` is *not* used to create an account — open the app and register through the
+UI: **Sign up → (license key, if you have one) → Setup Wizard** (LLM → test → documents → data
+sources → chat). The first registered user is the admin. Licenseless signups land in an `unpaid`
+state until a license key is applied.
+
+## Local development
+
+```bash
+bun install
+cp .env.example .env          # set DATABASE_URL + ENCRYPTION_SECRET_KEY (both required)
+bunx prisma db push           # apply schema (Postgres 16 + pgvector)
+bash start.sh                 # Next.js + scheduler; seeds nothing, DB stays empty
+```
+
+Then register at `http://localhost:3000` exactly as a customer would. `bash start.sh` calls
+`scripts/seed.ts`, which deliberately creates **nothing** — the signup flow owns org creation, so a
+seeded "default admin" does not exist and should not be documented as one.
 
 ## Measured Results
 
@@ -395,10 +415,36 @@ curl -sSL https://ryasai.my.id/install.sh | bash -s -- --port 38180
 curl -sSL https://ryasai.my.id/install.sh | bash -s -- --with-searxng
 ```
 
+Re-running the command updates an existing install in place: `.env` and all data are preserved, the
+database is backed up first, and migrations run behind a health gate. A failed image pull leaves the
+running containers untouched. Full procedure and the checks that must pass before publishing:
+**[docs/RELEASE.md](./docs/RELEASE.md)**.
+
+### Published images
+
+Three of ours, all built by `.github/workflows/build-images.yml`, plus four upstream:
+
+| Image | Tag | Built by |
+|-------|-----|----------|
+| `ghcr.io/ryasrk/ryasai-chatbot:app` | app | us — `Dockerfile` |
+| `ghcr.io/ryasrk/ryasai-chatbot:scheduler` | scheduler | us — `Dockerfile.scheduler` |
+| `ghcr.io/ryasrk/ryasai-chatbot:embeddings` | embeddings | us — `tools/local-embeddings` |
+| `cognee/cognee:1.6.0` | pinned | upstream |
+| `pgvector/pgvector:pg16` | pinned | upstream |
+| `redis:7-alpine` | pinned | upstream |
+| `searxng/searxng:latest` | — | upstream |
+
+**All three of ours are mandatory.** `src/lib/release-images.test.ts` enforces the static half — every
+tag `install.sh` references must also be a build target in the workflow — but it cannot reach the
+registry, so it cannot prove a tag is *published*. That gap shipped an uninstallable product once:
+the `:embeddings` build step existed and the tag did not, so `docker compose pull` failed with
+`not found` and `curl … | bash` died with no build fallback. `docs/RELEASE.md` step 3 covers the
+registry check that no local test can do.
+
 ### Security & Anti-Tampering Guarantees
-- **Source Code Anti-Theft Protection:** The customer VPS **never clones the git repository** and never builds from source. The installer pulls official prebuilt container images (`ghcr.io/ryasrk/ryasai-chatbot:app`, `scheduler`). `/opt/ryasai-chatbot` on the client VPS contains **only** `.env` and `docker-compose.prod.yml` — zero TypeScript code, zero prompt files, and zero test suites.
+- **Source Code Anti-Theft Protection:** The customer VPS **never clones the git repository** and never builds from source. The installer pulls official prebuilt container images (`ghcr.io/ryasrk/ryasai-chatbot:app`, `scheduler`, `embeddings`). `/opt/ryasai-chatbot` holds only `.env`, `docker-compose.prod.yml`, the generated `cognee-patch/` scripts (small bash wrappers the compose mounts read-only), and `backups/` — zero TypeScript code, zero prompt files, and zero test suites.
 - **Port Collision Avoidance:** Uses unique port **`38180`** by default (`127.0.0.1:38180:3000`, localhost-only), avoiding common port conflicts (80, 443, 3000, 8080, 5432, 6379). The installer automatically detects if `38180` is in use and auto-selects the next available port.
-- **Hardcoded Central License Authority:** In production, license validation is strictly locked to `https://license.ryasai.my.id`. Any attempt to redirect `LICENSE_VALIDATOR_URL` in `.env` is ignored by the production binary. Every validation response requires an authentic Ed25519 digital signature verified against `LICENSE_SIGNING_PUBLIC_KEY`.
+- **Hardcoded Central License Authority:** In production, license validation is strictly locked to `https://license.ryasai.my.id`. Any attempt to redirect `LICENSE_VALIDATOR_URL` in `.env` is ignored by the production binary (`validatorUrl()` in `src/lib/license-client.ts` returns the constant whenever `NODE_ENV=production`, except under the e2e-only `E2E_TEST_MODE`). Every validation response requires an authentic Ed25519 digital signature verified against `LICENSE_SIGNING_PUBLIC_KEY`; with that key unset, verification fails closed.
 
 ## Development
 
@@ -502,12 +548,14 @@ Copy `.env.example` to `.env`:
 | Var | Required | Description |
 |-----|----------|-------------|
 | `DATABASE_URL` | Yes | Postgres |
-| `ENCRYPTION_SECRET_KEY` | Yes | 64-char (AES-256-GCM) |
-| `ADMIN_INITIAL_PASSWORD` | Yes | Initial password |
+| `ENCRYPTION_SECRET_KEY` | Yes | 64-char (AES-256-GCM). The app refuses to start without it |
+| `LICENSE_SIGNING_PUBLIC_KEY` | Yes (installer) | Ed25519 public key, DER hex. Unset → every signature fails → lockdown. No shipped default (fail-closed) |
 | `LICENSE_VALIDATOR_URL` | Fixed | Central license server: in production, locked to `https://license.ryasai.my.id` (anti-tampering). Dev/test defaults to `http://localhost:9000` |
+| `ADMIN_EMAIL` / `ADMIN_INITIAL_PASSWORD` | No | **Written by the installer and shown at the end of the run, but read by nothing.** No account is created from them — register through the UI instead. Kept in `.env.example` as a template for older deployments |
 | `COGNEE_ENABLED` | No | kill switch — leave unset, Settings > AI Memory decides; `false` forces off |
-| `COGNEE_SERVER_URL` | No | set (`http://cognee:8000`) in compose installs → memory runs over HTTP against the `cognee` sidecar (cognee 1.5.4). Unset → in-process `@cognee/cognee-ts` SDK. Read from the environment only, never per-org |
+| `COGNEE_SERVER_URL` | No | set (`http://cognee:8000`) in compose installs → memory runs over HTTP against the `cognee` **1.6.0** sidecar. **Unset → memory is OFF**: there is no in-process fallback, because the `@cognee/cognee-ts` bindings were removed (two cognee lineages writing one store produced a collection sized 1536 while the embedder returned 384). Read from the environment only, never per-org |
 | `COGNEE_SERVER_API_KEY` | No | bearer token for the sidecar, if you put an auth proxy in front of it |
+| `LLM_ALLOWED_HOSTS` | No | **exception** list, not an allowlist — public endpoints are reachable without it. Compose defaults it to `local-embeddings` so the bundled embedder can be reached by service name. Set to `127.0.0.1,localhost` for a host-side self-hosted model |
 | `RAG_LLM_RERANK` | No | true (optional) |
 | `CONTEXTUAL_RETRIEVAL` | No | true (optional, -49% failures) |
 | `LOG_LEVEL` | No | debug/info/warn/error |
