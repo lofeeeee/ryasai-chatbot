@@ -13,7 +13,7 @@ signed machine-bound key. There is no vendor cloud and no per-token billing — 
 their own LLM and embedding endpoints (BYOK), so inference spend goes to their provider, not to us.
 Multiple `Organization` rows within one install are supported and fully isolated.
 
-See [ARCHITECTURE.md](./ARCHITECTURE.md) for full system design. See [MULTI-TENANT-GUIDE.md](./MULTI-TENANT-GUIDE.md) for org isolation details.
+See [ARCHITECTURE.md](./ARCHITECTURE.md) for full system design. See [MULTI-TENANT-GUIDE.md](./MULTI-TENANT-GUIDE.md) for org isolation details. Release history: [CHANGELOG.md](./CHANGELOG.md).
 
 ## Install (customer)
 
