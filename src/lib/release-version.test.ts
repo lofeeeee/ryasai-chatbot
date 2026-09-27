@@ -60,8 +60,14 @@ describe('release: one version across every stamped location', () => {
       // `.env` template — correct, and invisible to a guard that only reads the constant. This
       // asserts the template INTERPOLATES that constant rather than spelling a number of its own,
       // which is how a literal `1.0.0` could survive a future 1.1.0 bump unnoticed.
+      //
+      // `:-` is accepted because the template MUST tolerate unset variables: `render_env` is called
+      // on the UPDATE path (to list env key names) where the generate branch never ran, and the
+      // script uses `set -u`. Without the default the installer aborted with
+      // "ENC_KEY: unbound variable" and every update failed — a real outage, fixed by `${VAR:-}`.
+      // Pinning only the bare form made this guard fail for the fix that was correct.
       extract: (s) =>
-        /^NEXT_PUBLIC_APP_VERSION=\$\{INSTALLER_VERSION\}$/m.test(s)
+        /^NEXT_PUBLIC_APP_VERSION=\$\{INSTALLER_VERSION:?-?\}$/m.test(s)
           ? (s.match(/^INSTALLER_VERSION="([0-9]+\.[0-9]+\.[0-9]+)"$/m)?.[1] ?? null)
           : null,
       why: 'the generated .env must interpolate INSTALLER_VERSION, not hardcode a number that a future bump would miss',
