@@ -210,3 +210,34 @@ describe('memory: EVERY exit path of the non-streaming pipeline must write the t
     expect(nonStreamingBody()).toMatch(/return remember\(await runChatBranch\(/)
   })
 })
+
+describe('memory: BOTH transports of the external API write the turn', () => {
+  /**
+   * MEASURED GAP (2026-09-27). `/api/v1/chat/completions` has two transports:
+   *
+   *   stream:false → `runNonStreamingChatCompletion`, which writes through `tool-router`.
+   *   stream:true  → `runStreamingChatCompletion`, whose prepaers NEVER call `rememberChatTurn`.
+   *
+   * The web chat is unaffected because `chat/sessions/[id]/send` writes memory itself at its own call
+   * site — but this route had no equivalent, so an integrator using `stream: true` received correct
+   * answers and no memory, with the two responses indistinguishable from the outside.
+   */
+  const v1Src = readFileSync(join(import.meta.dir, '..', 'app', 'api', 'v1', 'chat', 'completions', 'route.ts'), 'utf-8')
+
+  test('the streaming transport writes the turn', () => {
+    // Asserting on the INVOCATION, not on the identifier: the import alone would satisfy a `toContain`,
+    // which is the vacuous-guard shape this repo has been bitten by repeatedly.
+    expect(v1Src).toMatch(/void rememberChatTurn\(\{/)
+    // And it must be inside the streaming branch, after the answer has been assembled.
+    const at = v1Src.indexOf('void rememberChatTurn(')
+    const streamAt = v1Src.indexOf('runStreamingChatCompletion(')
+    expect(streamAt).toBeGreaterThan(-1)
+    expect(at).toBeGreaterThan(streamAt)
+  })
+
+  test('the streaming write is fire-and-forget, never awaited', () => {
+    // Awaiting it would hold the SSE stream open for 5.6-9.7s (85s on a fresh dataset) past the 120s
+    // idle watchdog, turning a working answer into a timeout.
+    expect(v1Src).not.toMatch(/await rememberChatTurn\(/)
+  })
+})

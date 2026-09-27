@@ -9,6 +9,7 @@ import { runNonStreamingChatCompletion, runStreamingChatCompletion } from '@/lib
 import { rateLimit } from '@/lib/redis'
 import { inc, observe } from '@/lib/metrics'
 import { getOrgContext } from '@/lib/prisma-tenant'
+import { rememberChatTurn } from '@/lib/cognee'
 import { resolveScope, ScopeDeniedError } from '@/lib/api-key-scope'
 import { ScopeSourceMissingError, validateKeyScopeSources } from '@/lib/api-key-scope-guard'
 import { AppError } from '@/lib/errors'
@@ -323,6 +324,31 @@ export async function POST(req: NextRequest) {
             })
 
             await writeApiLog({ apiKeyId, status: 200, latencyMs })
+
+            /*
+             * Remember the turn on the STREAMING path too.
+             *
+             * MEASURED GAP: the non-streaming path writes memory through `tool-router`, but this route
+             * streams through `runStreamingChatCompletion`, whose preparers never call
+             * `rememberChatTurn` — the web chat covers itself in `chat/sessions/[id]/send` and this
+             * route has no equivalent. So an integrator using `stream: true` got correct answers and
+             * NO memory, with nothing anywhere saying so: the responses are indistinguishable.
+             *
+             * FIRE AND FORGET, and the stream is NOT held open for it — a write measures 5.6-9.7s and
+             * 85s on a fresh dataset, so awaiting here would stall the final frame far past the idle
+             * watchdog. `rememberChatTurn` logs its own failures, so a memory problem stays visible
+             * without reaching the caller.
+             */
+            void rememberChatTurn({
+              sessionId: session.id,
+              userMessage: question,
+              aiMessage: fullAnswer,
+              toolRuns: streaming.toolRuns.map((t) => ({
+                type: t.type,
+                status: t.status,
+                latencyMs: t.latencyMs ?? 0,
+              })),
+            })
 
             safeEnqueue(
               encoder.encode(
