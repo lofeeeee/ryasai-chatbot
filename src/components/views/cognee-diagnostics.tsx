@@ -53,17 +53,18 @@ const COMPONENT_LABEL: Record<string, string> = {
 }
 
 /**
- * Which fix to offer for a failing component, and whether it is worth the operator's time.
+ * Which fix to offer for a failing component.
  *
  * Driven by the component NAME rather than by pattern-matching the message text: prose changes
  * between releases, and a hint keyed to a substring would silently stop matching — the failure mode
  * this repo catalogs as "a branch on prose".
  *
- * `ignoreLikely` marks a probe known to cry wolf. Those render INLINE rather than behind the
- * accordion: burying "you can probably ignore this" one click deep costs an operator the same time
- * as a real fault, which defeats the point of distinguishing them.
+ * There is deliberately no "you can ignore this" hint any more. One existed for
+ * `embedding_service`, asserting it was a false alarm, and it was WRONG — see fixHintFor below. A UI
+ * that tells an operator to disregard a real fault is worse than one that stays silent, so the
+ * category is removed rather than kept available for the next hunch.
  */
-function fixHintFor(name: string): { title: string; body: string; ignoreLikely?: boolean } | null {
+function fixHintFor(name: string): { title: string; body: string } | null {
   if (name === 'llm_provider') {
     return {
       title: 'Memory needs its own LLM',
@@ -74,14 +75,18 @@ function fixHintFor(name: string): { title: string; body: string; ignoreLikely?:
     }
   }
   if (name === 'embedding_service') {
+    // This USED to say "may be a false alarm", on the evidence that a direct embedding call from the
+    // same container succeeded. That reasoning was WRONG and is retracted here: a direct curl
+    // bypasses litellm, which is exactly where the failure lives. `<provider>/<model>` is required,
+    // and a bare model id makes litellm reject the request before it leaves the process — so the
+    // endpoint looks healthy while cognee never calls it.
     return {
-      title: 'Often a FALSE ALARM — verify before acting',
+      title: 'Embedding model id is likely missing its provider prefix',
       body:
-        'This check calls the embedding endpoint with a 30s budget and can report "timed out" while ' +
-        'real embedding calls succeed. Measured on a production sidecar: this component said ' +
-        'degraded while the same container returned a valid 384-dimension vector. If documents are ' +
-        'being embedded normally, this warning can be ignored.',
-      ignoreLikely: true,
+        'litellm reads the text before the slash as a PROVIDER name, so a bare model id is rejected ' +
+        'with "LLM Provider NOT provided" and the request never reaches the endpoint. Check ' +
+        'EMBEDDING_MODEL in .env.cognee — it must look like `openai/<model>`. A direct call to the ' +
+        'endpoint succeeding does NOT prove this is fine: curl bypasses litellm entirely.',
     }
   }
   if (name === 'graph_db' || name === 'vector_db' || name === 'relational_db') {
@@ -188,17 +193,6 @@ export function CogneeDiagnosticsPanel({ diagnostics }: { diagnostics: CogneeDia
                   </span>
                 )}
               </button>
-
-              {/*
-                The "probably ignore this" hint renders WITHOUT a click. Hiding it behind the
-                accordion makes a cry-wolf probe cost the same attention as a real fault, which is
-                exactly what this panel exists to prevent.
-              */}
-              {hint?.ignoreLikely && !isOpen && (
-                <p className="ml-5 pl-2 text-[10px] text-muted-foreground">
-                  Likely a false alarm — click for details.
-                </p>
-              )}
 
               {isOpen && expandable && (
                 <div className="ml-5 space-y-1.5 border-l pl-2 pb-1.5">

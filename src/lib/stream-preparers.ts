@@ -1,4 +1,5 @@
 import { db } from '@/lib/db'
+import { getPromptSettings, resolveSqlRulesPrompt } from '@/lib/prompt-settings'
 import { getOrgContext } from '@/lib/prisma-tenant'
 import { decryptConfig } from '@/lib/crypto'
 import {
@@ -284,6 +285,16 @@ export async function prepareSqlStream(args: {
     integration.provider,
     decryptConfig(integration.encryptedConfig),
   )
+
+  /*
+   * The org's editable Text-to-SQL rules.
+   *
+   * This path previously read NO prompt settings at all, so an admin editing them would see the
+   * change apply to scheduled runs and /api/v1 (which use runSqlBranch) while the interactive chat
+   * — the place they were testing — kept the old behaviour. Resolved once per request, not per
+   * repair attempt.
+   */
+  const sqlRules = resolveSqlRulesPrompt((await getPromptSettings(db)).sqlRulesPrompt)
   // ponytail: SQL error-correction loop, streaming twin of runSqlBranch's.
   // A failed execution feeds the DB error back to generateSql for a corrected
   // retry instead of ending the turn with a canned apology.
@@ -313,6 +324,7 @@ export async function prepareSqlStream(args: {
         systemPromptPrefix: args.systemPromptPrefix,
         businessContext: integration.businessContext,
         repairFeedback: feedback,
+        sqlRules,
       })
     } catch (e) {
       // A transient provider blip must not end the turn; the repair loop retries.

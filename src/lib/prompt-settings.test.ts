@@ -17,7 +17,10 @@ import { parsePromptSettings, mergePromptSettings, getPromptSettings } from './p
 describe('prompt settings', () => {
   it('returns defaults for null/garbage', () => {
     const d = parsePromptSettings(null)
-    expect(d).toEqual({ systemPrompt: '', ragContextPrompt: '', tools: { rag: true, sql: true, restApi: true } })
+    // `sqlRulesPrompt` defaults to '' — EMPTY MEANS "use DEFAULT_SQL_RULES_PROMPT", resolved at
+      // call time by resolveSqlRulesPrompt. Storing the built-in text as the default here would
+      // freeze it: every org would carry a copy, and shipping an improved rule would reach nobody.
+      expect(d).toEqual({ systemPrompt: '', ragContextPrompt: '', sqlRulesPrompt: '', tools: { rag: true, sql: true, restApi: true } })
     expect(parsePromptSettings('{oops')).toEqual(d)
   })
   it('parses stored json and fills missing keys', () => {

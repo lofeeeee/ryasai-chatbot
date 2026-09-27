@@ -16,7 +16,7 @@ import {
   type RestEndpointOption,
 } from '@/lib/ai'
 import { retrieveWithReflection } from '@/lib/intent-pipeline'
-import { getPromptSettings } from '@/lib/prompt-settings'
+import { getPromptSettings, resolveSqlRulesPrompt } from '@/lib/prompt-settings'
 import { buildSourceGuidance } from '@/lib/source-guidance'
 import { wrapUntrusted } from '@/lib/evidence-boundary'
 import { resolveIntegrationForQuestion, tokenize } from '@/lib/smart-router'
@@ -306,6 +306,16 @@ export async function runSqlBranch(args: {
       ? intPrompt.replace(/^\s+/, '')
       : undefined
 
+  /*
+   * The org's editable Text-to-SQL rules, resolved ONCE per branch rather than per repair attempt —
+   * the retry loop below calls `generateSql` up to three times, and re-reading the row each time
+   * would be three identical queries for a value that cannot change mid-request.
+   *
+   * Resolved here rather than inside `generateSql` so `ai.ts` keeps no DB dependency and the
+   * "empty means default" rule lives in exactly one function.
+   */
+  const sqlRules = resolveSqlRulesPrompt((await getPromptSettings(db)).sqlRulesPrompt)
+
   const schemaTables = integration.schemas.map((schema) => ({
     tableName: schema.tableName,
     columns: safeParseColumns(schema.columns),
@@ -383,6 +393,10 @@ export async function runSqlBranch(args: {
       // different SQL/answer depending on transport (scheduled runs, the agentic
       // loop and /api/v1 all take this branch). Keep the two in sync.
       businessContext: integration.businessContext,
+      // The org's editable rules. `resolveSqlRulesPrompt` already fell back to the built-in default
+      // when the field is empty, so this line is unconditional — no branch here means no way for one
+      // transport to pass rules and another to forget them.
+      sqlRules,
     })
     const guard = validateAndSanitizeLlmSql(candidate.sql)
     if (!guard.ok) {

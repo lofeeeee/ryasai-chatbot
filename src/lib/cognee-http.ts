@@ -174,21 +174,45 @@ export interface CogneeDiagnostics {
  *
  * That text is the whole reason this function exists: it is what turns a red badge into an action.
  *
- * ONE KNOWN FALSE ALARM, surfaced rather than hidden: `embedding_service` tests by calling the
- * embedding endpoint with a 30s timeout and — MEASURED on the production sidecar — reports
- * `degraded` / "timed out" even though the same container's real embedding call returns a valid
- * 384-dim vector. The UI must therefore present this as a warning to verify, not as a proven fault.
- * Returns null when the server is unreachable, so callers show "unknown" instead of inventing a
+ * `embedding_service: degraded` WAS called a false alarm in an earlier revision of this comment, on
+ * the evidence that a direct embedding call from the same container succeeded. THAT CONCLUSION WAS
+ * WRONG, and the retraction matters more than the original claim: a direct `curl` bypasses litellm,
+ * and litellm is precisely where the failure lives. Measured by calling litellm the way the server
+ * does (`litellm.embedding(...)` inside the sidecar):
+ *
+ *     model="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+ *       -> BadRequestError: "LLM Provider NOT provided"    (0.0s — provider unparsable)
+ *     model="openai/paraphrase-multilingual-MiniLM-L12-v2"
+ *       -> OK, dim=384                                     (0.7s)
+ *
+ * litellm reads the text before the slash as a PROVIDER name, so a bare model id is parsed as a
+ * provider that does not exist and the request never leaves the process. The endpoint's own access
+ * log showed ZERO calls while `/health/detailed` timed out after 30s.
+ *
+ * So the warning was real, and "the endpoint answers a direct call" was never evidence that cognee
+ * could reach it. Keep this note: the tempting shortcut is exactly the one that hid the bug.
+ *
+ * Returns null when the server is unreachable, so callers show "unknown" rather than inventing a
  * verdict.
  */
 export async function cogneeServerDiagnostics(
   opts: CogneeHttpOptions,
 ): Promise<CogneeDiagnostics | null> {
   const url = `${opts.baseUrl.replace(/\/+$/, '')}/health/detailed`
-  // Longer than the plain version probe: this endpoint actively tests each dependency, and the
-  // embedding check alone budgets 30s. A tighter deadline would report "unreachable" for a sidecar
-  // that is merely slow to answer — converting a real diagnosis into a false one.
-  const res = await fetchWithDeadline(url, { method: 'GET' }, opts.timeoutMs ?? 45000)
+  /*
+   * DEADLINE IS DELIBERATELY SHORTER THAN THE SERVER'S WORST CASE.
+   *
+   * This endpoint actively tests each dependency and the embedding probe alone budgets 30s, so a
+   * misconfigured sidecar answers in 30.2s — MEASURED. The AI Memory card awaits this call before it
+   * renders anything, so that 30s is the "stuck loading" a user sees. A 45s deadline (the previous
+   * value) also meant the request could outlive the page's own patience.
+   *
+   * 8s is enough for a healthy sidecar: measured 0.0s when all components are up. A sidecar that
+   * cannot answer in 8s gets `null`, and the UI says "not reachable" — which is HONEST for a
+   * component that is answering 30s late, and far more useful than a spinner. The slow answer is
+   * still diagnosed by whatever made it slow; the panel's job is not to wait for all of it.
+   */
+  const res = await fetchWithDeadline(url, { method: 'GET' }, opts.timeoutMs ?? 8000)
   if (!res) return null
   if (!res.ok && res.status !== 503) return null
   // 503 IS EXPECTED AND MUST BE PARSED, not treated as unreachable.

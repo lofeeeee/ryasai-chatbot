@@ -222,3 +222,75 @@ describe('installer: cognee separation must not break the update path', () => {
     expect(writeIdx).toBeLessThan(composeIdx)
   })
 })
+
+describe('cognee: EMBEDDING_MODEL must carry a litellm provider prefix', () => {
+  /**
+   * INCIDENT (2026-09-27): the AI Memory page "stuck loading" for 30 seconds.
+   *
+   * Root cause was a bare model id in `.env.cognee`. litellm parses the text before the first `/` as
+   * a provider name, so `sentence-transformers/…` resolved to a provider that does not exist and the
+   * request never left the process. Verified inside the sidecar by calling litellm as the server
+   * does: bare id -> BadRequestError "LLM Provider NOT provided" (0.0s); `openai/<id>` -> dim=384
+   * (0.7s). The embedding endpoint answered a DIRECT call in 0.055s the whole time, which is what
+   * made the symptom misleading: no connection error, just a 30s stall.
+   *
+   * The template originally shipped the bare id because it was copied from the `local-embeddings`
+   * SERVICE variable of the same name — which wants the HuggingFace id and must NOT be prefixed.
+   * Two variables, one name, opposite requirements.
+   */
+  const root = join(import.meta.dir, '..', '..')
+  const src = readFileSync(join(root, 'install.sh'), 'utf-8')
+
+  /** The generated `.env.cognee` template body. */
+  const template = (() => {
+    const start = src.indexOf('cat > "$COGNEE_ENV_FILE" <<')
+    const end = src.indexOf('\nCOGNEEEOF', start)
+    return src.slice(start, end)
+  })()
+
+  test('the template ships a prefixed embedding model', () => {
+    const m = template.match(/^EMBEDDING_MODEL=(\S+)$/m)
+    expect(m, 'the template must set EMBEDDING_MODEL').not.toBeNull()
+    const value = m![1]
+    // A bare `org/name` id is the exact defect. The prefix must be a provider litellm knows.
+    expect(
+      value,
+      `EMBEDDING_MODEL="${value}" has no litellm provider prefix — litellm will parse ` +
+        `"${value.split('/')[0]}" as a PROVIDER and never call the endpoint, producing a 30s stall ` +
+        `on the AI Memory page instead of an error`,
+    ).toMatch(
+      /^(openai|anthropic|azure|ollama|gemini|bedrock|cohere|mistral|huggingface|vertex_ai|litellm_proxy)\//,
+    )
+  })
+
+  test('the template model value is the bare model name, prefixed exactly once', () => {
+    const value = template.match(/^EMBEDDING_MODEL=(\S+)$/m)![1]
+    // `openai/openai/...` or `sentence-transformers/sentence-transformers/...` would also be wrong.
+    expect(value.startsWith('openai/sentence-transformers/')).toBe(false)
+    expect(value).toBe('openai/paraphrase-multilingual-MiniLM-L12-v2')
+  })
+
+  test('the installer repairs a bare value on an EXISTING install', () => {
+    // A template fix only helps new installs. The stalled deployment already had the bad value, and
+    // there is no way for an operator to know a 30s stall means "add a provider prefix".
+    expect(src, 'the migration must exist').toContain('# --- Fix an EMBEDDING_MODEL that is missing its provider prefix')
+    expect(src, 'the migration must rewrite the value').toMatch(/EMBEDDING_MODEL=openai\/\$\{BARE_MODEL#\*\/\}/)
+  })
+
+  test('the repair leaves a correct or third-party provider alone', () => {
+    // The allow-list is what stops it from rewriting `ollama/nomic-embed-text` into `openai/nomic-embed-text`.
+    for (const p of ['openai', 'ollama', 'azure', 'gemini', 'bedrock']) {
+      expect(src, `the skip list must include ${p}`).toContain(`${p}/*`)
+    }
+  })
+
+  test('the local-embeddings service keeps the BARE id', () => {
+    // The counterpart: that service loads the model from HuggingFace directly, so a provider prefix
+    // there would break it. This is the confusion that caused the incident, asserted both ways.
+    const svc = src.slice(src.indexOf('  local-embeddings:'))
+    const line = svc.slice(0, 900).split('\n').find((l) => l.includes('EMBEDDING_MODEL='))
+    expect(line, 'local-embeddings must set EMBEDDING_MODEL').toBeTruthy()
+    expect(line).toContain('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2')
+    expect(line, 'local-embeddings must NOT be prefixed').not.toContain('openai/sentence-transformers')
+  })
+})

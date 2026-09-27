@@ -22,6 +22,7 @@ import { toast } from 'sonner'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { FormSkeleton, ListRowsSkeleton } from '@/components/ui/view-states'
 import { useDelayedLoading } from '@/hooks/use-delayed-loading'
+import { defaultSqlRulesPrompt } from '@/lib/prompt-settings'
 import { useActiveUser } from '@/hooks/use-active-user'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Badge } from '@/components/ui/badge'
@@ -39,6 +40,12 @@ interface PromptSettings {
   // ponytail: org-wide RAG context prompt — prepended to every RAG answer
   // synthesis (buildSourceGuidance in source-guidance.ts). Empty → no-op.
   ragContextPrompt: string
+  /**
+   * Text-to-SQL rules. Empty means "use the built-in default", so the editor shows a blank box with
+   * an insertable template rather than pre-filling it — pre-filling would freeze every org at
+   * today's rules and ship no later improvement to anyone.
+   */
+  sqlRulesPrompt: string
   tools: { rag: boolean; sql: boolean; restApi: boolean }
 }
 
@@ -53,12 +60,22 @@ interface RestConnector {
 const DEFAULT_SETTINGS: PromptSettings = {
   systemPrompt: '',
   ragContextPrompt: '',
+  // Empty, NOT the built-in text: empty is the sentinel for "use the default", so storing the text
+  // here would freeze it per org and ship no future rule improvement to anyone.
+  sqlRulesPrompt: '',
   tools: { rag: true, sql: true, restApi: true },
 }
 
 // Char caps enforced server-side; the editor mirrors them so the counter
 // matches what will actually be persisted.
 const SYSTEM_PROMPT_MAX = 8000
+/**
+ * Cap for the Text-to-SQL rules. Generous because the built-in default is already ~2.9 KB and an
+ * operator adding their own domain rules needs room. The provider's SYSTEM-message ceiling does NOT
+ * apply: these rules travel as a USER message, which was measured to have no such limit (12000 chars
+ * reports 1558 tokens and is still obeyed).
+ */
+const SQL_RULES_MAX = 16000
 const RAG_PROMPT_MAX = 4000
 
 // A sensible starting template — inserted (replacing the draft) when an admin
@@ -131,7 +148,10 @@ export function PromptToolsView() {
   // same atomic PUT as the tools toggles so systemPrompt + ragContextPrompt +
   // tools persist together (mergePromptSettings in src/lib/prompt-settings.ts
   // applies a partial merge, so sending all fields in one call is safe).
-  async function savePromptField(next: string, field: 'systemPrompt' | 'ragContextPrompt') {
+  async function savePromptField(
+    next: string,
+    field: 'systemPrompt' | 'ragContextPrompt' | 'sqlRulesPrompt',
+  ) {
     const payload: PromptSettings = { ...settings, [field]: next }
     setSaving(true)
     try {
@@ -163,6 +183,12 @@ export function PromptToolsView() {
   async function handleSaveRagPrompt(next: string) {
     const r = await savePromptField(next, 'ragContextPrompt')
     if (r.ok) toast.success('RAG context prompt saved')
+    return r
+  }
+
+  async function handleSaveSqlRules(next: string) {
+    const r = await savePromptField(next, 'sqlRulesPrompt')
+    if (r.ok) toast.success('Text-to-SQL rules saved')
     return r
   }
 
@@ -279,6 +305,37 @@ export function PromptToolsView() {
                     maxLength={RAG_PROMPT_MAX}
                     placeholder="Optional guidance prepended to every RAG answer synthesis. Empty injects nothing."
                     helperText="Where injected: RAG answer synthesis (merged with per-document prompts into a [Source guidance] block)."
+                  />
+                </div>
+              )}
+
+              {/*
+                Text-to-SQL rules — the "Database Init Prompt".
+
+                Placed beside the other prompt editors because it IS a prompt, even though it targets
+                SQL generation rather than chat. An admin who came here to "adjust how the system
+                behaves" should not have to know that this particular instruction lives in a
+                different menu.
+
+                Empty means "use the built-in default", which is why the editor offers the default as
+                an insertable template rather than pre-filling the box: pre-filling would silently
+                freeze every org at today's rules and ship no future improvement to anyone.
+              */}
+              {isAdmin && (
+                <div className="rounded-md border border-border/70 p-3 space-y-2 bg-muted/20">
+                  <div className="flex items-center gap-1.5">
+                    <Database className="h-3.5 w-3.5 text-muted-foreground" />
+                    <div className="text-xs font-medium">Database Init Prompt</div>
+                    <Badge variant="outline" className="text-[10px] px-1.5 py-0">Text-to-SQL</Badge>
+                  </div>
+                  <PromptEditor
+                    id="sql-rules-prompt"
+                    value={settings.sqlRulesPrompt}
+                    onSave={handleSaveSqlRules}
+                    maxLength={SQL_RULES_MAX}
+                    placeholder="Leave blank to use the built-in rules. Click 'Default template' to start from them and adapt."
+                    helperText="Where injected: the RULES message of every Text-to-SQL generation, including repair retries. Cannot weaken safety — the guardrail and the database's read-only mode are enforced in code, not by this text."
+                    defaultTemplate={defaultSqlRulesPrompt()}
                   />
                 </div>
               )}

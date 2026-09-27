@@ -397,13 +397,32 @@ LLM_API_KEY=
 # --- Embeddings (pre-filled: the bundled local server needs no key) -----------
 # 384-dim. This is shared with RAG's embedder, which is why the dimension must not change here
 # alone: a mismatch stores no vectors and degrades retrieval silently.
+#
+# THE `openai/` PREFIX IS REQUIRED, and omitting it cost 30 seconds on every health check.
+# MEASURED in this container, calling litellm exactly as the server does:
+#
+#     model="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+#       -> BadRequestError: LLM Provider NOT provided          (0.0s, provider unparsable)
+#     model="openai/paraphrase-multilingual-MiniLM-L12-v2"
+#       -> OK, dim=384 (0.7s)
+#
+# litellm reads the text BEFORE the slash as a PROVIDER NAME, so a bare model id is parsed as a
+# provider called `sentence-transformers` and the request never leaves the process. The endpoint is
+# up and answers a direct call in 0.055s, which is what makes this so misleading: the only symptom
+# is `/health/detailed` reporting `embedding_service: degraded — connection test timed out after
+# 30s`, and the AI Memory panel then takes 30.2s to render.
+#
+# NOT the same value as the `local-embeddings` service's EMBEDDING_MODEL, which is the HuggingFace
+# id and must NOT be prefixed. They are separate variables that happen to share a name; copying one
+# into the other is how this defect was introduced.
+#
 # EMBEDDING_API_KEY must be NON-EMPTY: litellm keys off PROVIDER, not ENDPOINT, so with provider
 # `openai` and an empty key it ignores EMBEDDING_ENDPOINT and calls api.openai.com, failing every
 # write with "No credentials for provider: openai" — a message pointing at OpenAI when the real
 # problem is our own server never being contacted. The value is never validated.
 EMBEDDING_PROVIDER=openai
 EMBEDDING_ENDPOINT=http://local-embeddings:8081/v1
-EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+EMBEDDING_MODEL=openai/paraphrase-multilingual-MiniLM-L12-v2
 EMBEDDING_DIMENSIONS=384
 EMBEDDING_API_KEY=local-no-auth
 
@@ -429,6 +448,42 @@ else
   # Ensure the file is never EMPTY. Compose refuses to start when a listed env_file is absent, and a
   # zero-byte file is the shape most likely to be produced by a failed edit; a comment keeps it valid.
   [ -s "$COGNEE_ENV_FILE" ] || printf '# cognee config (empty — memory disabled)\n' > "$COGNEE_ENV_FILE"
+fi
+
+# --- Fix an EMBEDDING_MODEL that is missing its provider prefix ---------------
+#
+# MEASURED DEFECT, and the reason the AI Memory page appeared to hang. An install whose .env.cognee
+# carried the bare HuggingFace id:
+#
+#   EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+#
+# litellm reads the text before the slash as a PROVIDER name, so that string is a provider called
+# `sentence-transformers`. Verified inside the sidecar by calling litellm exactly as the server does:
+#
+#   bare id      -> BadRequestError: "LLM Provider NOT provided"   (0.0s)
+#   openai/<id>  -> OK, dim=384                                    (0.7s)
+#
+# The visible symptom is completely misleading: `/health/detailed` takes 30.2s (its embedding probe
+# retries until a 30s timeout) and then reports `embedding_service: degraded — connection test timed
+# out`, while the embedding endpoint itself answers a direct call in 0.055s. The AI Memory card awaits
+# that call, so the PAGE STALLS for the full 30s.
+#
+# Why this is safe to rewrite automatically, unlike every other setting here: the fix is mechanical,
+# the value is not a secret or a customer choice, and leaving it produces a silent stall. It only
+# touches values that contain a slash but no `openai/`-style prefix, so a correctly configured
+# install is untouched and an already-correct custom provider is left alone.
+if grep -qE '^EMBEDDING_MODEL=[^/]+/' "$COGNEE_ENV_FILE" 2>/dev/null; then
+  BARE_MODEL="$(grep -E '^EMBEDDING_MODEL=' "$COGNEE_ENV_FILE" | head -1 | cut -d= -f2-)"
+  case "$BARE_MODEL" in
+    openai/*|anthropic/*|azure/*|ollama/*|gemini/*|bedrock/*|cohere/*|mistral/*|huggingface/*|vertex_ai/*|litellm_proxy/*) ;;
+    *)
+      warn "EMBEDDING_MODEL in $COGNEE_ENV_FILE has no provider prefix: $BARE_MODEL"
+      warn "  litellm parses the text before '/' as a provider, so this never reaches the endpoint —"
+      warn "  the symptom is a 30s stall on the AI Memory page, NOT a connection error."
+      sed -i "s|^EMBEDDING_MODEL=.*|EMBEDDING_MODEL=openai/${BARE_MODEL#*/}|" "$COGNEE_ENV_FILE"
+      info "  Rewrote it to: EMBEDDING_MODEL=openai/${BARE_MODEL#*/}"
+      ;;
+  esac
 fi
 
 # --- Migrate a pre-separation cognee config out of .env ----------------------

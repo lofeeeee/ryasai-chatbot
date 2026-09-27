@@ -47,6 +47,26 @@ let matchEndpointResult: any = { id: 'ep-1', method: 'GET', path: '/x', enabled:
 
 const STREAM_TEXT = 'streamed answer'
 
+/**
+ * Stubbed `AppConfig` row for prompt settings.
+ *
+ * `prepareSqlStream` reads the org's Text-to-SQL rules before generating SQL, so an admin's edit
+ * applies to the interactive chat and not only to scheduled runs. `null` here → the parser returns
+ * defaults → `resolveSqlRulesPrompt('')` → the built-in rules, which is what every assertion in this
+ * file expected before the field existed. Tests that care about a CUSTOM value set this first.
+ */
+let promptSettingsRow: { promptSettings: string | null } | null = null
+
+/**
+ * What `generateSql` received, so a test can assert the rules actually travelled.
+ *
+ * Typed `any` deliberately: with `Record<string, unknown> | null`, TypeScript narrows the variable to
+ * `never` (control-flow analysis sees only the `= null` assignments in the tests), which makes
+ * `generateSqlArgs?.sqlRules` a compile error and would force a cast at every use.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let generateSqlArgs: any = null
+
 async function* gen(text: string): AsyncGenerator<string> {
   for (const ch of text.split('')) yield ch
 }
@@ -74,6 +94,8 @@ mock.module('@/lib/db', () => ({
     auditLog: { create: async () => ({ id: 'audit-1' }) },
     plugin: { findFirst: async () => pluginRow },
     restApiConnector: { findMany: async () => restConnectors },
+    // Read by prepareSqlStream for the org's editable Text-to-SQL rules (see promptSettingsRow).
+    appConfig: { findFirst: async () => promptSettingsRow },
   },
 }))
 
@@ -109,7 +131,10 @@ mock.module('@/lib/connectors', () => ({
 }))
 
 mock.module('@/lib/ai', () => ({
-  generateSql: async () => {
+  generateSql: async (args: Record<string, unknown>) => {
+    // Capture what the preparer passed, so a test can prove the editable rules travelled rather
+    // than trusting that the plumbing exists.
+    generateSqlArgs = args
     const next = generateSqlResults.shift()
     if (!next) throw new Error('no scripted generateSql result')
     if (next instanceof Error) throw next
@@ -394,6 +419,48 @@ describe('prepareSqlStream — repair loop', () => {
     expect(executedSql).toEqual([])
     await expect(drain(r!.stream)).resolves.toBeString()
   })
+
+  describe('prepareSqlStream — editable Text-to-SQL rules', () => {
+    /**
+     * The rules are an EDITABLE setting. Before this, the streaming path read no prompt settings at
+     * all, so an admin editing them would see the change apply to scheduled runs and /api/v1 (which
+     * use `runSqlBranch`) while the interactive chat — the very place they tested it — kept the old
+     * behaviour. These two tests pin both directions: a custom value travels, and an empty value falls
+     * back to the built-in rules rather than sending nothing.
+     */
+    test('passes the org custom rules through to generateSql', async () => {
+      promptSettingsRow = { promptSettings: JSON.stringify({ sqlRulesPrompt: 'CUSTOM RULE XYZ' }) }
+      generateSqlArgs = null
+      generateSqlResults = [{ sql: 'SELECT 1 LIMIT 1', explanation: 'x' }]
+      const r = await prepareSqlStream({ question: 'show totals', userId: 'u1', integrationId: 'int-1' })
+      await drain(r.stream)
+      expect(generateSqlArgs?.sqlRules).toBe('CUSTOM RULE XYZ')
+    })
+
+    test('falls back to the built-in rules when the org has not set any', async () => {
+      promptSettingsRow = { promptSettings: JSON.stringify({}) }
+      generateSqlArgs = null
+      generateSqlResults = [{ sql: 'SELECT 1 LIMIT 1', explanation: 'x' }]
+      const r = await prepareSqlStream({ question: 'show totals', userId: 'u1', integrationId: 'int-1' })
+      await drain(r.stream)
+      const rules = String(generateSqlArgs?.sqlRules ?? '')
+      // The DEFAULT must actually be the rules, not an empty string: sending no rules would produce a
+      // Text-to-SQL prompt with no constraints, and the failure would look like a model problem.
+      expect(rules).toContain('ONLY SELECT')
+      expect(rules.length).toBeGreaterThan(1000)
+    })
+
+    test('treats whitespace-only rules as unset', async () => {
+      // A stray newline in the editor must not replace the rules with nothing.
+      promptSettingsRow = { promptSettings: JSON.stringify({ sqlRulesPrompt: '   \n  ' }) }
+      generateSqlArgs = null
+      generateSqlResults = [{ sql: 'SELECT 1 LIMIT 1', explanation: 'x' }]
+      const r = await prepareSqlStream({ question: 'show totals', userId: 'u1', integrationId: 'int-1' })
+      await drain(r.stream)
+      expect(String(generateSqlArgs?.sqlRules ?? '')).toContain('ONLY SELECT')
+    })
+  })
+
 })
 
 describe('prepareRestStream', () => {
