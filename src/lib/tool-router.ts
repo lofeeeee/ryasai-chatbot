@@ -74,13 +74,37 @@ async function _runNonStreamingChatCompletion(args: {
   signal?: AbortSignal
   documentIds?: string[] | null
 }): Promise<CompletionResult> {
+  /**
+   * Remember the turn, then return the answer — ONE exit point for the memory write.
+   *
+   * WHY THIS WRAPPER EXISTS. The write used to sit AFTER the branch dispatch, so every earlier
+   * `return` skipped it. MEASURED on the production install: a chat through
+   * `/api/v1/chat/completions` produced NO `remember` request at all, and a recall 180s later found
+   * nothing — because a CHAT turn returns at the `!intent.needsRetrieval` line BELOW the write, and a
+   * multi-step turn returns from the DAG. Memory looked wired and stored nothing for the two most
+   * common kinds of turn.
+   *
+   * `void` keeps the answer off the write's critical path — a write measures 5.6-9.7s, and 85s on a
+   * fresh dataset, and awaiting it once hung a request past its 90s timeout. `rememberChatTurn` logs
+   * its own failures, so a memory problem stays visible without reaching the caller.
+   */
+  const remember = (answer: CompletionResult): CompletionResult => {
+    void rememberChatTurn({
+      sessionId: args.sessionId,
+      userMessage: args.question,
+      aiMessage: answer.answer,
+      toolRuns: answer.toolRuns.map((t) => ({ type: t.type, status: t.status, latencyMs: t.latencyMs ?? 0 })),
+    })
+    return answer
+  }
+
   if (args.allowMultiStepDag && args.chatHistory && args.chatHistory.length > 0) {
     const result = await runAgenticLoop({
       question: args.question, userId: args.userId, sessionId: args.sessionId,
       integrationId: args.integrationId, chatHistory: args.chatHistory,
       skipClarification: args.skipClarification, systemPromptPrefix: args.systemPromptPrefix,
     }, runNonStreamingChatCompletion)
-    return { answer: result.answer, citations: result.citations, chartData: result.chartData, toolRuns: result.toolRuns }
+    return remember({ answer: result.answer, citations: result.citations, chartData: result.chartData, toolRuns: result.toolRuns })
   }
 
   if (args.allowMultiStepDag) {
@@ -112,7 +136,7 @@ async function _runNonStreamingChatCompletion(args: {
 
     if (needsMultiple || cannotRoute) {
       const dagResult = await runMultiStepDag(args)
-      if (dagResult) return dagResult
+      if (dagResult) return remember(dagResult)
     }
   }
 
@@ -146,11 +170,16 @@ async function _runNonStreamingChatCompletion(args: {
   })
 
   if (intent.needsClarification && intent.clarificationQuestion && !args.skipClarification) {
-    return { answer: intent.clarificationQuestion, citations: [], chartData: null, toolRuns: [] }
+    // Remembered like any other turn: the user SEES this question, so a session that omitted it would
+    // leave a gap in the conversation memory — a later "what were we discussing?" would miss the very
+    // turn where the assistant asked what they meant.
+    return remember({ answer: intent.clarificationQuestion, citations: [], chartData: null, toolRuns: [] })
   }
 
   if (!intent.needsRetrieval) {
-    return runChatBranch({ ...args, question: effectiveQuestion, memoryContext, chatHistory: args.chatHistory ?? [] })
+    // THE PATH THAT MADE MEMORY LOOK BROKEN. A plain conversation turn returns here, above the branch
+    // dispatch where the write used to live — so the most common kind of turn never reached memory.
+    return remember(await runChatBranch({ ...args, question: effectiveQuestion, memoryContext, chatHistory: args.chatHistory ?? [] }))
   }
 
   args.signal?.throwIfAborted()
@@ -175,21 +204,9 @@ async function _runNonStreamingChatCompletion(args: {
   else if (effectiveDecision === 'CONTEXTUAL_CHAT' && contextualContext) result = await runContextualChatBranch({ ...branchArgs, context: contextualContext })
   else result = await runChatBranch(branchArgs)
 
-  // FIRE AND FORGET — the answer is already computed, so the memory write must not be on
-  // the path that returns it.
-  //
-  // This was `await`, and the cost is MEASURED, not theoretical: against the cognee v1.6.0
-  // sidecar a single chat-turn write took 5.6-9.7s on a fresh dataset (and 85s on the very
-  // first write of a new dataset, while the pipeline compiles). E2E saw the effect on
-  // `/api/v1/chat/completions`, which drives THIS path: the request hung past its 90s
-  // timeout, while the same spec passed in 13.1s with memory off. The identical call in
-  // `chat/sessions/[id]/send/route.ts` already used `void` for exactly this reason.
-  //
-  // Errors are still logged inside rememberChatTurn, so a memory failure remains visible
-  // and never reaches the caller — which is the same guarantee the previous `await` gave,
-  // minus the latency.
-  void rememberChatTurn({ sessionId: args.sessionId, userMessage: args.question, aiMessage: result.answer, toolRuns: result.toolRuns.map((t) => ({ type: t.type, status: t.status, latencyMs: t.latencyMs ?? 0 })) })
-  return result
+  // Same wrapper as every other exit above — the fire-and-forget reasoning lives on `remember`, and
+  // keeping one exit path means a future branch cannot be added with the write forgotten again.
+  return remember(result)
 }
 
 export async function runStreamingChatCompletion(args: {

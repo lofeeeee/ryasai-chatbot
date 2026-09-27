@@ -143,3 +143,70 @@ describe('AI Memory is reachable without guessing its parent menu', () => {
     expect(knowledgeSrc).toMatch(/raw === 'documents' \|\| raw === 'vector'\) setTab/)
   })
 })
+
+describe('memory: EVERY exit path of the non-streaming pipeline must write the turn', () => {
+  /**
+   * INCIDENT (2026-09-27), found by exercising a REAL chat against the production install.
+   *
+   * A chat sent through `/api/v1/chat/completions` produced NO `remember` request in the cognee log,
+   * and a recall 180 seconds later found nothing. The cause was placement: the `void
+   * rememberChatTurn(...)` call sat AFTER the branch dispatch, so the four `return` statements above it
+   * — the agentic loop, the multi-step DAG, the clarification reply, and the plain CHAT branch —
+   * skipped memory entirely. Memory looked wired and stored nothing for the two most common kinds of
+   * turn ("hello", and anything answered conversationally).
+   *
+   * The unit tests did not catch it because they assert on branch RESULTS, and a turn whose answer is
+   * correct looks identical whether or not it was remembered.
+   */
+  const src = readFileSync(join(import.meta.dir, 'tool-router.ts'), 'utf-8')
+    .split('\n')
+    .map((l) => (l.trimStart().startsWith('//') || l.trimStart().startsWith('*') || l.trimStart().startsWith('/*') ? '' : l))
+    .join('\n')
+
+  /** The body of `_runNonStreamingChatCompletion` only — the streaming twin has its own exits. */
+  function nonStreamingBody(): string {
+    const start = src.indexOf('async function _runNonStreamingChatCompletion')
+    expect(start).toBeGreaterThan(-1)
+    const next = src.indexOf('export async function runStreamingChatCompletion', start)
+    return src.slice(start, next === -1 ? undefined : next)
+  }
+
+  test('a raw `return` of a CompletionResult does not exist outside the wrapper', () => {
+    // The wrapper itself returns the value it was handed, so `return answer` is allowed INSIDE it.
+    // What must not exist is returning a freshly built answer object directly from the pipeline body.
+    const body = nonStreamingBody()
+    const rawReturns = [...body.matchAll(/return\s+(\{[^}]*answer:|await run[A-Z]\w*Branch\()/g)].map((m) => m[0])
+    expect(rawReturns).toEqual([])
+  })
+
+  test('the wrapper is called on each branch that returns an answer', () => {
+    const body = nonStreamingBody()
+    // At least four call sites: agentic, DAG, clarification, CHAT. A regression that deletes one shows
+    // up here as a smaller count rather than as a passing suite.
+    const calls = [...body.matchAll(/return remember\(/g)].length
+    expect(calls).toBeGreaterThanOrEqual(4)
+  })
+
+  test('the DAG branch specifically goes through the wrapper', () => {
+    // NAMED SEPARATELY, and this test exists because the count above SURVIVED its own negative
+    // control: deleting `remember` from the DAG path still left four `return remember(` calls, so the
+    // count was satisfied by the others. A guard that cannot fail for the case it was written for is
+    // worse than no guard — it reports safety. This pins the specific branch.
+    expect(nonStreamingBody()).toMatch(/return remember\(dagResult\)/)
+  })
+
+  test('the agentic branch specifically goes through the wrapper', () => {
+    expect(nonStreamingBody()).toMatch(/return remember\(\{ answer: result\.answer/)
+  })
+
+  test('the clarification branch specifically goes through the wrapper', () => {
+    // A clarification reply is a turn the user saw. Omitting it leaves a hole in the transcript that a
+    // later "what were we discussing?" would fall into.
+    expect(nonStreamingBody()).toMatch(/return remember\(\{ answer: intent\.clarificationQuestion/)
+  })
+
+  test('the CHAT branch specifically goes through the wrapper', () => {
+    // Named separately because it is the one that actually broke: the plain conversational turn.
+    expect(nonStreamingBody()).toMatch(/return remember\(await runChatBranch\(/)
+  })
+})
