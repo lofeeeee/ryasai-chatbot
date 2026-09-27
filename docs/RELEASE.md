@@ -320,6 +320,40 @@ After the update, confirm health AND a write — health alone does not prove mem
 docker exec <cognee> curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8000/health   # 200
 ```
 
+### Cognee config lives in `.env.cognee`, NOT `.env`
+
+The installer writes a separate file for the memory sidecar and pre-fills everything that
+needs no customer input:
+
+```ini
+# /opt/ryasai-chatbot/.env.cognee  (mode 600)
+LLM_PROVIDER=openai
+LLM_ENDPOINT=            # <- set these three to enable memory
+LLM_MODEL=               #    model needs the `openai/` prefix
+LLM_API_KEY=
+EMBEDDING_ENDPOINT=http://local-embeddings:8081/v1     # pre-filled, works as-is
+EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+EMBEDDING_DIMENSIONS=384
+LLM_ALLOWED_HOSTS=*
+AUTO_FEEDBACK=false
+IMPROVE_AUTO_ENABLED=false
+```
+
+Apply a change with `docker compose -f .../docker-compose.prod.yml up -d cognee`. **Never** put these
+in `.env`: a compose `environment:` entry for the same key OVERRIDES this file, and because the old
+entries were written `${VAR:-}`, an unset variable resolved to EMPTY and blanked the file. That is
+why a separate config could previously be set and appear to do nothing.
+
+**`COGNEE_LLM_*` / `COGNEE_EMBEDDING_*` in `.env` are DEAD.** They were the old mechanism. An update
+copies their values into `.env.cognee` (only where the destination is empty — a configured value is
+never overwritten) and leaves the old lines in place, unread, because rewriting `.env` during an
+update is how the earlier incident happened. Edit `.env.cognee` from now on.
+
+**Memory needs its own LLM key.** It cannot reuse the app's: that config lives encrypted in the
+database and is unreachable from the sidecar. With `LLM_API_KEY` empty the container reports
+`{"status":"ready","health":"healthy"}` and every *write* still fails — health is not proof that
+memory works. Confirm with a real write, not with the health check.
+
 ## 6. What is deliberately NOT covered
 
 - **Answer quality is not gated in CI.** `rag-eval` / `sql-eval` run via the manual `eval.yml`
