@@ -116,7 +116,28 @@ git push origin v1.0.0
 
 Then confirm the versioned tags exist — the workflow now does this itself in a
 "Verify published images resolve" step that fails the release if any of the three is absent, because
-a release publishing only SOME of its images is the exact defect that blocked installs:
+a release publishing only SOME of its images is the exact defect that blocked installs.
+
+EXECUTED for v1.0.0 on 2026-09-26. `Build Images` succeeded and the registry then listed six tags —
+the three moving ones plus all three versioned:
+
+    1.0.0   1.0.0-scheduler   1.0.0-embeddings   app   scheduler   embeddings
+
+`docker manifest inspect` resolved all three versioned tags. `:1.0.0` and `:app` share digest
+`sha256:759dfcbe…` and `:1.0.0-scheduler` matches `:scheduler` (`sha256:0366af57…`), so the pinned name
+is the same artifact the moving tag points at. `:1.0.0-embeddings` has its OWN digest
+(`sha256:380e21ac…` vs `:embeddings` `sha256:cfa19df5…`) because it is a separate build target from a
+different context — expected, and the reason each image is verified individually rather than assuming
+three pushes agreed.
+
+The pinned image was then pulled and RUN, not merely resolved:
+`ghcr.io/ryasrk/ryasai-chatbot:1.0.0-embeddings` pulled and started, loaded
+`sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` in 89.9 s, answered `GET /health` with
+200, and returned a **384-dimension** embedding — the dimension the app expects.
+
+One rehearsal note: the service listens on **8081**, not 80. A healthcheck aimed at 80 reports
+`connection refused` for a perfectly healthy container, and because the model takes ~90 s to load the
+first probe also races startup. Both look like a broken image and are not.
 
 ```bash
 for t in 1.0.0 1.0.0-scheduler 1.0.0-embeddings; do

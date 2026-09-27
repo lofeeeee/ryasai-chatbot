@@ -424,15 +424,20 @@ running containers untouched. Full procedure and the checks that must pass befor
 
 Three of ours, all built by `.github/workflows/build-images.yml`, plus four upstream:
 
-| Image | Tag | Built by |
-|-------|-----|----------|
-| `ghcr.io/ryasrk/ryasai-chatbot:app` | app | us — `Dockerfile` |
-| `ghcr.io/ryasrk/ryasai-chatbot:scheduler` | scheduler | us — `Dockerfile.scheduler` |
-| `ghcr.io/ryasrk/ryasai-chatbot:embeddings` | embeddings | us — `tools/local-embeddings` |
-| `cognee/cognee:1.6.0` | pinned | upstream |
-| `pgvector/pgvector:pg16` | pinned | upstream |
-| `redis:7-alpine` | pinned | upstream |
-| `searxng/searxng:latest` | — | upstream |
+| Image | Moving tag | Versioned tag (on `v1.0.0`) | Built by |
+|-------|-----------|------------------------------|----------|
+| `ghcr.io/ryasrk/ryasai-chatbot` | `:app` | `:1.0.0` | us — `Dockerfile` |
+| `ghcr.io/ryasrk/ryasai-chatbot` | `:scheduler` | `:1.0.0-scheduler` | us — `Dockerfile.scheduler` |
+| `ghcr.io/ryasrk/ryasai-chatbot` | `:embeddings` | `:1.0.0-embeddings` | us — `tools/local-embeddings` |
+| `cognee/cognee:1.6.0` | pinned | — | upstream |
+| `pgvector/pgvector:pg16` | pinned | — | upstream |
+| `redis:7-alpine` | pinned | — | upstream |
+| `searxng/searxng:latest` | — | — | upstream |
+
+The moving tags are what `install.sh` pulls, and they are **pointers**: an update silently advances to
+whatever `main` last produced, and overwriting one destroys the previous artifact. Pushing a `v*.*.*`
+tag additionally publishes the versioned tags above, so a release can be pinned and rolled back.
+`src/lib/release-version.test.ts` fails the build when the tag and the stamped version disagree.
 
 **All three of ours are mandatory.** `src/lib/release-images.test.ts` enforces the static half — every
 tag `install.sh` references must also be a build target in the workflow — but it cannot reach the
