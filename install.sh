@@ -357,6 +357,18 @@ services:
       # retrieval silently degrades to BM25 only while still reporting a
       # healthy-looking similarity score. Scoped to the service name.
       - LLM_ALLOWED_HOSTS=${LLM_ALLOWED_HOSTS:-local-embeddings}
+      # Point memory at the sidecar from the COMPOSE FILE, not only from .env.
+      #
+      # MEASURED GAP THIS CLOSES: this setting lived only in the generated .env, and .env is never
+      # rewritten on update (it holds the license key, secrets and port). So an install created
+      # before this variable existed — any deployment running 0.5.0 or earlier — would update to
+      # 1.0.0 with `COGNEE_SERVER_URL` still unset, and 1.0.0 defines that as "memory is OFF"
+      # (the in-process SDK is gone, so there is no fallback). The update would "succeed" and
+      # silently ship a product with no cross-session memory. Setting it here makes the compose
+      # authoritative for the sidecar wiring, which is where the sidecar itself is defined.
+      #
+      # `:-` keeps it overridable: an operator pointing at an EXTERNAL cognee sets the variable.
+      - COGNEE_SERVER_URL=${COGNEE_SERVER_URL:-http://cognee:8000}
     depends_on:
       db: { condition: service_healthy }
       redis: { condition: service_healthy }
@@ -384,6 +396,10 @@ services:
       # testing: the HTTP path still embeds, while documents uploaded by a
       # background job silently store no vectors.
       - LLM_ALLOWED_HOSTS=${LLM_ALLOWED_HOSTS:-local-embeddings}
+      # Same reasoning as `app` above: without this the worker keeps its own memory writes off on an
+      # install whose .env predates the variable, so a scheduled run would embed and cognify
+      # documents while never recording the conversation — a split brain between the two processes.
+      - COGNEE_SERVER_URL=${COGNEE_SERVER_URL:-http://cognee:8000}
     depends_on:
       db: { condition: service_healthy }
       redis: { condition: service_healthy }
