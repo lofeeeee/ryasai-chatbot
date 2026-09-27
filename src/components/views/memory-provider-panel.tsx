@@ -59,7 +59,22 @@ export function MemoryProviderPanel() {
         toast.error('Could not share the provider', { description: json?.error?.message ?? json?.detail })
         return
       }
-      toast.success('Provider shared with memory', { description: json.data?.detail })
+      if (json.data?.endpointNeedsEnv) {
+        /*
+         * SUCCESS WITH A REMAINING GAP, and it must not be reported as a plain success.
+         *
+         * cognee's settings API stores provider/model/key but has NO endpoint field (read from its
+         * `save_llm_config`), so a gateway is unreachable that way. Saying "shared" alone would send
+         * the operator away thinking memory works, and the next failure would name the wrong provider.
+         * The remedy is shown with the exact value to paste.
+         */
+        toast.warning('Provider shared — one manual step left', {
+          duration: 20000,
+          description: json.data.warning ?? `Set LLM_ENDPOINT=${json.data.endpointValue} in .env.cognee`,
+        })
+      } else {
+        toast.success('Provider shared with memory', { description: json.data?.detail })
+      }
       await refresh()
     } catch (e) {
       toast.error('Could not share the provider', {

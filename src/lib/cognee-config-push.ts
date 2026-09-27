@@ -5,6 +5,24 @@ import { scopedLogger } from '@/lib/logger'
 /**
  * Push the org's provider configuration INTO the cognee sidecar.
  *
+ * ─── WHAT THIS CAN AND CANNOT SHARE (measured against cognee 1.6.0, not assumed) ───
+ *
+ * The settings endpoint's `save_llm_config` writes ONLY `provider`, `model` and `api_key`:
+ *
+ *     llm_config.llm_provider = new_llm_config.provider
+ *     llm_config.llm_model    = new_llm_config.model
+ *     if ...: llm_config.llm_api_key = ...
+ *
+ * There is NO `endpoint` assignment anywhere in it, which is why a pushed endpoint comes back empty
+ * from `GET /api/v1/settings` — verified: posting `endpoint: "http://example.test/v1"` stored `''`,
+ * and the same for `api_base`, `baseUrl` and `apiEndpoint`. An OpenAI-compatible gateway that is not
+ * api.openai.com therefore CANNOT be configured through this endpoint, however it is spelled.
+ *
+ * cognee DOES read `LLM_ENDPOINT` from its environment (`infrastructure/llm/config.py`), so the
+ * endpoint is an ENV concern, not an API concern. This function shares what the API can carry and
+ * REPORTS when the endpoint is missing, rather than pushing a value that will be silently dropped and
+ * leaving the operator to discover it from a failure that names the wrong provider.
+ *
  * THE PROBLEM THIS SOLVES. cognee runs its own extraction pipeline and therefore needs a chat model.
  * It cannot read the app's `LlmConfig` row (that is encrypted, and the sidecar has neither the key nor
  * a database connection), so until now the operator had to hand-copy the endpoint, model and API key
@@ -34,6 +52,14 @@ export interface CogneeProviderPushResult {
   detail: string
   /** Present when `ok` is false. Operator-facing, and names the likely cause. */
   error?: string
+  /**
+   * True when the sidecar will NOT reach the app's endpoint, because cognee's settings API cannot
+   * carry one. The push still succeeded for provider/model/key — this flags the remaining gap so the
+   * caller can tell the operator what to do instead of reporting a success that will still fail.
+   */
+  endpointNeedsEnv?: boolean
+  /** The value the operator must put in `.env.cognee`. Safe to display: it is a URL, not a secret. */
+  endpointValue?: string
 }
 
 const log = scopedLogger('cognee-config-push')
@@ -97,11 +123,40 @@ export async function pushCogneeProviderConfig(): Promise<CogneeProviderPushResu
         error: text.slice(0, 200) || 'The sidecar answered with an error.',
       }
     }
+    // Read back what the sidecar actually stored. cognee's `save_llm_config` has no `endpoint`
+    // assignment, so the endpoint is DROPPED — and reporting success without checking would leave the
+    // operator with a sidecar that calls api.openai.com while the UI says the push worked.
+    const stored = await readCogneeProviderConfig()
+    const endpointDropped = stored !== null && !stored.endpoint && !!cfg.baseUrl
+
     // Never echo the key. Naming the model and host is enough for an operator to confirm the push
     // landed, and a key in a log or a toast is a credential leak.
     const detail = `Shared ${body.llm.model} at ${cfg.baseUrl}`
-    log.info('pushed provider config to cognee', { model: body.llm.model, endpoint: cfg.baseUrl })
-    return { ok: true, detail }
+    log.info('pushed provider config to cognee', {
+      model: body.llm.model,
+      endpoint: cfg.baseUrl,
+      endpointDropped,
+    })
+    return {
+      ok: true,
+      detail,
+      ...(endpointDropped
+        ? {
+            endpointNeedsEnv: true,
+            endpointValue: cfg.baseUrl,
+            // Extends `detail` rather than replacing it: the model and key ARE shared, and saying
+            // otherwise would send an operator to fix something that already works.
+            // OPENAI_API_BASE, not LLM_ENDPOINT. Both reach litellm, but measured: filling the three
+            // LLM_* vars slows the sidecar's boot from ~125s to ~150s+ (cognee validates them at
+            // startup), while OPENAI_API_BASE alone has no startup cost and api_base="" does NOT
+            // override it. The cheaper of two working options is the one to recommend.
+            error:
+              `The endpoint cannot be shared through cognee's settings API (it stores provider, model ` +
+              `and key only), so the sidecar will call api.openai.com instead of ${cfg.baseUrl}. ` +
+              `Add OPENAI_API_BASE=${cfg.baseUrl} to .env.cognee and restart the sidecar.`,
+          }
+        : {}),
+    }
   } catch (e) {
     const aborted = e instanceof Error && e.name === 'AbortError'
     return {

@@ -222,3 +222,63 @@ describe('cognee provider push — REQUIRES an org context (the boot-time trap)'
     expect(call).not.toMatch(/bypassOrg\(\(\) => pushCogneeProviderConfig\(\)\)/)
   })
 })
+
+describe('cognee provider push — the endpoint is DROPPED by the sidecar, and we say so', () => {
+  /**
+   * MEASURED against cognee 1.6.0's `save_llm_config`, read on the production host:
+   *
+   *     llm_config.llm_provider = new_llm_config.provider
+   *     llm_config.llm_model    = new_llm_config.model
+   *     if "*****" not in ...: llm_config.llm_api_key = ...
+   *
+   * There is NO endpoint assignment. Posting `endpoint: "http://example.test/v1"` stored `''` —
+   * verified — and the same for `api_base`, `baseUrl` and `apiEndpoint`. An OpenAI-compatible gateway
+   * therefore cannot be configured through this API in any spelling.
+   *
+   * THE DANGEROUS OUTCOME IS A FALSE SUCCESS. The push does genuinely share provider/model/key, so
+   * returning `ok: true` is correct; but without reporting the dropped endpoint the operator would see
+   * "shared" while the sidecar called api.openai.com and failed with an authentication error naming
+   * the wrong provider. So success is reported WITH the remaining gap.
+   */
+  test('a dropped endpoint is reported alongside the successful push', async () => {
+    // The sidecar accepts the POST then reports no endpoint back — the real behaviour.
+    state.respond = () => new Response(JSON.stringify({ llm: { model: 'openai/x', endpoint: '' } }), { status: 200 })
+    const r = await pushCogneeProviderConfig()
+    // The model and key DID land, so this is not a failure.
+    expect(r.ok).toBe(true)
+    expect(r.endpointNeedsEnv).toBe(true)
+    // And the remedy is exact and copy-pasteable, because that is what makes it actionable.
+    expect(r.endpointValue).toBe('https://proxy.example/v1')
+    expect(r.error).toContain('OPENAI_API_BASE=https://proxy.example/v1')
+    expect(r.error).toContain('.env.cognee')
+    // The key must not ride along with the message.
+    expect(JSON.stringify(r)).not.toContain('sk-secret-value')
+  })
+
+  test('a sidecar that DID store the endpoint gets a clean success', async () => {
+    // Guards against the flag being hardcoded true: a future cognee that supports endpoints must not
+    // keep telling operators to edit a file they no longer need to touch.
+    state.respond = () =>
+      new Response(JSON.stringify({ llm: { model: 'openai/x', endpoint: 'https://proxy.example/v1' } }), {
+        status: 200,
+      })
+    const r = await pushCogneeProviderConfig()
+    expect(r.ok).toBe(true)
+    expect(r.endpointNeedsEnv).toBeUndefined()
+    expect(r.error).toBeUndefined()
+  })
+
+  test('an unreadable read-back does not fabricate a warning', async () => {
+    // readCogneeProviderConfig returns null when the sidecar cannot be read. Treating null as "endpoint
+    // missing" would warn on every push against a sidecar that merely did not answer the GET.
+    let calls = 0
+    state.respond = () => {
+      calls += 1
+      if (calls === 1) return new Response('{}', { status: 200 })
+      throw new Error('unreadable')
+    }
+    const r = await pushCogneeProviderConfig()
+    expect(r.ok).toBe(true)
+    expect(r.endpointNeedsEnv).toBeUndefined()
+  })
+})

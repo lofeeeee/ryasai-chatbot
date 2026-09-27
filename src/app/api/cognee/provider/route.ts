@@ -47,11 +47,23 @@ export async function POST(_req: NextRequest) {
       action: 'COGNEE_PROVIDER_SHARED',
       severity: 'info',
       // `detail` names the model and endpoint and never the key — deliberately, since audit rows are
-      // readable by any admin and a key in one would be a credential leak.
-      detail: { detail: result.detail },
+      // readable by any admin and a key in one would be a credential leak. The endpoint gap is
+      // recorded too, because an audit trail that says only "shared" would hide the reason memory
+      // still fails afterwards.
+      detail: { detail: result.detail, endpointNeedsEnv: !!result.endpointNeedsEnv },
     })
 
-    return NextResponse.json({ ok: true, data: { detail: result.detail } })
+    return NextResponse.json({
+      ok: true,
+      data: {
+        detail: result.detail,
+        // Passed through so the UI can show the remedy. `ok: true` is still correct: provider, model
+        // and key DID land; this is the part the sidecar's API cannot carry.
+        endpointNeedsEnv: !!result.endpointNeedsEnv,
+        endpointValue: result.endpointValue,
+        warning: result.endpointNeedsEnv ? result.error : undefined,
+      },
+    })
   } catch (e) {
     return handleApiError(e, 'Failed to share the provider with memory.')
   }
