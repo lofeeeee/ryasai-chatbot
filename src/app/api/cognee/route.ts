@@ -8,6 +8,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getActiveUser, requireRole, writeAudit, handleApiError } from '@/lib/session'
 import { cogneeStats, cogneeDiagnostics, resetCognee, cognifyBatch, forgetKnowledgeGraph, invalidateCogneeSettings, autoCognifyAll } from '@/lib/cognee'
 import { db } from '@/lib/db'
+import { getEmbeddingColumnDimension, getEmbeddingRuntimeConfig, embedTexts } from '@/lib/embeddings'
 
 /**
  * Cognee's relational store URL. Admin-supplied, but it is a credential-bearing
@@ -56,7 +57,41 @@ export async function GET() {
       maxRetries: config.cogneeMaxRetries,
     } : null
 
-    return NextResponse.json({ ok: true, data: { ...stats, config: cogneeConfig, diagnostics } })
+    /*
+     * Embedding WIDTH, compared between the two places it must agree.
+     *
+     * `DocumentChunk.embedding` is `vector(384)` and the embedder's model is configured separately in
+     * AI Configuration. When they disagree, pgvector writes are skipped and retrieval silently falls
+     * back to cosine-over-JSON — slower and correct, but with NO user-visible symptom. The engine
+     * logs it once (`embeddings.ts`) and then stays quiet, so an admin running a 1536-dim hosted
+     * model had no way to learn that the vector leg was dead.
+     *
+     * Reported here so the mismatch is VISIBLE, and reported as a comparison rather than a single
+     * number: one value alone cannot be wrong, only a disagreement between two can.
+     */
+    const columnDim = await getEmbeddingColumnDimension()
+    let modelDim: number | null = null
+    try {
+      // A real embed call is the only honest source: the configured model STRING says nothing about
+      // the vector width, and a provider can change it under a stable name. One token is enough.
+      const cfg = await getEmbeddingRuntimeConfig()
+      if (cfg) {
+        const vectors = await embedTexts(cfg, ['x'])
+        modelDim = vectors[0]?.length ?? null
+      }
+    } catch {
+      // Embedder down or misconfigured. Reported as `null` (unknown) rather than 0, so the UI says
+      // "unknown" instead of claiming a mismatch it cannot prove.
+      modelDim = null
+    }
+    const embedding = {
+      columnDimension: columnDim,
+      modelDimension: modelDim,
+      /** null = unknown (embedder unreachable); false = a REAL mismatch that disables pgvector. */
+      matches: columnDim !== null && modelDim !== null ? columnDim === modelDim : null,
+    }
+
+    return NextResponse.json({ ok: true, data: { ...stats, config: cogneeConfig, diagnostics, embedding } })
   } catch (e) {
     return handleApiError(e, 'Failed to get cognee stats.')
   }

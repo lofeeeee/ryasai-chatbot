@@ -90,8 +90,22 @@ describe('AI Memory is reachable without guessing its parent menu', () => {
     expect(aiConfigSrc).toContain('<CogneeCard />')
   })
 
-  test('Knowledge keeps its AI Memory tab', () => {
-    expect(knowledgeSrc).toContain('TabsTrigger value="cognee"')
+  test('Knowledge does NOT duplicate the memory card — one configuration surface only', () => {
+    // INCIDENT: the full AI Memory card rendered in BOTH Knowledge and AI Configuration, so the same
+    // settings existed in two menus with no way to tell which was authoritative. Knowledge now shows a
+    // status card that LINKS to the editor; the editor exists in exactly one place.
+    expect(knowledgeSrc).toContain('<MemoryStatusCard />')
+    expect(knowledgeSrc).not.toContain('<CogneeCard')
+    // The tab is gone too — a tab with no editable content would be a dead end.
+    expect(knowledgeSrc).not.toContain('TabsTrigger value="cognee"')
+  })
+
+  test('a retired `?tab=cognee` link FORWARDS instead of rendering a blank panel', () => {
+    // Found by reading this file's own failure output: `applyTab` still accepted 'cognee' after the
+    // tab was deleted, so `setTab('cognee')` selected a non-existent tab and rendered NOTHING. A
+    // bookmark or a dashboard link would have looked broken rather than moved.
+    expect(knowledgeSrc).toMatch(/raw === 'cognee'/)
+    expect(knowledgeSrc).toMatch(/detail: \{ view: 'ai-config', tab: 'memory' \}/)
   })
 
   test('the dashboard banner NAVIGATES instead of naming a menu', () => {
@@ -124,6 +138,8 @@ describe('AI Memory is reachable without guessing its parent menu', () => {
     // An unvalidated `setTab(detail.tab)` would accept any string and leave the view on a tab with
     // no content — a blank panel that reads as a broken page.
     expect(aiConfigSrc).toMatch(/raw === 'llm' \|\| raw === 'embedding' \|\| raw === 'memory'/)
-    expect(knowledgeSrc).toMatch(/raw === 'documents' \|\| raw === 'vector' \|\| raw === 'cognee'/)
+    // Knowledge validates its OWN two tabs. 'cognee' is handled separately as a FORWARD, asserted
+    // above — accepting it here would select a tab that does not exist.
+    expect(knowledgeSrc).toMatch(/raw === 'documents' \|\| raw === 'vector'\) setTab/)
   })
 })

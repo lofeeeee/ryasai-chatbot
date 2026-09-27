@@ -38,7 +38,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import type { DocumentItem } from '@/lib/types'
-import { CogneeCard } from '@/components/views/cognee-card'
+import { MemoryStatusCard } from '@/components/views/memory-status-card'
 import { extractError } from '@/lib/extract-error'
 import { StatCard } from './knowledge-base/stat-card'
 import { CatTab } from './knowledge-base/cat-tab'
@@ -67,7 +67,20 @@ export function KnowledgeBaseView() {
 
   useEffect(() => {
     const applyTab = (raw: string | null | undefined) => {
-      if (raw === 'documents' || raw === 'vector' || raw === 'cognee') setTab(raw)
+      if (raw === 'documents' || raw === 'vector') setTab(raw)
+      /*
+       * `cognee` is a RETIRED target — the tab moved to AI Configuration to end the duplicate card.
+       *
+       * A bookmark, a dashboard link or a doc that still says `?tab=cognee` must not land on a blank
+       * panel: the tab no longer exists, so `setTab('cognee')` would select nothing and render an
+       * empty card. Forwarding keeps every existing link working and, more importantly, shows the
+       * user where the settings went instead of looking broken.
+       */
+      if (raw === 'cognee') {
+        window.dispatchEvent(
+          new CustomEvent('navigate-view', { detail: { view: 'ai-config', tab: 'memory' } }),
+        )
+      }
     }
     applyTab(new URLSearchParams(window.location.search).get('tab'))
     const onNavigate = (e: Event) => {
@@ -258,10 +271,6 @@ export function KnowledgeBaseView() {
                 <Database className="h-3.5 w-3.5" />
                 Vector Store
               </TabsTrigger>
-              <TabsTrigger value="cognee" className="gap-1.5 text-xs">
-                <Brain className="h-3.5 w-3.5" />
-                AI Memory
-              </TabsTrigger>
             </TabsList>
           </div>
           <div className="flex gap-1.5 shrink-0">
@@ -270,6 +279,13 @@ export function KnowledgeBaseView() {
             </Button>
           </div>
         </div>
+
+        {/*
+          Status and a link, NOT the full settings card. The complete editor lives only in
+          AI Configuration — a second editable copy here is how two menus drift apart, which is
+          exactly what happened when this card appeared in both places.
+        */}
+        <MemoryStatusCard />
 
         <TabsContent value="documents" className="mt-2 space-y-3">
           {/* Category filter */}
@@ -346,10 +362,7 @@ export function KnowledgeBaseView() {
           <VectorStorePanel />
         </TabsContent>
 
-        <TabsContent value="cognee" className="mt-2">
-          <CogneeCard />
-        </TabsContent>
-      </Tabs>
+        </Tabs>
 
       {/* Upload dialog */}
       <UploadDialog

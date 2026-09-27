@@ -63,6 +63,34 @@ export async function register() {
         }
       }
       console.log(`[instrumentation] Plugin auto-heal complete: seeded ${seeded} org(s)`)
+
+      /*
+       * Share each org's provider credentials with the cognee sidecar.
+       *
+       * MUST RUN ON EVERY BOOT. cognee's settings endpoint is IN-MEMORY — measured: a pushed key
+       * changed the runtime error from `LLMAPIKeyNotSetError` to a connection timeout, and a sidecar
+       * restart brought `LLMAPIKeyNotSetError` back. A one-time push would therefore work until the
+       * first container restart and then silently stop extracting — this subsystem's signature
+       * failure, where the container reports healthy while storing nothing.
+       *
+       * Outside the plugin try/catch on purpose: a memory problem must not be reported as a plugin
+       * problem, and each failure below is already fail-soft.
+       */
+      try {
+        const { pushCogneeProviderConfig } = await import('@/lib/cognee-config-push')
+        for (const org of orgs) {
+          const pushed = await bypassOrg(() => pushCogneeProviderConfig())
+          if (pushed.ok) {
+            console.log(`[instrumentation] Memory provider shared with cognee: ${pushed.detail}`)
+          } else {
+            console.log(
+              `[instrumentation] Memory provider not shared (${pushed.detail})${pushed.error ? ` — ${pushed.error}` : ''}`,
+            )
+          }
+        }
+      } catch (e) {
+        console.warn('[instrumentation] Cognee config push failed:', e instanceof Error ? e.message : e)
+      }
     } catch (e) {
       console.warn('[instrumentation] Plugin auto-heal failed:', e instanceof Error ? e.message : e)
     }

@@ -205,3 +205,18 @@ export interface CogneeDiagnostics {
   uptimeSeconds: number | null
   components: CogneeComponentStatus[]
 }
+
+/**
+ * Embedding width, compared between the two places it must agree.
+ *
+ * `matches: null` means UNKNOWN (the embedder could not be reached) — deliberately distinct from
+ * `false`, which is a proven mismatch that disables pgvector writes. Collapsing the two would make an
+ * unreachable embedder look like a broken schema, and someone would go rewrite the column.
+ */
+export interface EmbeddingDimensionInfo {
+  /** Width of `DocumentChunk.embedding` as declared in the database. */
+  columnDimension: number | null
+  /** Width the configured model actually returns. */
+  modelDimension: number | null
+  matches: boolean | null
+}

@@ -19,8 +19,9 @@ import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Delayed } from '@/components/ui/view-states'
-import { CogneeDiagnosticsPanel } from '@/components/views/cognee-diagnostics'
-import type { CogneeDiagnostics } from '@/lib/types'
+import { CogneeDiagnosticsPanel, EmbeddingDimensionRow } from '@/components/views/cognee-diagnostics'
+import { MemoryProviderPanel } from '@/components/views/memory-provider-panel'
+import type { CogneeDiagnostics, EmbeddingDimensionInfo } from '@/lib/types'
 
 interface CogneeStats {
   enabled: boolean
@@ -34,6 +35,8 @@ interface CogneeStats {
    * be reached — the UI shows nothing rather than inventing a verdict for an unreachable service.
    */
   diagnostics?: CogneeDiagnostics | null
+  /** Column-vs-model width comparison. Null when it could not be measured. */
+  embedding?: EmbeddingDimensionInfo | null
   config?: {
     enabled: boolean
     dbProvider: string
@@ -49,8 +52,6 @@ export function CogneeCard() {
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [showConfig, setShowConfig] = useState(false)
   const [cfgEnabled, setCfgEnabled] = useState(false)
-  const [cfgProvider, setCfgProvider] = useState<'local' | 'postgres'>('local')
-  const [cfgDbUrl, setCfgDbUrl] = useState('')
   const [cfgBatchSize, setCfgBatchSize] = useState(50)
   const [cfgMaxRetries, setCfgMaxRetries] = useState(3)
   const [saving, setSaving] = useState(false)
@@ -63,8 +64,8 @@ export function CogneeCard() {
         setStats(data.data)
         if (data.data.config) {
           setCfgEnabled(data.data.config.enabled)
-          setCfgProvider(data.data.config.dbProvider as 'local' | 'postgres')
-          setCfgDbUrl(data.data.config.dbUrl)
+          // `dbProvider` and `dbUrl` are intentionally NOT read: they are inert (see the note in the
+          // form below), so loading them into state would only invite a control that cannot work.
           setCfgBatchSize(data.data.config.batchSize)
           setCfgMaxRetries(data.data.config.maxRetries)
         }
@@ -120,8 +121,6 @@ export function CogneeCard() {
         body: JSON.stringify({
           action: 'update_config',
           enabled: cfgEnabled,
-          dbProvider: cfgProvider,
-          dbUrl: cfgDbUrl,
           batchSize: cfgBatchSize,
           maxRetries: cfgMaxRetries,
         }),
@@ -225,44 +224,18 @@ export function CogneeCard() {
               />
             </div>
 
-            <div className="space-y-1">
-              <Label className="text-xs">Database Backend</Label>
-              <div className="flex gap-2">
-                <Button
-                  size="sm"
-                  variant={cfgProvider === 'local' ? 'default' : 'outline'}
-                  className="h-7 text-xs"
-                  onClick={() => setCfgProvider('local')}
-                >
-                  Local (SQLite)
-                </Button>
-                <Button
-                  size="sm"
-                  variant={cfgProvider === 'postgres' ? 'default' : 'outline'}
-                  className="h-7 text-xs"
-                  onClick={() => setCfgProvider('postgres')}
-                >
-                  PostgreSQL
-                </Button>
-              </div>
-              <p className="text-[10px] text-muted-foreground">
-                {cfgProvider === 'local'
-                  ? 'Zero-config: SQLite + LanceDB + Kuzu. Best for dev and <100k documents.'
-                  : 'Production: Postgres + pgvector. Scales to millions of documents.'}
-              </p>
-            </div>
+            {/*
+              The "Database Backend" selector used to live here — Local (SQLite) vs PostgreSQL, plus a
+              connection-URL field. BOTH WERE INERT: `cognee-core.ts` documents that `dbProvider` and
+              `dbUrl` are read from the env and the org row, surfaced to the UI, and able to change
+              nothing, because storage now belongs to the v1.6.0 sidecar and is set by compose.
 
-            {cfgProvider === 'postgres' && (
-              <div className="space-y-1">
-                <Label className="text-xs">PostgreSQL Connection URL</Label>
-                <Input
-                  className="h-8 text-xs font-mono"
-                  placeholder="postgresql://user:pass@host:5432/cognee"
-                  value={cfgDbUrl}
-                  onChange={(e) => setCfgDbUrl(e.target.value)}
-                />
-              </div>
-            )}
+              An operator could switch to PostgreSQL, paste a URL, save, and see no effect — no error,
+              no change. That is worse than a missing feature: it spends trust. The values remain in
+              the API for backward compatibility, but nothing here pretends to control them.
+            */}
+
+            <MemoryProviderPanel />
 
             <div className="grid grid-cols-2 gap-2">
               <div className="space-y-1">
@@ -340,6 +313,7 @@ export function CogneeCard() {
 
             {/* Rendered only when the sidecar answered with a component list. An unreachable
                 sidecar has no diagnosis to show, and an empty panel would imply "nothing wrong". */}
+            {stats.embedding && <EmbeddingDimensionRow info={stats.embedding} />}
             {stats.diagnostics && <CogneeDiagnosticsPanel diagnostics={stats.diagnostics} />}
 
             <div className="flex gap-2">

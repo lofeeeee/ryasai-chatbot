@@ -7,13 +7,14 @@ import {
   ChevronDown,
   ChevronRight,
   CircleHelp,
+  Layers,
   Terminal,
   XCircle,
 } from 'lucide-react'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import type { CogneeDiagnostics } from '@/lib/types'
+import type { CogneeDiagnostics, EmbeddingDimensionInfo } from '@/lib/types'
 
 /**
  * Per-component diagnosis of the memory sidecar.
@@ -98,6 +99,64 @@ function fixHintFor(name: string): { title: string; body: string } | null {
     }
   }
   return null
+}
+
+/**
+ * Embedding width, with the two values side by side.
+ *
+ * WHY A COMPARISON AND NOT ONE NUMBER. A dimension alone cannot be wrong — only a disagreement
+ * between the column and the model can. `DocumentChunk.embedding` was declared `vector(384)` while
+ * the embedder is configured separately in AI Configuration, and when the two disagree pgvector
+ * writes are SKIPPED and retrieval silently falls back to cosine-over-JSON. Correct but slower, and
+ * with no user-visible symptom: the engine logs it once and then stays quiet.
+ *
+ * Also states that changing it is NOT a free setting, because it is not: the column type is part of
+ * the storage, so a different width requires an ALTER plus re-embedding every document. An operator
+ * who believes otherwise would change the model and lose vector search without noticing.
+ */
+export function EmbeddingDimensionRow({ info }: { info: EmbeddingDimensionInfo }) {
+  if (info.columnDimension === null && info.modelDimension === null) return null
+  const unknown = info.matches === null
+  return (
+    <div className="space-y-1 rounded-md border bg-muted/20 p-2.5">
+      <div className="flex items-center gap-1.5">
+        <Layers className="h-3.5 w-3.5 text-muted-foreground" />
+        <span className="text-[11px] font-medium">Embedding width</span>
+        {unknown ? (
+          <Badge variant="outline" className="text-[10px] text-muted-foreground">
+            unknown
+          </Badge>
+        ) : info.matches ? (
+          <Badge variant="outline" className="text-[10px]">
+            <CheckCircle2 className="mr-1 h-2.5 w-2.5 text-success" />
+            in sync
+          </Badge>
+        ) : (
+          <Badge variant="destructive" className="text-[10px]">
+            mismatch
+          </Badge>
+        )}
+      </div>
+      <div className="flex flex-wrap gap-x-3 font-mono text-[10px] text-muted-foreground">
+        <span>column: {info.columnDimension ?? '—'}</span>
+        <span>model: {info.modelDimension ?? '—'}</span>
+      </div>
+      {!unknown && !info.matches && (
+        <p className="text-[10px] text-destructive">
+          The model returns {info.modelDimension} dimensions but the column stores{' '}
+          {info.columnDimension}, so pgvector writes are SKIPPED and search falls back to a slower
+          path. Fix the model in AI Configuration, or resize the column and re-embed every document —
+          this is not a free setting.
+        </p>
+      )}
+      {unknown && (
+        <p className="text-[10px] text-muted-foreground">
+          Could not measure the model width (the embedding endpoint did not answer), so no comparison
+          is claimed either way.
+        </p>
+      )}
+    </div>
+  )
 }
 
 export function CogneeDiagnosticsPanel({ diagnostics }: { diagnostics: CogneeDiagnostics }) {
