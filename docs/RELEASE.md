@@ -250,6 +250,76 @@ docker compose -f /opt/ryasai-chatbot/docker-compose.prod.yml exec -T db \
   psql -U ryasai -d ryasai < /opt/ryasai-chatbot/backups/ryasai-<stamp>.sql
 ```
 
+## 5c. Field report: the 1.0.0 update of a live 0.5.0 deployment
+
+Executed 2026-09-27 against the production install. Four defects surfaced that no local test could
+have found, which is the argument for running this on real hardware before a customer does.
+
+| # | defect | how it presented | fix |
+|---|--------|------------------|-----|
+| 1 | `install.sh` set `LICENSE_KEY_CONFIGURED` only when `--license-signing-public-key` was PASSED | a working install printed "LICENSING NOT OPERATIONAL — ACTION REQUIRED" | read the value from `.env` first |
+| 2 | `ENC_KEY: unbound variable` | EVERY update aborted (`set -u` + a template referencing an unset var) | `${VAR:-}` in `render_env` |
+| 3 | `APP_DIR` hardcoded to `/opt/ryasai-chatbot` | created a SECOND deployment beside the real one at `/home/ubuntu/ryasai-chatbot`, regenerating `ENCRYPTION_SECRET_KEY` | `--dir` flag + refuse-to-create-a-second-stack guard |
+| 4 | `DocumentChunk.tsv` was created by raw SQL but not declared in the Prisma schema | `prisma db push` tried to DROP a column holding data; migrate exited 1 and the app never started | declare `tsv Unsupported("tsvector")` |
+
+DEFECT 3 IS THE DANGEROUS ONE and is worth stating plainly. Both keys were valid hex, and only one
+decrypts the stored configs. Attempting decryption of a real `LlmConfig.encryptedApiKey`:
+
+    /opt key  -> GAGAL (Unsupported state or unable to authenticate data)
+    /home key -> OK (apiKey recovered)
+
+so the wrong directory is not a misconfiguration, it is silent data loss: the app starts, then cannot
+read the customer's own provider credentials. The guard now REFUSES to run and names the right
+`--dir`.
+
+DEFECT 4 WAS CAUGHT BY A FAIL-CLOSED STOP, not by review: `db push` refuses to drop a column holding
+data. Without that check the push would have succeeded, dropped `tsv`, and disabled BM25 ranking for
+every later search on a running system with no error anywhere. Verified non-destructively against
+real data restored into a scratch database: old schema aborts; fixed schema reports in-sync and all 4
+`tsv` values survive.
+
+### After the update — what to check on the customer host
+
+```bash
+docker compose -f /opt/ryasai-chatbot/docker-compose.prod.yml ps   # all healthy
+curl -s http://127.0.0.1:38180/api/v1/health                       # version matches the release
+```
+
+**`NEXT_PUBLIC_APP_VERSION` in an existing `.env` is STALE after an update**, by design: `.env` is
+never rewritten (it holds the license key, secrets and port), so a deployment created at 0.5.0 keeps
+reporting 0.5.0 even while running 1.0.0 images. Update that one line by hand — it is the value the
+UI displays:
+
+```bash
+sudo sed -i 's|^NEXT_PUBLIC_APP_VERSION=.*|NEXT_PUBLIC_APP_VERSION=1.0.0|' /opt/ryasai-chatbot/.env
+sudo docker compose -f /opt/ryasai-chatbot/docker-compose.prod.yml up -d app
+```
+
+### Cognee: the 1.6.0 image breaks memory, and the installer now repairs it
+
+Two independent faults, both found by attempting a real write rather than trusting `/health`:
+
+1. **The extension tree moved and was FLATTENED.**
+
+       1.5.4 (works): /app/.lbdb/extension/0.19.0/linux_amd64/json/libjson.lbug_extension
+       1.6.0 (broken): /app/cognee_db_workers/ladybug_extensions/v0.19.0/linux_amd64/libjson.lbug_extension
+
+   The server reads the first form, including the `<ext>` level. In 1.6.0 the old tree does not exist
+   at all, so `/health` returns 503 permanently and every `POST /api/v1/remember` fails with
+   "Failed to load library ... libjson.lbug_extension". The generated entrypoint restores it, deriving
+   `<ext>` from the filename and discovering the version directory rather than pinning either.
+
+2. **`COGNEE_LLM_API_KEY` is empty on the deployment inspected**, so cognee cannot run its own
+   extraction pipeline and a write fails even with the extension restored. This is an OPERATOR
+   decision (which key), not something the installer should guess, so it is reported rather than
+   filled in. Cognee reuses nothing automatically: it needs `COGNEE_LLM_*` in `.env`.
+
+After the update, confirm health AND a write — health alone does not prove memory works:
+
+```bash
+docker exec <cognee> curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8000/health   # 200
+```
+
 ## 6. What is deliberately NOT covered
 
 - **Answer quality is not gated in CI.** `rag-eval` / `sql-eval` run via the manual `eval.yml`
