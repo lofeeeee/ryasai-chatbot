@@ -116,6 +116,40 @@ export function KnowledgeBaseView() {
     fetchDocs()
   }, [fetchDocs])
 
+  /*
+   * POLL THE LIST WHILE ANY DOCUMENT IS STILL SETTLING.
+   *
+   * The list was fetched ONCE on mount and never again, so a document uploaded in another tab, or one
+   * whose cognify step finished while this view was open, kept whatever status the first fetch saw —
+   * for the lifetime of the page. Reproduced on a real install: the DB said `ready`/`completed` with 4
+   * chunks while the card said "processing" indefinitely.
+   *
+   * The card polls itself after a reprocess, but that only covers the reprocess case: an upload, a
+   * scheduled job, or a second browser window had no path to update this list at all.
+   *
+   * Bounded twice, deliberately: the interval stops as soon as nothing is pending, and the ceiling
+   * stops it claiming to make progress on a document that never settles. A poll that runs forever is a
+   * battery drain on a phone and a dead-socket risk behind a flaky connection.
+   */
+  const anyPending = docs.some(
+    (d) => d.status === 'processing' || (d.cognifyStatus != null && d.cognifyStatus !== 'completed' && d.cognifyStatus !== 'failed'),
+  )
+
+  useEffect(() => {
+    if (!anyPending) return
+    const POLL_INTERVAL_MS = 5_000
+    const POLL_CEILING_MS = 10 * 60_000
+    const startedAt = Date.now()
+    const t = setInterval(() => {
+      if (Date.now() - startedAt > POLL_CEILING_MS) {
+        clearInterval(t)
+        return
+      }
+      void fetchDocs()
+    }, POLL_INTERVAL_MS)
+    return () => clearInterval(t)
+  }, [anyPending, fetchDocs])
+
   const handleDelete = async (id: string) => {
     setDeletingId(id)
     try {
