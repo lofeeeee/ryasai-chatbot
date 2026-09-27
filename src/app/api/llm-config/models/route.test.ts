@@ -92,6 +92,19 @@ mock.module('@/lib/llm-config', () => ({
     if (fetchThrows) throw fetchThrows
     return models
   },
+  /*
+   * The route now resolves its row through this shared helper instead of calling `findFirst()` itself,
+   * so the mock has to provide it. It delegates to the SAME `existingRow` fixture the db stub returns,
+   * which keeps these tests measuring the route's behaviour rather than the resolver's.
+   *
+   * Its absence surfaced as `Export named 'resolveChatConfigRow' not found` — a module-level failure
+   * that reported 0 pass / 1 error rather than a wrong assertion, which is the honest shape for a
+   * missing export.
+   */
+  resolveChatConfigRow: async () => {
+    calls.push({ model: 'llmConfig', op: 'resolveChatConfigRow', args: {} })
+    return existingRow
+  },
 }))
 
 const encryptInputs: string[] = []
@@ -326,7 +339,13 @@ describe('the model cache write', () => {
     // A plaintext value written into `encryptedApiKey` would sit in the clear and fail every later decrypt.
     existingRow = null
     const res = await post({ baseUrl: 'https://api.example.com/v1', apiKey: PROVIDED_KEY })
-    expect({ status: res.status, calls: calls.map((c) => c.op) }).toEqual({ status: 200, calls: ['findFirst', 'create'] })
+    // `resolveChatConfigRow` replaced the route's own `findFirst` so the read and the write cannot land
+    // on different rows (the model-picker bug). The assertion is on the ORDER of operations, so the
+    // name changes while the guarantee — look, then create — stays.
+    expect({ status: res.status, calls: calls.map((c) => c.op) }).toEqual({
+      status: 200,
+      calls: ['resolveChatConfigRow', 'create'],
+    })
     const data = createData()!
     expect(data).toMatchObject({
       organizationId: 'org-1',

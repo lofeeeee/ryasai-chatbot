@@ -10,7 +10,7 @@ import { enterWithOrg } from '@/lib/prisma-tenant'
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { getActiveUser, requireRole, writeAudit, handleApiError } from '@/lib/session'
-import { getPublicLlmConfig, normalizeBaseUrl } from '@/lib/llm-config'
+import { getPublicLlmConfig, normalizeBaseUrl, resolveChatConfigRow } from '@/lib/llm-config'
 import { encryptConfig } from '@/lib/crypto'
 import { db } from '@/lib/db'
 
@@ -79,7 +79,7 @@ export async function PUT(req: NextRequest) {
     // its first line, every document still reports status=ready with a chunk
     // count, and the ingestion jobs all record as successes with zero vectors.
     // Pin the write to the chat row, which is what both readers prefer.
-    const existing = await db.llmConfig.findFirst({ where: { purpose: 'chat' } })
+    const existing = await resolveChatConfigRow()
 
     // apiKey is required on first create; on update, a blank value keeps the existing key.
     if (!apiKey && !existing) {

@@ -59,6 +59,16 @@ export function AIConfigurationView() {
   const [showEmbeddingKey, setShowEmbeddingKey] = useState(false)
   const [saving, setSaving] = useState(false)
   const [syncing, setSyncing] = useState(false)
+  /**
+   * True when a model was CHOSEN but its write failed, so the control shows a value the server does not
+   * have yet.
+   *
+   * Reproduced defect: choose a model, navigate away, come back — the selection was gone, with nothing
+   * having said it was unsaved. The value was never lost by the app; it was never SENT, and the screen
+   * gave no sign of that. The picker now writes immediately, and this flag exists for the one case that
+   * can still leave the two out of step: a write that failed.
+   */
+  const [modelUnsaved, setModelUnsaved] = useState(false)
   // Controlled so an external navigation can land on a specific tab (e.g. the dashboard's AI
   // Memory card opening the `memory` tab). An uncontrolled `defaultValue` would ignore the target.
   const [tab, setTab] = useState('llm')
@@ -110,6 +120,43 @@ export function AIConfigurationView() {
 
   if (loading) {
     return showSkeleton ? <FormSkeleton fields={5} /> : null
+  }
+
+  /**
+   * Persist the model the moment it is picked.
+   *
+   * WHY IMMEDIATELY rather than on Save: choosing from a dropdown is a COMPLETE intent, not a
+   * half-finished form. Requiring Save afterwards is what made the choice silently die on navigation —
+   * the reported bug — and it left no way for a user to tell which fields were staged and which were
+   * committed.
+   *
+   * ONLY `model` IS SENT. A full-object PUT would resend `baseUrl`, `embeddingModel` and the key fields
+   * from local state, so a stale value for any of them would overwrite a good one. Choosing a model must
+   * not be able to corrupt the rest of the form.
+   */
+  async function persistModel(next: string) {
+    setModel(next)
+    setModelUnsaved(true)
+    try {
+      const res = await fetch('/api/llm-config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: next }),
+      })
+      const json = await res.json().catch(() => null)
+      if (!res.ok || !json?.ok) {
+        throw new Error(extractError(json?.error, 'Could not save the model.'))
+      }
+      setModelUnsaved(false)
+      if (json.data) setCfg(json.data)
+      toast.success('Model saved', { description: next })
+    } catch (e) {
+      // The selection STAYS in the control and the unsaved flag stays set, so a failed write is never
+      // presented as a successful one.
+      toast.error('Could not save the model', {
+        description: e instanceof Error ? e.message : undefined,
+      })
+    }
   }
 
   async function handleFetchModels() {
@@ -304,7 +351,7 @@ export function AIConfigurationView() {
                     </Button>
                   </div>
                   {models.length > 0 ? (
-                    <Select value={model} onValueChange={setModel}>
+                    <Select value={model} onValueChange={(v) => void persistModel(v)}>
                       <SelectTrigger id="llm-model" className="text-xs">
                         <SelectValue placeholder="Select model" />
                       </SelectTrigger>
@@ -322,8 +369,25 @@ export function AIConfigurationView() {
                       placeholder="gpt-4o-mini  (click 'Fetch Models' for list)"
                       value={model}
                       onChange={(e) => setModel(e.target.value)}
+                      /*
+                       * Committed on BLUR, not per keystroke: a PUT per character would persist
+                       * half-typed model names, and a partial name is a real value the runtime would
+                       * then try to call. Blur is the point at which the text is the user's answer.
+                       */
+                      onBlur={(e) => {
+                        const next = e.target.value.trim()
+                        if (next && next !== cfg?.model) void persistModel(next)
+                      }}
                       className="font-mono text-xs"
                     />
+                  )}
+                  {modelUnsaved && (
+                    // Shown only when a write FAILED. Normally the choice is committed immediately and
+                    // there is nothing to warn about; silence here would leave the control displaying a
+                    // value the server does not have.
+                    <p className="text-xs text-destructive">
+                      This model is not saved yet — storing it failed. Press Save, or choose again.
+                    </p>
                   )}
                   {models.length === 0 && (
                     <p className="text-xs text-muted-foreground">

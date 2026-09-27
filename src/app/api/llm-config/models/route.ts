@@ -4,6 +4,7 @@ import {
   fetchProviderModels,
   getLlmRuntimeConfig,
   normalizeBaseUrl,
+  resolveChatConfigRow,
 } from '@/lib/llm-config'
 import { encryptConfig } from '@/lib/crypto'
 import { db } from '@/lib/db'
@@ -62,7 +63,7 @@ export async function POST(req: NextRequest) {
     const models = await fetchProviderModels({ baseUrl, apiKey })
 
     // Cache into the config row if one exists; create a stub otherwise.
-    const existing = await db.llmConfig.findFirst()
+    const existing = await resolveChatConfigRow()
     if (existing) {
       await db.llmConfig.update({
         where: { id: existing.id },

@@ -327,8 +327,29 @@ export function invalidateRoleConfigCache(): void {
   _roleCache.clear()
 }
 
+/**
+ * THE chat config row, resolved the same way by every caller.
+ *
+ * WHY THIS EXISTS. `getPublicLlmConfig()` (what the AI Configuration screen reads) used a bare
+ * `findFirst()`, while `PUT` (what that screen SAVES to) used `findFirst({ purpose: 'chat' })`. Those
+ * agree only by luck: this install has TWO `LlmConfig` rows — one `purpose: 'chat'` with an EMPTY
+ * `availableModels`, and one `purpose: 'agent'` holding 37 synced models and the newer model name.
+ * Postgres has no implicit ORDER BY for an unfiltered `findFirst`, so the screen could read one row and
+ * write another, and which one it read was the planner's choice rather than the code's.
+ *
+ * The `purpose: 'chat'` filter is the authority: it is what the runtime uses for chat
+ * (`getLlmRuntimeConfig`) and what the writer already targeted. The fallback keeps single-row installs
+ * working, where no row carries a purpose at all.
+ */
+export async function resolveChatConfigRow() {
+  return (
+    (await db.llmConfig.findFirst({ where: { purpose: 'chat' } })) ??
+    (await db.llmConfig.findFirst())
+  )
+}
+
 export async function getPublicLlmConfig(): Promise<PublicLlmConfig> {
-  const row = await db.llmConfig.findFirst()
+  const row = await resolveChatConfigRow()
   if (!row) {
     return {
       configured: false,
