@@ -83,3 +83,64 @@ describe('release: every image the installer pulls is built by CI', () => {
     expect(workflow).toContain('workflow_dispatch')
   })
 })
+
+describe('installer: a failed database backup must not be reported as saved', () => {
+  /**
+   * INCIDENT (2026-09-27), found on a live host while deploying.
+   *
+   * The pre-update backup was:
+   *
+   *     pg_dump ... > "$BACKUP_DIR/ryasai-$STAMP.sql"
+   *
+   * and the shell CREATES a redirect target BEFORE running the command. When `pg_dump` failed, a
+   * 0-byte file was left behind and the `if` reported success for the redirect — so the installer
+   * printed "DB backup saved" for a file containing nothing. Observed: `ryasai-20260927-051118.sql`
+   * was 0 bytes while the installer had called it a backup.
+   *
+   * WHY THIS IS WORSE THAN NO BACKUP: it is the artifact an operator reaches for during an incident.
+   * They would restore nothing, and believe they had a restore point.
+   */
+  // Local root: the describe above declares its own inside its scope, so referencing that one
+  // would throw at collection time and silently drop every test in this block.
+  const here = join(import.meta.dir, '..', '..')
+  const installShRaw = readFileSync(join(here, 'install.sh'), 'utf-8')
+
+  /**
+   * Strip shell comments. LOAD-BEARING: the fix's own explanatory comment QUOTES the fatal pattern
+   * (`pg_dump > "$BACKUP_DIR/..."`), so a raw scan reports the very line it documents. This is the
+   * same trap the release-image guard hit with YAML comments, and it is the reason every guard here
+   * is negative-controlled.
+   */
+  const installSh = installShRaw
+    .split('\n')
+    .map((l) => {
+      const t = l.trimStart()
+      return t.startsWith('#') ? '' : l
+    })
+    .join('\n')
+
+  test('the dump goes to a temp file and is moved into place only when non-empty', () => {
+    expect(installSh).toContain('BACKUP_TMP=')
+    // `-s` is the load-bearing test: a guard that only checked exit status would still accept a
+    // truncated dump on a pipe failure.
+    expect(installSh).toMatch(/\[ -s "\$BACKUP_TMP" \]/)
+    expect(installSh).toMatch(/mv "\$BACKUP_TMP" "\$BACKUP_DIR\/ryasai-\$STAMP\.sql"/)
+  })
+
+  test('the old redirect-into-the-final-path form is gone', () => {
+    // Not merely "TEMP exists" — the fatal pattern itself must be absent, or a future edit could
+    // reintroduce it alongside the temp file and nothing would fail.
+    expect(installSh).not.toMatch(/> "\$BACKUP_DIR\/ryasai-\$STAMP\.sql"/)
+  })
+
+  test('a failure is reported, not swallowed', () => {
+    expect(installSh).toMatch(/DB backup FAILED/)
+    expect(installSh).toMatch(/NO restore point/)
+  })
+
+  test('stale 0-byte dumps from earlier releases are cleaned up', () => {
+    // They are indistinguishable from a real backup by name, so they must not survive to be picked
+    // from the rotation during an incident.
+    expect(installSh).toMatch(/-name 'ryasai-\*\.sql' -size 0 -delete/)
+  })
+})

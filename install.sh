@@ -552,10 +552,31 @@ fi
 if [ "$IS_UPDATE" = true ]; then
   mkdir -p "$BACKUP_DIR"
   STAMP=$(date +%Y%m%d-%H%M%S)
+  # Dump to a TEMP file first, and move it into place only on success.
+  #
+  # MEASURED DEFECT THIS FIXES: the original was `pg_dump > "$BACKUP_DIR/ryasai-$STAMP.sql"`, and the
+  # shell CREATES a redirect target BEFORE running the command. A failed `pg_dump` therefore still
+  # left a 0-byte file, and the `if` reported success for the redirect — so the installer printed
+  # "DB backup saved" for a file containing nothing. Found on a real host:
+  # `ryasai-20260927-051118.sql` was 0 bytes while the installer had called it a backup.
+  #
+  # A silently-empty backup is worse than no backup. It is the artifact an operator reaches for during
+  # an incident, and they would restore nothing. The temp file also keeps a PARTIAL dump out of the
+  # rotation, where it would look like a usable restore point.
+  BACKUP_TMP="$BACKUP_DIR/.ryasai-$STAMP.sql.tmp"
   if docker compose -f docker-compose.prod.yml ps --status running --services db >/dev/null 2>&1 \
-     && docker compose -f docker-compose.prod.yml exec -T db pg_dump -U ryasai -d ryasai > "$BACKUP_DIR/ryasai-$STAMP.sql" 2>/dev/null; then
-    info "DB backup saved -> $BACKUP_DIR/ryasai-$STAMP.sql"
+     && docker compose -f docker-compose.prod.yml exec -T db pg_dump -U ryasai -d ryasai > "$BACKUP_TMP" 2>/dev/null \
+     && [ -s "$BACKUP_TMP" ]; then
+    mv "$BACKUP_TMP" "$BACKUP_DIR/ryasai-$STAMP.sql"
+    info "DB backup saved -> $(du -h "$BACKUP_DIR/ryasai-$STAMP.sql" | cut -f1) $BACKUP_DIR/ryasai-$STAMP.sql"
+  else
+    rm -f "$BACKUP_TMP"
+    warn "DB backup FAILED — continuing, but there is NO restore point for this update."
+    warn "  Check that the db service is healthy, then re-run the update."
   fi
+  # Delete 0-byte dumps left by EARLIER releases so the rotation cannot offer one as a restore point.
+  # `-size 0` matches only those; a real dump is never empty.
+  find "$BACKUP_DIR" -maxdepth 1 -name 'ryasai-*.sql' -size 0 -delete 2>/dev/null || true
   # Keep newest 5 dumps
   ls -1t "$BACKUP_DIR"/ryasai-*.sql 2>/dev/null | tail -n +6 | xargs -r rm -f || true
 
