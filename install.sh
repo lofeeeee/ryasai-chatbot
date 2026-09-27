@@ -816,6 +816,55 @@ else
   echo "[entrypoint] WARNING: $PATCH not found — starting unpatched." >&2
 fi
 
+# --- Restore the graph extension path the 1.6.0 image moved -----------------
+#
+# MEASURED BUG IN THE UPSTREAM 1.6.0 IMAGE, which makes memory unusable out of the box.
+# The server loads its graph extensions from `/app/.lbdb/extension/<ver>/linux_amd64/`, but 1.6.0
+# ships them at `/app/cognee_db_workers/ladybug_extensions/<ver>/linux_amd64/` and does NOT create
+# the old path. Consequences, both observed on a real deployment:
+#
+#   GET /health                          -> 503 (the container is permanently "unhealthy")
+#   POST /api/v1/remember (a write)       -> {"error":"... Failed to load library:
+#                                            /app/.lbdb/extension/0.19.0/linux_amd64/json/
+#                                            libjson.lbug_extension which is needed by extension: json"}
+#
+# so EVERY memory write fails. Verified the file exists under the new path and that symlinking it
+# back makes /health return 200 and lets a write proceed past the extension error.
+#
+# 1.5.4 had it at the old path, which is why the previous image worked and this one does not.
+#
+# The extension version directory is DISCOVERED rather than hardcoded: the image ships v0.12.0
+# through v0.20.0, and pinning one would silently stop working on any image bump — the same
+# "matched a constant, not the state" mistake that this project has already paid for twice.
+#
+# FAIL-OPEN: a sidecar that refuses to boot is a total memory outage. If anything here fails the
+# server still starts, and the warning is echoed so it cannot pass unnoticed.
+if [ -d /app/cognee_db_workers/ladybug_extensions ]; then
+  LINKED=0
+  for ver in /app/cognee_db_workers/ladybug_extensions/*/; do
+    v="$(basename "$ver")"
+    arch_src="${ver}linux_amd64"
+    [ -d "$arch_src" ] || continue
+    # The server asks for a BARE version ("0.19.0"); the image ships it prefixed ("v0.19.0").
+    target="/app/.lbdb/extension/${v#v}/linux_amd64"
+    mkdir -p "$target" 2>/dev/null || continue
+    # Only fill in files that are missing; never overwrite one the image provides itself.
+    for f in "$arch_src"/*; do
+      [ -e "$f" ] || continue
+      base="$(basename "$f")"
+      if [ ! -e "$target/$base" ] && ln -sf "$f" "$target/$base" 2>/dev/null; then
+        LINKED=$((LINKED+1))
+      fi
+    done
+  done
+  if [ "$LINKED" -gt 0 ]; then
+    echo "[entrypoint] restored $LINKED graph extension file(s) to /app/.lbdb (1.6.0 moved them; without this every memory write fails)"
+  else
+    echo "[entrypoint] WARNING: could not restore graph extensions — memory writes may fail with" >&2
+    echo "[entrypoint]          'Failed to load library ... libjson.lbug_extension'." >&2
+  fi
+fi
+
 exec /app/entrypoint.sh "$@"
 
 ENTRYEOF
