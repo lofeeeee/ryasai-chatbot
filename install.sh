@@ -233,10 +233,21 @@ else
 fi
 
 # Track license signing key
+#
+# MEASURED BUG THIS FIXES: the flag was set to true only when `--license-signing-public-key` was
+# PASSED, so a working install that already had a key in `.env` reported
+# "LICENSING NOT OPERATIONAL — ACTION REQUIRED" on every update. That warning is not cosmetic — it
+# tells an operator their licensing is broken and names a fix they do not need. Found while updating
+# a real deployment whose `.env` held a valid key, where it would have fired immediately.
+#
+# The value on disk is the only thing that matters, so read it from there first and treat the flag as
+# a way to SET the key, not as the source of truth about whether one exists.
 LICENSE_KEY_CONFIGURED=false
-if [ -n "$LICENSE_PUBKEY_ARG" ] && grep -qE '^LICENSE_SIGNING_PUBLIC_KEY=..+' .env 2>/dev/null; then
+if grep -qE '^LICENSE_SIGNING_PUBLIC_KEY=.+' .env 2>/dev/null; then
   LICENSE_KEY_CONFIGURED=true
 elif ! grep -q '^LICENSE_SIGNING_PUBLIC_KEY=' .env 2>/dev/null; then
+  # No line at all: add an empty one so `--license-signing-public-key` has somewhere to write and the
+  # key is visible to whoever provisions it later.
   printf '\n# License response verification key (Ed25519 DER hex) — see install.sh --help\nLICENSE_SIGNING_PUBLIC_KEY=\n' >> .env
 fi
 if [ -n "$LICENSE_PUBKEY_ARG" ]; then
