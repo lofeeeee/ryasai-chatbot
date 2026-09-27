@@ -1033,3 +1033,70 @@ describe('AsyncLocalStorage::enterWith is never relied on from a test hook', () 
     expect(wrapped).toBe(tests)
   })
 })
+
+describe('invariant: columns the runtime DDL creates are DECLARED in the Prisma schema', () => {
+  /**
+   * INCIDENT (2026-09-27, found by updating the production deployment to 1.0.0).
+   *
+   * `rag-fts.ts` creates `DocumentChunk.tsv` at runtime:
+   *
+   *     ALTER TABLE "DocumentChunk" ADD COLUMN IF NOT EXISTS tsv tsvector
+   *
+   * and then READS AND WRITES it for every BM25-ranked query. But the column was never declared in
+   * `prisma/schema.prisma`, so Prisma could not see it and treated it as drift. Every
+   * `prisma db push` — which the deploy runs as a `migrate` one-shot before starting the app —
+   * generated a DROP for it:
+   *
+   *     ⚠️  You are about to drop the column `tsv` on the `DocumentChunk` table,
+   *         which still contains 4 non-null values.
+   *     Error: Use the --accept-data-loss flag to ignore the data loss warnings
+   *
+   * The migration exited 1 and the app was never started. The install was DOWN.
+   *
+   * Two things kept this from being worse than an outage. `db push` FAILS CLOSED on a column that
+   * holds data — without that, the push would have succeeded and silently dropped a column the live
+   * code still queries, disabling BM25 for every subsequent search on a running system. And the
+   * deploy orders `migrate` before `app`, so the stop happened before any traffic was lost.
+   *
+   * The fix declares the column as `Unsupported("tsvector")?`, which tells Prisma to pass the type
+   * through and STOP MANAGING the column. Verified non-destructively against real production data
+   * restored into a scratch database: the old schema aborted refusing to drop 4 non-null values; the
+   * new schema reported "Your database is now in sync" and all 4 values were still present after.
+   *
+   * WHAT THIS GUARD PREVENTS: the same mistake with the NEXT runtime-created column. A generic rule
+   * would be better than a list, but the honest generic rule is "any column written by raw SQL must
+   * appear in the schema", and detecting that reliably needs SQL parsing this file cannot do. So the
+   * guard is explicit about the two columns that exist, and its own list is the thing to extend.
+   */
+  const schema = readRepo('prisma/schema.prisma')
+  const ragFts = readRepo('src/lib/rag-fts.ts')
+
+  test('the runtime DDL in rag-fts.ts is still what this guard assumes', () => {
+    // Negative control on the SCAN. If the DDL moves or is renamed, the assertions below could pass
+    // while the real mechanism changed, so pin the invocation itself.
+    expect(ragFts).toMatch(/ADD COLUMN IF NOT EXISTS tsv tsvector/)
+    expect(ragFts).toContain('tsv')
+  })
+
+  test('DocumentChunk.tsv is declared in the Prisma schema', () => {
+    const model = schema.slice(schema.indexOf('model DocumentChunk'), schema.indexOf('model DocumentVersion'))
+    expect(model.length).toBeGreaterThan(0)
+    expect(
+      model,
+      'DocumentChunk.tsv is created by raw SQL in rag-fts.ts but is NOT declared in ' +
+        'prisma/schema.prisma. `prisma db push` will therefore try to DROP it, and the deploy\'s ' +
+        'migrate step will abort with "Use the --accept-data-loss flag" — leaving the install down. ' +
+        'Declare it as `tsv Unsupported("tsvector")?`.',
+    ).toContain('tsv')
+    expect(model).toMatch(/tsv\s+Unsupported\("tsvector"\)/)
+  })
+
+  test('the vector column keeps its declared dimension', () => {
+    // Same family: `embedding` is also Unsupported, and a silent dimension edit would invalidate
+    // every stored vector. Pinning it here means changing it requires editing an assertion that
+    // states the consequence.
+    const model = schema.slice(schema.indexOf('model DocumentChunk'), schema.indexOf('model DocumentVersion'))
+    expect(model).toMatch(/embedding\s+Unsupported\("vector\(384\)"\)/)
+    expect(ragFts).toContain('to_tsvector')
+  })
+})
