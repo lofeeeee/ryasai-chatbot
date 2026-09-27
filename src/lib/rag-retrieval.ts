@@ -43,7 +43,7 @@ export function getRagCacheStats(): { hits: number; misses: number; hitRate: num
   return { hits: _cacheHits, misses: _cacheMisses, hitRate: total === 0 ? 0 : _cacheHits / total }
 }
 
-function ragCacheKey(query: string, topK: number): string | null {
+function ragCacheKey(query: string, topK: number, documentIds: string[] | null | undefined): string | null {
   // ponytail: org-scoped cache key — prevents cross-tenant data disclosure
   // (org A reading org B's cached retrieved chunks for the same query string).
   //
@@ -55,7 +55,13 @@ function ragCacheKey(query: string, topK: number): string | null {
   // cache entirely, so a missing context costs a retrieval, not a cross-tenant disclosure.
   const orgId = getOrgContext()
   if (!orgId) return null
-  return `rag:${orgId}:${RANKING_VERSION}:${topK}:${query.slice(0, 500).toLowerCase().trim()}`
+  // THE SCOPE MUST BE PART OF THE KEY. Without it, a retrieval restricted to document A would be
+  // stored under the plain query and then served to a request scoped to document B — the same class
+  // of cross-context leak the org segment was added to prevent, one level down. Sorted and joined
+  // so two requests naming the same documents in a different order share a cache entry instead of
+  // missing it. `null` (unrestricted) is a distinct segment, not an empty one.
+  const scopeSegment = documentIds && documentIds.length > 0 ? [...documentIds].sort().join(',') : '*'
+  return `rag:${orgId}:${RANKING_VERSION}:${topK}:${scopeSegment}:${query.slice(0, 500).toLowerCase().trim()}`
 }
 
 export async function invalidateRagCache(): Promise<void> {
@@ -66,6 +72,15 @@ export async function retrieveRelevantChunks(args: {
   query: string
   topK: number
   _skipDecompose?: boolean
+  /**
+   * Restrict retrieval to these documents. `null`/absent = every document, which keeps every
+   * existing caller behaving exactly as before.
+   *
+   * Applied AT THE QUERY, not as a post-filter: filtering after ranking would return fewer than
+   * `topK` results even when more allowed chunks exist, and would let a disallowed chunk influence
+   * the reflection step before being dropped.
+   */
+  documentIds?: string[] | null
 }): Promise<{ chunks: RetrievedChunk[]; queryTokens: string[]; candidatesScanned: number; graphContext: string; citationTrail?: CitationTrail[] }> {
   const queryTokens = tokenize(args.query)
   if (queryTokens.length === 0) {
@@ -76,7 +91,7 @@ export async function retrieveRelevantChunks(args: {
   // Resolved once per call, so the value that keys the cache entry is provably the
   // same one that orders the result — resolving twice would let a mid-call change
   // write a ranking under a key that no longer describes it.
-  const cacheKey = ragCacheKey(args.query, args.topK)
+  const cacheKey = ragCacheKey(args.query, args.topK, args.documentIds)
   if (cacheKey) {
     const cached = await cacheGet<Awaited<ReturnType<typeof retrieveRelevantChunks>>>(cacheKey)
     if (cached) {
@@ -97,7 +112,7 @@ export async function retrieveRelevantChunks(args: {
     const subQueries = decomposeQuery(args.query)
     if (subQueries.length > 1) {
       const subResults = await Promise.all(
-        subQueries.map((q) => retrieveRelevantChunks({ query: q, topK: args.topK, _skipDecompose: true })),
+        subQueries.map((q) => retrieveRelevantChunks({ query: q, topK: args.topK, _skipDecompose: true, documentIds: args.documentIds })),
       )
       const merged = mergeRetrievedResults(subResults)
       _cacheMisses += 1
@@ -141,6 +156,7 @@ export async function retrieveRelevantChunks(args: {
     queryTokens,
     topK: retrievalTopK,
     kgRanking: kgResult.allChunkIds,
+    documentIds: args.documentIds,
   })
 
   const mergedChunks = retrievalResult.chunks
@@ -270,6 +286,12 @@ async function retrieveAndFuse(args: {
   vectorQuery: string
   queryTokens: string[]
   topK: number
+  /**
+   * Restrict both legs (vector and lexical) to these documents. Threaded explicitly rather than
+   * read from a module-level value so a caller cannot accidentally run unscoped by forgetting to
+   * set it — the type requires the decision.
+   */
+  documentIds?: string[] | null
   kgRanking?: string[]
 }): Promise<{
   chunks: RetrievedChunk[]
@@ -305,10 +327,10 @@ async function retrieveAndFuse(args: {
     ...new Set([...vectorRanking, ...lexicalIds, ...(args.kgRanking ?? [])]),
   ]
 
-  let candidates = await loadVectorCandidateChunks(candidateIds)
+  let candidates = await loadVectorCandidateChunks(candidateIds, args.documentIds)
   if (candidates.length === 0) {
     // Neither retriever produced anything (no embeddings yet, empty FTS index).
-    candidates = await loadAllCandidateChunks()
+    candidates = await loadAllCandidateChunks(args.documentIds)
   }
   if (candidates.length === 0) {
     return { chunks: [], candidatesScanned: 0, vectorHits: vectorRanking.length, vectorAttempted: Boolean(queryEmbedding) }
@@ -618,9 +640,22 @@ interface CandidateChunk {
   contextPrefix: string | null
 }
 
-async function loadVectorCandidateChunks(chunkIds: string[]): Promise<CandidateChunk[]> {
+async function loadVectorCandidateChunks(
+  chunkIds: string[],
+  documentIds?: string[] | null,
+): Promise<CandidateChunk[]> {
   const rows = await db.documentChunk.findMany({
-    where: { id: { in: chunkIds }, document: { status: 'ready', isEnabled: true } },
+    where: {
+      id: { in: chunkIds },
+      // The scope filter is applied to the DOCUMENT relation, so a chunk can never be returned by
+      // naming it directly — the caller supplies chunk ids from a vector search that knows nothing
+      // about scopes, and this is the only place that can refuse them.
+      document: {
+        status: 'ready',
+        isEnabled: true,
+        ...(documentIds && documentIds.length > 0 ? { id: { in: documentIds } } : {}),
+      },
+    },
     select: { id: true, chunkIndex: true, content: true, keywords: true, contextPrefix: true, embeddingJson: true, embeddingModel: true, document: { select: { id: true, name: true } } },
   })
   const order = new Map(chunkIds.map((id, index) => [id, index]))
@@ -640,9 +675,15 @@ async function loadVectorCandidateChunks(chunkIds: string[]): Promise<CandidateC
 // instead of pulling every enabled chunk of the org into memory.
 const ALL_CANDIDATE_DOC_LIMIT = Math.max(1, Math.ceil(5000 / RAG_MAX_CHUNKS_PER_UPLOAD))
 
-async function loadAllCandidateChunks(): Promise<CandidateChunk[]> {
+async function loadAllCandidateChunks(documentIds?: string[] | null): Promise<CandidateChunk[]> {
   const docs = await db.document.findMany({
-    where: { status: 'ready', isEnabled: true },
+    where: {
+      status: 'ready',
+      isEnabled: true,
+      // Same reasoning as above: the fallback path scans every document, so it must scan only the
+      // allowed ones. Omitting this would make the FTS-miss path an unrestricted side door.
+      ...(documentIds && documentIds.length > 0 ? { id: { in: documentIds } } : {}),
+    },
     take: ALL_CANDIDATE_DOC_LIMIT,
     select: { id: true, name: true, chunks: { take: RAG_MAX_CHUNKS_PER_UPLOAD, select: { id: true, chunkIndex: true, content: true, keywords: true, contextPrefix: true, embeddingJson: true, embeddingModel: true } } },
   })

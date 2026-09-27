@@ -522,6 +522,27 @@ model ApiKey {
   isActive              Boolean   @default(true)
   requestLimitPerMinute Int?
   dailyRequestLimit     Int?
+  /// WHICH SOURCES THIS KEY MAY READ. Empty array = all sources (the behaviour every existing key
+  /// already has, so the migration is a no-op for them).
+  ///
+  /// WHY IDS AND NOT TAGS: an id is the thing enforcement actually checks, and a tag would have to
+  /// be resolved to ids on every request — an extra query on the hot path, and a second place for
+  /// the answer to be wrong. Tags can be layered ON TOP later (select a tag → fill these arrays).
+  ///
+  /// WHY THE LIST IS ON THE KEY rather than a join table: the check is "may this key read X" and it
+  /// runs on every external request. A join table turns that into a query per source; an array is
+  /// one row read that is already loaded during authentication.
+  ///
+  /// `allowedIntegrationIds` covers connected databases AND REST connectors (both live in
+  /// `Integration`/`RestApiConnector`, which the SQL and REST branches resolve separately).
+  allowedIntegrationIds String[]  @default([])
+  /// Which documents this key may retrieve. Empty = all.
+  allowedDocumentIds    String[]  @default([])
+  /// Which tool families this key may use: SQL | RAG | REST | CHAT. Empty = all.
+  ///
+  /// This is the coarse gate, and it is deliberately separate from the id lists: an operator often
+  /// wants "this client may only ask questions, never run SQL" without enumerating every document.
+  allowedTools          String[]  @default([])
   lastUsedAt            DateTime?
   revokedAt             DateTime?
   createdAt             DateTime  @default(now())

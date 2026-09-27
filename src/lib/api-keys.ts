@@ -3,6 +3,7 @@ import { NextRequest } from 'next/server'
 import { db } from '@/lib/db'
 import { UnauthorizedError } from '@/lib/session'
 import { enterWithOrg } from '@/lib/prisma-tenant'
+import { readKeyScope, type KeyScope } from '@/lib/api-key-scope'
 
 const KEY_PREFIX = 'ryas_'
 const HASH_ALGO = 'sha256'
@@ -40,6 +41,13 @@ export interface ExternalApiIdentity {
   organizationId: string
   label: string
   requestLimitPerMinute: number | null
+  /**
+   * The key's stored source scope. Empty arrays mean unrestricted — see `api-key-scope.ts`.
+   *
+   * Returned here rather than re-read per call site: enforcement then cannot be skipped by
+   * forgetting a query, and the columns are selected in exactly ONE place.
+   */
+  scope: KeyScope
 }
 
 export function getBearerToken(req: NextRequest): string | null {
@@ -60,11 +68,25 @@ export async function requireExternalApiKey(
   const candidates = prefix.length >= 13
     ? await db.apiKey.findMany({
         where: { isActive: true, revokedAt: null, keyPrefix: prefix },
-        select: { id: true, organizationId: true, label: true, keyHash: true, requestLimitPerMinute: true, dailyRequestLimit: true },
+        select: {
+            id: true, organizationId: true, label: true, keyHash: true,
+            requestLimitPerMinute: true, dailyRequestLimit: true,
+            // Scope columns are selected HERE and only here, so no call site can enforce a scope it
+            // never loaded. A missing column would arrive as undefined and resolve to unrestricted,
+            // which is why the select is explicit rather than a bare `findMany()`.
+            allowedIntegrationIds: true, allowedDocumentIds: true, allowedTools: true,
+          },
       })
     : await db.apiKey.findMany({
         where: { isActive: true, revokedAt: null },
-        select: { id: true, organizationId: true, label: true, keyHash: true, requestLimitPerMinute: true, dailyRequestLimit: true },
+        select: {
+            id: true, organizationId: true, label: true, keyHash: true,
+            requestLimitPerMinute: true, dailyRequestLimit: true,
+            // Scope columns are selected HERE and only here, so no call site can enforce a scope it
+            // never loaded. A missing column would arrive as undefined and resolve to unrestricted,
+            // which is why the select is explicit rather than a bare `findMany()`.
+            allowedIntegrationIds: true, allowedDocumentIds: true, allowedTools: true,
+          },
       })
 
   const matched = candidates.find((candidate) =>
@@ -109,5 +131,7 @@ export async function requireExternalApiKey(
     organizationId: matched.organizationId,
     label: matched.label,
     requestLimitPerMinute: matched.requestLimitPerMinute,
+    // Resolved here so every transport receives the same answer, from one place.
+    scope: readKeyScope(matched),
   }
 }

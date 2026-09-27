@@ -1198,8 +1198,9 @@ describe('PINNED (b): the RAG cache is served after a re-index and NOTHING this 
     await retrieveRelevantChunks({ query: 'annual leave', topK: 5 })
 
     const keys = [...cacheStore.keys()]
-    // The real key is `rag:${orgId}:${RANKING_VERSION}:${topK}:${query}` — rag-retrieval.ts
-    // `ragCacheKey`. Segments: 0=rag, 1=org, 2=ranking version, 3=topK, 4+=query.
+    // The real key is `rag:${orgId}:${RANKING_VERSION}:${topK}:${scope}:${query}` —
+    // rag-retrieval.ts `ragCacheKey`. Segments: 0=rag, 1=org, 2=ranking version, 3=topK,
+    // 4=document scope (`*` when unrestricted), 5+=query.
     const topK4 = keys.filter((k) => k.split(':')[3] === '4' && k.endsWith(':annual leave'))
     const topK5 = keys.filter((k) => k.split(':')[3] === '5' && k.endsWith(':annual leave'))
     expect(topK4).toHaveLength(1)
@@ -1210,6 +1211,9 @@ describe('PINNED (b): the RAG cache is served after a re-index and NOTHING this 
     // The version segment is load-bearing for the same reason the others are: an order
     // produced by a previous ranking must not be served after a ranking change.
     expect(topK4[0]!.split(':')[2]).toBe('lex1')
+    // The SCOPE segment is load-bearing for a third reason: a retrieval restricted to one document
+    // must never be served to a request allowed to read others. An unscoped call writes `*`.
+    expect(topK4[0]!.split(':')[4]).toBe('*')
     // And the whole point: nothing version-like appears AFTER the query, which is where a corpus version would
     // have to live for a re-index to change the key.
     expect(topK4[0]!.endsWith(':annual leave')).toBe(true)
@@ -1230,12 +1234,12 @@ describe('PINNED (b): the RAG cache is served after a re-index and NOTHING this 
     enterWithOrg('org-2')
     const orgTwo = await retrieveRelevantChunks({ query: 'annual leave', topK: 4 })
 
-    expect(cacheStore.has('rag:org-1:lex1:4:annual leave')).toBe(true)
-    expect(cacheStore.has('rag:org-2:lex1:4:annual leave')).toBe(true)
+    expect(cacheStore.has('rag:org-1:lex1:4:*:annual leave')).toBe(true)
+    expect(cacheStore.has('rag:org-2:lex1:4:*:annual leave')).toBe(true)
     // The environment serves an EMPTY corpus (`chunkRows = []`), so both orgs legitimately get nothing back.
     // The load-bearing assertion is therefore the KEY SEPARATION above, not the chunk bodies: what the
     // org-scoped key buys is that org-2 read its OWN entry rather than org-1's.
-    expect(cacheStore.has('rag:org-1:lex1:4:annual leave')).toBe(true)
+    expect(cacheStore.has('rag:org-1:lex1:4:*:annual leave')).toBe(true)
     expect(orgOne.chunks).toEqual([])
     expect(orgTwo.chunks).toEqual([])
   })
@@ -1278,13 +1282,13 @@ describe('PINNED (b): the RAG cache is served after a re-index and NOTHING this 
     // (its job handler calls rebuildFts() only). This route never calls it either, so the stale
     // answer survives until the TTL expires.
     expect(typeof RAG_CACHE_TTL_MS).toBe('number')
-    expect(cacheStore.has('rag:org-1:lex1:4:annual leave')).toBe(true)
+    expect(cacheStore.has('rag:org-1:lex1:4:*:annual leave')).toBe(true)
 
     // The fix that WOULD clear it: invalidateRagCache() drops the whole `rag:` prefix. Asserting
     // the mechanism works shows the defect is a missing CALL, not a broken cache.
     const { invalidateRagCache } = await import('@/lib/rag')
     await invalidateRagCache()
-    expect(cacheStore.has('rag:org-1:lex1:4:annual leave')).toBe(false)
+    expect(cacheStore.has('rag:org-1:lex1:4:*:annual leave')).toBe(false)
   })
 })
 

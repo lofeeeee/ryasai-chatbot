@@ -440,12 +440,12 @@ describe('retrieveRelevantChunks — the tenant-scoped cache', () => {
   test('a cache HIT returns the stored value and skips every retriever', async () => {
     const stored = { chunks: [chunk('cached')], queryTokens: ['x'], candidatesScanned: 9, graphContext: '' }
     // Read under the org the caller actually has context for. The key must name the
-    // ranking version too (rag:<org>:<version>:<topK>:<query>), or this entry is
+    // ranking version and the document scope too (rag:<org>:<version>:<topK>:<scope>:<query>), or this entry is
     // unreachable — which is the point of that segment: a cached ORDER is only
     // valid for the ranking that produced it.
     const { RANKING_VERSION } = await import('./rag-retrieval')
     orgContextHolder.value = 'org-A'
-    cacheStore.set(`rag:org-A:${RANKING_VERSION}:5:invoices`, stored)
+    cacheStore.set(`rag:org-A:${RANKING_VERSION}:5:*:invoices`, stored)
     const r = await retrieveRelevantChunks({ query: 'invoices', topK: 5 })
     expect(r.candidatesScanned).toBe(9)
     expect(ftsCalls).toHaveLength(0)
@@ -458,7 +458,7 @@ describe('retrieveRelevantChunks — the tenant-scoped cache', () => {
     // which is exactly what the version segment of the key prevents.
     const stored = { chunks: [chunk('cached')], queryTokens: ['x'], candidatesScanned: 9, graphContext: '' }
     orgContextHolder.value = 'org-A'
-    cacheStore.set('rag:org-A:k1:5:invoices', stored)
+    cacheStore.set('rag:org-A:k1:5:*:invoices', stored)
     ftsIds = ['c1']
     dbChunkRows = [dbChunkRow('c1', 'invoices')]
     toRankingImpl = (entries: unknown) => (entries as Array<{ id: string }>).map((e) => e.id)
@@ -1839,14 +1839,14 @@ describe('the ranking version is part of the cache key', async () => {
     expect(RANKING_VERSION).toBe('lex1')
     await retrieveReal({ query: 'invoices', topK: 5 })
     const key = cacheSets.at(-1)!.key
-    expect(key).toBe(`rag:org-test:${RANKING_VERSION}:5:invoices`)
+    expect(key).toBe(`rag:org-test:${RANKING_VERSION}:5:*:invoices`)
     expect(key).toContain(':org-test:')
     expect(key).not.toContain('k60')
   })
 
   test('an entry stored under the old k60 key is NOT served', async () => {
     const stale = { chunks: [chunk('stale')], queryTokens: ['x'], candidatesScanned: 77, graphContext: '' }
-    cacheStore.set('rag:org-test:k60:5:invoices', stale)
+    cacheStore.set('rag:org-test:k60:5:*:invoices', stale)
     const out = await retrieveReal({ query: 'invoices', topK: 5 })
     // Served from a fresh retrieval, not from the RRF-era entry.
     expect(out.candidatesScanned).not.toBe(77)
@@ -1900,7 +1900,7 @@ describe('retrieval records a baseline instead of only a log line', () => {
     expect(missCount).toBe(1)
 
     // Same query, so the second call is served from cache.
-    cacheStore.set(`rag:org-metrics:lex1:5:invoices`, {
+    cacheStore.set(`rag:org-metrics:lex1:5:*:invoices`, {
       chunks: [chunk('cached')], queryTokens: ['x'], candidatesScanned: 99, graphContext: '',
     })
     const second = await retrieveReal({ query: 'invoices', topK: 5 })
@@ -1911,5 +1911,54 @@ describe('retrieval records a baseline instead of only a log line', () => {
     // Still 1: the hit was counted as a hit and contributed no timing observation.
     expect(countAfter).toBe(1)
     expect(afterHit).toMatch(/rag_cache_hit_total 1/)
+  })
+})
+
+describe('retrieval scope — a restricted result must never be served to another scope', () => {
+  /**
+   * The cache key carries the document scope, and this is the test that makes it matter.
+   *
+   * Without the scope segment, a retrieval restricted to document A would be stored under the plain
+   * query and later served to a request scoped to document B — the same cross-context leak the org
+   * segment was added to prevent, one level down. It is also the kind of bug that leaves no trace:
+   * the answer looks fine, it is simply built from documents the caller was not allowed to read.
+   */
+  test('a cached result for one document set is NOT served to a different set', async () => {
+    orgContextHolder.value = 'org-scope'
+    const { RANKING_VERSION } = await import('./rag-retrieval')
+    const stored = { chunks: [chunk('from-doc-A')], queryTokens: ['x'], candidatesScanned: 9, graphContext: '' }
+    // Stored for doc A only...
+    cacheStore.set(`rag:org-scope:${RANKING_VERSION}:5:doc-a:invoices`, stored)
+
+    // ...and a request scoped to doc B must not receive it.
+    ftsIds = ['c1']
+    dbChunkRows = [dbChunkRow('c1', 'invoices')]
+    toRankingImpl = (entries: unknown) => (entries as Array<{ id: string }>).map((e) => e.id)
+    const r = await retrieveRelevantChunks({ query: 'invoices', topK: 5, documentIds: ['doc-b'] })
+    expect(r.candidatesScanned).not.toBe(9)
+  })
+
+  test('the unrestricted key is distinct from a scoped one', async () => {
+    orgContextHolder.value = 'org-scope'
+    const { RANKING_VERSION } = await import('./rag-retrieval')
+    const stored = { chunks: [chunk('unrestricted')], queryTokens: ['x'], candidatesScanned: 42, graphContext: '' }
+    cacheStore.set(`rag:org-scope:${RANKING_VERSION}:5:*:invoices`, stored)
+    ftsIds = ['c1']
+    dbChunkRows = [dbChunkRow('c1', 'invoices')]
+    toRankingImpl = (entries: unknown) => (entries as Array<{ id: string }>).map((e) => e.id)
+    // A scoped call must not adopt the unrestricted entry.
+    const r = await retrieveRelevantChunks({ query: 'invoices', topK: 5, documentIds: ['doc-a'] })
+    expect(r.candidatesScanned).not.toBe(42)
+  })
+
+  test('the same documents in a different ORDER share one cache entry', async () => {
+    // Otherwise two callers naming the same set in a different order would each pay for a retrieval,
+    // and the cache would look broken rather than merely conservative.
+    orgContextHolder.value = 'org-scope'
+    const { RANKING_VERSION } = await import('./rag-retrieval')
+    const stored = { chunks: [chunk('shared')], queryTokens: ['x'], candidatesScanned: 7, graphContext: '' }
+    cacheStore.set(`rag:org-scope:${RANKING_VERSION}:5:doc-a,doc-b:invoices`, stored)
+    const r = await retrieveRelevantChunks({ query: 'invoices', topK: 5, documentIds: ['doc-b', 'doc-a'] })
+    expect(r.candidatesScanned).toBe(7)
   })
 })
