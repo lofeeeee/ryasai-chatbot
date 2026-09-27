@@ -6,7 +6,7 @@ import { enterWithOrg } from '@/lib/prisma-tenant'
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { getActiveUser, requireRole, writeAudit, handleApiError } from '@/lib/session'
-import { cogneeStats, resetCognee, cognifyBatch, forgetKnowledgeGraph, invalidateCogneeSettings, autoCognifyAll } from '@/lib/cognee'
+import { cogneeStats, cogneeDiagnostics, resetCognee, cognifyBatch, forgetKnowledgeGraph, invalidateCogneeSettings, autoCognifyAll } from '@/lib/cognee'
 import { db } from '@/lib/db'
 
 /**
@@ -38,6 +38,14 @@ export async function GET() {
     enterWithOrg(user.organizationId)
     const stats = await cogneeStats()
 
+    // Component-level diagnosis, so the UI can explain WHY memory is unusable instead of only
+    // showing a red badge. Null when memory is off or the sidecar is unreachable — the UI renders
+    // "unknown" for that, never a fabricated verdict.
+    //
+    // Fetched in the SAME request rather than a separate endpoint: the card needs both to render one
+    // coherent state, and two calls could disagree (health freshly computed, stats cached).
+    const diagnostics = await cogneeDiagnostics()
+
     // Also return config for UI
     const config = await db.appConfig.findFirst()
     const cogneeConfig = config ? {
@@ -48,7 +56,7 @@ export async function GET() {
       maxRetries: config.cogneeMaxRetries,
     } : null
 
-    return NextResponse.json({ ok: true, data: { ...stats, config: cogneeConfig } })
+    return NextResponse.json({ ok: true, data: { ...stats, config: cogneeConfig, diagnostics } })
   } catch (e) {
     return handleApiError(e, 'Failed to get cognee stats.')
   }

@@ -28,11 +28,13 @@
  */
 import { getCogneeSettings, getCogneeClient } from './cognee-core'
 import { db } from '@/lib/db'
-import { cogneeServerVersion } from './cognee-http'
+import { cogneeServerVersion, cogneeServerDiagnostics } from './cognee-http'
+import type { CogneeDiagnostics } from './cognee-http'
 import { getCogneeServerOptions } from './cognee-core'
 import type { CogneeMode } from './cognee-types'
 
 export * from './cognee-types'
+export type { CogneeDiagnostics, CogneeComponentStatus } from './cognee-http'
 export * from './cognee-memory'
 export * from './cognee-knowledge-graph'
 export { invalidateCogneeSettings } from './cognee-core'
@@ -74,6 +76,25 @@ export async function cogneeHealth(): Promise<{
     mode: version !== null ? 'server' : 'disabled',
     serverVersion: version,
   }
+}
+
+/**
+ * Component-level diagnosis of the memory sidecar.
+ *
+ * `cogneeHealth()` answers "is it reachable". This answers "is it USABLE, and if not, why" — the
+ * question a red badge actually raises. The two can disagree, and when they do this one is right:
+ * measured on a live install, `/health` returned `{"status":"ready","health":"healthy"}` while every
+ * memory write failed (no `LLM_API_KEY`, and the graph extension path missing).
+ *
+ * Returns null when the sidecar cannot be reached, or when memory is switched off, so the caller
+ * renders "unknown" rather than inventing a verdict.
+ */
+export async function cogneeDiagnostics(): Promise<CogneeDiagnostics | null> {
+  const settings = await getCogneeSettings()
+  if (!settings.enabled) return null
+  const serverOpts = await getCogneeServerOptions()
+  if (!serverOpts) return null
+  return cogneeServerDiagnostics(serverOpts).catch(() => null)
 }
 
 export async function cogneeStats(): Promise<{

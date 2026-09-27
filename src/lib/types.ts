@@ -177,3 +177,31 @@ export interface PublicLlmConfig {
   lastEmbeddingModelSyncAt: string | null
   updatedAt: string | null
 }
+
+/**
+ * Component-level status of the memory sidecar, as `/health/detailed` reports it.
+ *
+ * WHY THE UI NEEDS THIS AND NOT JUST A BOOLEAN. The sidecar can answer `/health` with
+ * `{"status":"ready"}` while being unable to store anything — the failure this deployment actually
+ * hit was an unset `LLM_API_KEY` plus a missing graph-extension path, both invisible to that
+ * endpoint. `details` carries the actionable text ("Set LLM_API_KEY in your .env"), which is what
+ * turns a red badge into a fix.
+ */
+export interface CogneeComponentStatus {
+  /** `relational_db` | `vector_db` | `graph_db` | `file_storage` | `llm_provider` | `embedding_service` */
+  name: string
+  status: 'healthy' | 'degraded' | 'unhealthy' | 'unknown'
+  /** Provider the sidecar picked for this component, when it names one. */
+  provider: string | null
+  /** Reason for a non-healthy status. This is the part an operator acts on. */
+  details: string | null
+  responseTimeMs: number | null
+}
+
+export interface CogneeDiagnostics {
+  /** The sidecar's overall verdict: `healthy` | `degraded` | … */
+  status: string
+  version: string | null
+  uptimeSeconds: number | null
+  components: CogneeComponentStatus[]
+}

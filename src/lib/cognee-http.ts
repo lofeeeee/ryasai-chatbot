@@ -134,6 +134,105 @@ export async function cogneeServerVersion(opts: CogneeHttpOptions): Promise<stri
   }
 }
 
+/** One dependency the sidecar reports on, as `/health/detailed` describes it. */
+export interface CogneeComponentStatus {
+  /** e.g. `relational_db`, `llm_provider`, `embedding_service`. */
+  name: string
+  status: 'healthy' | 'degraded' | 'unhealthy' | 'unknown'
+  /** Provider the sidecar selected, when it names one (`sqlite`, `kuzu`, `openai`…). */
+  provider: string | null
+  /** Human-readable reason. On a failure this is the ACTIONABLE part. */
+  details: string | null
+  responseTimeMs: number | null
+}
+
+export interface CogneeDiagnostics {
+  /** The sidecar's own overall verdict: `healthy`, `degraded`, … */
+  status: string
+  version: string | null
+  uptimeSeconds: number | null
+  components: CogneeComponentStatus[]
+}
+
+/**
+ * Read `/health/detailed` from the sidecar.
+ *
+ * WHY THIS EXISTS, and why a single "connected" boolean was not enough.
+ *
+ * `/health` answers "is the process up" and nothing else. The failure this project actually hit on a
+ * live install is invisible to it: cognee reported `{"status":"ready","health":"healthy"}` while
+ * EVERY memory write failed, because `LLM_API_KEY` was unset and the graph extension path was
+ * missing. An admin seeing a green badge had nothing to act on — the product said "healthy" and
+ * stored nothing.
+ *
+ * `/health/detailed` names each dependency and, on failure, carries the fix in `details`
+ * (measured on a real deployment):
+ *
+ *   llm_provider      degraded  "LLMAPIKeyNotSetError: LLM API key is not set. … Set LLM_API_KEY"
+ *   embedding_service degraded  "Embedding connection test timed out after 30s. … Set
+ *                                COGNEE_SKIP_CONNECTION_TEST=true to bypass this check."
+ *
+ * That text is the whole reason this function exists: it is what turns a red badge into an action.
+ *
+ * ONE KNOWN FALSE ALARM, surfaced rather than hidden: `embedding_service` tests by calling the
+ * embedding endpoint with a 30s timeout and — MEASURED on the production sidecar — reports
+ * `degraded` / "timed out" even though the same container's real embedding call returns a valid
+ * 384-dim vector. The UI must therefore present this as a warning to verify, not as a proven fault.
+ * Returns null when the server is unreachable, so callers show "unknown" instead of inventing a
+ * verdict.
+ */
+export async function cogneeServerDiagnostics(
+  opts: CogneeHttpOptions,
+): Promise<CogneeDiagnostics | null> {
+  const url = `${opts.baseUrl.replace(/\/+$/, '')}/health/detailed`
+  // Longer than the plain version probe: this endpoint actively tests each dependency, and the
+  // embedding check alone budgets 30s. A tighter deadline would report "unreachable" for a sidecar
+  // that is merely slow to answer — converting a real diagnosis into a false one.
+  const res = await fetchWithDeadline(url, { method: 'GET' }, opts.timeoutMs ?? 45000)
+  if (!res) return null
+  if (!res.ok && res.status !== 503) return null
+  // 503 IS EXPECTED AND MUST BE PARSED, not treated as unreachable.
+  //
+  // MEASURED on the production sidecar: `/health/detailed` answers **HTTP 503** with a COMPLETE
+  // body — `{"status":"degraded","components":{…6 components…}}`. The server uses the status code as
+  // its verdict and the body as the explanation. A `res.ok` check therefore returned `null` in
+  // exactly the situation this endpoint exists for, and the UI would have shown nothing at the
+  // moment an operator needed it most. A hard failure (500, 404, HTML error page) still returns null
+  // below, because the JSON parse fails.
+  try {
+    const body = (await res.json()) as {
+      status?: string
+      version?: string
+      uptime?: number
+      components?: Record<
+        string,
+        { status?: string; provider?: string; details?: string; response_time_ms?: number }
+      >
+    }
+    const components: CogneeComponentStatus[] = Object.entries(body.components ?? {}).map(
+      ([name, c]) => ({
+        name,
+        status: (['healthy', 'degraded', 'unhealthy'] as const).includes(
+          c?.status as 'healthy',
+        )
+          ? (c.status as CogneeComponentStatus['status'])
+          : 'unknown',
+        provider: c?.provider ?? null,
+        details: c?.details ?? null,
+        responseTimeMs: typeof c?.response_time_ms === 'number' ? c.response_time_ms : null,
+      }),
+    )
+    return {
+      status: body.status ?? 'unknown',
+      version: body.version ?? null,
+      uptimeSeconds: typeof body.uptime === 'number' ? body.uptime : null,
+      components,
+    }
+  } catch {
+    return null
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Write
 // ---------------------------------------------------------------------------

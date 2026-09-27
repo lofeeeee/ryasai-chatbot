@@ -19,6 +19,8 @@ import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Delayed } from '@/components/ui/view-states'
+import { CogneeDiagnosticsPanel } from '@/components/views/cognee-diagnostics'
+import type { CogneeDiagnostics } from '@/lib/types'
 
 interface CogneeStats {
   enabled: boolean
@@ -27,6 +29,11 @@ interface CogneeStats {
   documents: { total: number; cognified: number; pending: number; failed: number }
   batchSize: number
   maxRetries: number
+  /**
+   * Component-level diagnosis from the sidecar. Null when memory is off, or when the sidecar cannot
+   * be reached — the UI shows nothing rather than inventing a verdict for an unreachable service.
+   */
+  diagnostics?: CogneeDiagnostics | null
   config?: {
     enabled: boolean
     dbProvider: string
@@ -159,9 +166,36 @@ export function CogneeCard() {
           <div className="flex items-center gap-1.5">
             {stats?.enabled ? (
               <>
-                <Badge variant={stats.connected ? 'default' : 'destructive'} className="text-[10px]">
-                  {stats.connected ? 'Connected' : 'Disconnected'}
-                </Badge>
+                {/*
+                  The badge reports USABILITY, not reachability.
+
+                  It used to read "Connected" whenever `/health` answered — MEASURED on a live
+                  install, that badge was green while every memory write failed (no LLM_API_KEY, and
+                  the graph-extension path missing). A green badge over a product that stores nothing
+                  is worse than no badge, because it tells the operator to look elsewhere.
+
+                  So when the sidecar's own diagnosis names a broken dependency, the badge says so.
+                */}
+                {(() => {
+                  const broken = (stats.diagnostics?.components ?? []).filter(
+                    (c) => c.status !== 'healthy' && c.name === 'llm_provider',
+                  )
+                  if (broken.length > 0) {
+                    return (
+                      <Badge variant="destructive" className="text-[10px]">
+                        Cannot store
+                      </Badge>
+                    )
+                  }
+                  return (
+                    <Badge
+                      variant={stats.connected ? 'default' : 'destructive'}
+                      className="text-[10px]"
+                    >
+                      {stats.connected ? 'Connected' : 'Disconnected'}
+                    </Badge>
+                  )
+                })()}
                 <Badge variant="outline" className="text-[10px]">{stats.mode}</Badge>
               </>
             ) : envBlocked ? (
@@ -303,6 +337,10 @@ export function CogneeCard() {
               <span>·</span>
               <span>Max retries: {stats.maxRetries}</span>
             </div>
+
+            {/* Rendered only when the sidecar answered with a component list. An unreachable
+                sidecar has no diagnosis to show, and an empty panel would imply "nothing wrong". */}
+            {stats.diagnostics && <CogneeDiagnosticsPanel diagnostics={stats.diagnostics} />}
 
             <div className="flex gap-2">
               <Button
