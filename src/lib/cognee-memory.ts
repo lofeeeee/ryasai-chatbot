@@ -7,6 +7,8 @@ import { datasetFor } from './cognee-types'
 import { MEMORY_CONTEXT_MAX_CHARS, MEMORY_WRITE_MAX_CHARS } from '@/lib/constants'
 import { isCogneeEnabled, getCogneeClient, getCogneeOwnerId, formatSearchResponse, withDeadline, getCogneeGraphProvider, supportsNaturalLanguageSearch, getCogneeServerOptions } from './cognee-core'
 import { cogneeRemember, cogneeRecall } from './cognee-http'
+import { enqueueMemoryWrite } from '@/lib/memory-queue'
+import { getOrgContext } from '@/lib/prisma-tenant'
 
 export async function rememberChatTurn(args: ChatTurnMemory): Promise<void> {
   if (!(await isCogneeEnabled())) return
@@ -16,6 +18,74 @@ export async function rememberChatTurn(args: ChatTurnMemory): Promise<void> {
   // before the data is searchable, which would make the very next turn's recall
   // miss a fact we just "stored".
   const serverOpts = await getCogneeServerOptions()
+  if (!serverOpts) return
+
+  /*
+   * ENQUEUE FIRST, so writes are serialised per org and a refused one is retried.
+   *
+   * WHY THIS IS PRIORITY. MEASURED: four simultaneous chats produced eight "already running"
+   * rejections and only two of the four turns reached memory, because a write holds the sidecar's
+   * pipeline for a dataset for 45-148s and a second write for the SAME dataset is refused with HTTP
+   * 200 / `items_processed: 0` — a false success. The worker drains one write at a time per org and
+   * retries with backoff, so those turns are written late instead of being dropped.
+   *
+   * The org is read HERE, on the request's context, and carried in the job: the worker runs outside
+   * AsyncLocalStorage, so `datasetFor()` there would otherwise resolve to no dataset at all.
+   *
+   * With Redis down, `enqueueMemoryWrite` falls back to the inline path below — the behaviour that
+   * shipped before this queue, so an outage degrades to the previous code rather than to something
+   * worse.
+   */
+  const queued = await enqueueMemoryWrite(
+    {
+      organizationId: getOrgContext() ?? '',
+      sessionId: args.sessionId,
+      userMessage: args.userMessage,
+      aiMessage: args.aiMessage,
+      toolRuns: args.toolRuns.map((t) => ({ type: t.type, status: t.status, latencyMs: t.latencyMs ?? 0 })),
+    },
+    /*
+     * The inline fallback reproduces the body below, and it is a THUNK into `writeTurnInline` rather
+     * than a call to the worker's implementation.
+     *
+     * WHY NOT REUSE `performMemoryWrite`: it resolves `cognee-http` through a DYNAMIC import, so this
+     * module's mocks — which replace the STATIC specifier a test can control — do not reach it. The
+     * fallback then hit the real transport in unit tests. Sharing the code was the intent; sharing it
+     * through a different module loader defeated the tests instead of checking them.
+     *
+     * Both paths still build the same payload, because both call `capWritePayload` and the same JSON
+     * shape. If they ever diverge, the queue's retry semantics and the inline path would store
+     * different things, and this comment is the place to look.
+     */
+    async () => writeTurnInline(args, serverOpts, capWritePayload, cogneeRemember, datasetFor),
+  )
+
+  /*
+   * NO SECOND WRITE HERE.
+   *
+   * `enqueueMemoryWrite` ALREADY performed the write when it returned 'inline' — its fallback IS the
+   * inline call. Adding another one below duplicated every fallback write, which the test suite caught
+   * as `httpRememberCalls` of length 2 instead of 1: a doubled memory write per turn whenever Redis was
+   * down, i.e. exactly the case the fallback exists for.
+   *
+   * `queued` vs `inline` is therefore informational, not a branch.
+   */
+  void queued
+}
+
+/**
+ * The inline write, extracted so BOTH the Redis-down fallback and the direct path use one body.
+ *
+ * Takes its collaborators as arguments rather than importing them at module scope, so a unit test's
+ * `mock.module` on `./cognee-http` reaches the code under test.
+ */
+async function writeTurnInline(
+  args: ChatTurnMemory,
+  serverOpts: Awaited<ReturnType<typeof getCogneeServerOptions>>,
+  cap: (s: string) => string,
+  remember: typeof cogneeRemember,
+  dsFor: typeof datasetFor,
+): Promise<void> {
   if (serverOpts) {
     // ponytail: graceful degradation — fire-and-forget, memory loss is never fatal
     try {
@@ -23,7 +93,7 @@ export async function rememberChatTurn(args: ChatTurnMemory): Promise<void> {
       // short ones, so payload size is not the latency driver. See MEMORY_WRITE_MAX_CHARS for
       // what this is (a cap on one turn's contribution to the graph) and what it is not (a
       // latency fix).
-      const text = capWritePayload(
+      const text = cap(
         JSON.stringify({
           type: 'chat_turn',
           user: args.userMessage,
@@ -33,9 +103,9 @@ export async function rememberChatTurn(args: ChatTurnMemory): Promise<void> {
           ts: Date.now(),
         }),
       )
-      const res = await cogneeRemember(serverOpts, {
+      const res = await remember(serverOpts, {
         texts: [text],
-        datasetName: datasetFor(),
+        datasetName: dsFor(),
         runInBackground: false,
       })
       if (!res) {

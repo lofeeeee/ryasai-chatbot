@@ -33,6 +33,15 @@ export async function register() {
     }
     const { startJobWorker } = await import('@/lib/job-processor')
     const docWorker = startJobWorker()
+    /*
+     * Memory writes are QUEUED, and this is the consumer.
+     *
+     * Without a consumer the queue silently fills: the app would enqueue every turn and store nothing,
+     * which is strictly worse than the direct call it replaced. Same reasoning as the document worker
+     * above — a queue with no worker is a data-loss mechanism wearing a queue's clothes.
+     */
+    const { startMemoryWorker } = await import('@/lib/memory-worker')
+    startMemoryWorker()
 
     const { initOtel } = await import('@/lib/otel')
     await initOtel()

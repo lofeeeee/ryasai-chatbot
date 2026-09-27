@@ -18,10 +18,24 @@
 import { Worker } from 'bullmq'
 import IORedis from 'ioredis'
 
-// ponytail: disable cognee in the scheduler worker — ladybugdb graph database
-// uses file-level locking and can't be shared across processes. The dev server
-// already holds the lock. Cognee memory recall is not needed for scheduled prompts.
-process.env.COGNEE_ENABLED = 'false'
+/*
+ * MEMORY IS ENABLED HERE NOW, and the reason it was disabled is gone.
+ *
+ * The old line was `process.env.COGNEE_ENABLED = 'false'` with the rationale: "ladybugdb graph database
+ * uses file-level locking and can't be shared across processes." That was true of the in-process SDK,
+ * which opened kuzu/lancedb FILES and could not share them with the dev server.
+ *
+ * MEASURED, not assumed: `@cognee/cognee-ts` is no longer a dependency (`grep -c cognee-ts
+ * package.json` = 0) and `node_modules/@cognee` does not exist. Memory is a pure HTTP call to the
+ * cognee v1.6.0 SIDECAR (`getCogneeServerOptions`), so there is no file to lock and no shared state
+ * between processes at all.
+ *
+ * So the kill switch was disabling a capability to avoid a conflict that no longer exists — and it did
+ * so silently, which is why a scheduled run answered correctly and remembered nothing.
+ *
+ * The worker started below is what makes this safe under load: writes are serialised per org and
+ * retried, rather than fired concurrently at a sidecar that refuses the second one with HTTP 200.
+ */
 
 import { db } from '../../src/lib/db'
 import { runNonStreamingChatCompletion } from '../../src/lib/tool-router'

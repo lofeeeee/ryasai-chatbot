@@ -1014,3 +1014,49 @@ describe('rememberChatTurn — a REJECTED concurrent write must be visible, not 
     expect(src).toMatch(/NOT stored/)
   })
 })
+
+describe('rememberChatTurn — the queue path and the inline path must each write EXACTLY once', () => {
+  /**
+   * INCIDENT, caught by this file's existing assertions rather than by review.
+   *
+   * `enqueueMemoryWrite` performs the write itself when it falls back to inline — its fallback IS the
+   * inline call. The first version of the integration called the inline writer AGAIN afterwards, so a
+   * Redis outage wrote every turn TWICE. The existing tests surfaced it as
+   * `httpRememberCalls` of length 2 instead of 1.
+   *
+   * The observable damage is not just wasted work: two writes for one turn means the second arrives
+   * while the dataset's pipeline is busy, which is refused with HTTP 200 / `items_processed: 0` — the
+   * false-success path. A doubled write therefore also GENERATES the failure this queue exists to fix.
+   */
+  test('the inline fallback writes once and is not repeated by the caller', async () => {
+    state.httpRememberCalls.length = 0
+    state.enabled = true
+    state.serverOptions = { baseUrl: 'http://cognee:8000' }
+
+    await rememberChatTurn({ userMessage: 'q', aiMessage: 'a', sessionId: 's1', toolRuns: [] })
+
+    // One call on the transport, whichever path was taken.
+    expect(state.httpRememberCalls).toHaveLength(1)
+  })
+
+  test('the payload carries the same shape on both paths', async () => {
+    state.httpRememberCalls.length = 0
+    state.enabled = true
+    state.serverOptions = { baseUrl: 'http://cognee:8000' }
+
+    await rememberChatTurn({
+      userMessage: 'what is the revenue',
+      aiMessage: 'Rp 5m',
+      sessionId: 's1',
+      toolRuns: [{ type: 'SQL', status: 'success', latencyMs: 12 }],
+    })
+
+    const args = state.httpRememberCalls[0]!.args as { texts: string[]; datasetName: string }
+    const parsed = JSON.parse(args.texts[0]!)
+    expect(parsed.type).toBe('chat_turn')
+    expect(parsed.user).toBe('what is the revenue')
+    expect(parsed.assistant).toBe('Rp 5m')
+    // The dataset name must be the org's — a wrong one would write the turn where recall cannot find it.
+    expect(args.datasetName).toContain('org:')
+  })
+})
