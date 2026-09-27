@@ -49,7 +49,18 @@ installer_env_keys() {
 }
 
 # Emits the generated .env to stdout. Values come from globals set by the caller; on an update the
-# caller only needs the KEY NAMES, so empty values are fine.
+# caller only needs the KEY NAMES, so values are read with `${VAR:-}`.
+#
+# MEASURED BUG THIS FIXES: `installer_env_keys` is called on the UPDATE path, where `.env` already
+# exists and the generate branch is skipped — so `ENC_KEY` and `ADMIN_PASS` are never assigned. The
+# template referenced them as `${ENC_KEY}`, and the script runs under `set -u`, so the installer died
+# with:
+#
+#     /tmp/install-1.0.0.sh: line 54: ENC_KEY: unbound variable
+#
+# i.e. EVERY update aborted, in the step that was supposed to record the manifest. The comment above
+# this function already said empty values were acceptable; the template simply did not honor it.
+# `${VAR:-}` is what makes that true.
 render_env() {
   cat <<EOF
 # Database — change to an external host if you already run PostgreSQL elsewhere
@@ -59,33 +70,33 @@ DATABASE_URL=postgresql://ryasai:ryasai@db:5432/ryasai
 PORT=3000
 
 # Unique host ports (avoids collisions with 80, 443, 3000, 8080, etc.)
-APP_PORT=${APP_PORT}
-WS_PORT=${WS_PORT}
-CADDY_PORT=${CADDY_PORT}
-WEB_PORT=${APP_PORT}
+APP_PORT=${APP_PORT:-}
+WS_PORT=${WS_PORT:-}
+CADDY_PORT=${CADDY_PORT:-}
+WEB_PORT=${APP_PORT:-}
 
 # Security
-ENCRYPTION_SECRET_KEY=${ENC_KEY}
+ENCRYPTION_SECRET_KEY=${ENC_KEY:-}
 AUTH_DEMO_FALLBACK=false
 DB_QUERY_LOG=false
-WS_CORS_ORIGIN=http://localhost:${APP_PORT}
+WS_CORS_ORIGIN=http://localhost:${APP_PORT:-}
 
 # Toggles
 # COGNEE_SERVER_URL connects to the internal compose cognee sidecar
 COGNEE_SERVER_URL=http://cognee:8000
 CONTEXTUAL_RETRIEVAL=true
-NEXT_PUBLIC_APP_VERSION=${INSTALLER_VERSION}
-NEXT_PUBLIC_WS_PORT=${WS_PORT}
+NEXT_PUBLIC_APP_VERSION=${INSTALLER_VERSION:-}
+NEXT_PUBLIC_WS_PORT=${WS_PORT:-}
 
 # Bootstrap admin. NOTE: nothing reads these — signup creates the org and the first admin.
 # Kept only as a template for older deployments; the installer no longer presents them as logins.
 ADMIN_EMAIL=admin@ryasai.local
-ADMIN_INITIAL_PASSWORD=${ADMIN_PASS}
+ADMIN_INITIAL_PASSWORD=${ADMIN_PASS:-}
 
 # License validation — central ryasai license server.
 LICENSE_VALIDATOR_URL=https://license.ryasai.my.id
 LICENSE_PRODUCT=ryasai-chatbot
-LICENSE_SIGNING_PUBLIC_KEY=${LICENSE_PUBKEY_ARG}
+LICENSE_SIGNING_PUBLIC_KEY=${LICENSE_PUBKEY_ARG:-}
 LICENSE_GRACE_PERIOD_DAYS=7
 LICENSE_REVALIDATION_INTERVAL_HOURS=24
 
@@ -101,6 +112,7 @@ EOF
 WITH_SEARXNG=false
 LICENSE_PUBKEY_ARG="${LICENSE_SIGNING_PUBLIC_KEY:-}"
 APP_PORT_ARG=""
+APP_DIR_ARG=""
 DEFAULT_APP_PORT=38180
 
 while [ $# -gt 0 ]; do
@@ -109,6 +121,9 @@ while [ $# -gt 0 ]; do
     --port)
       [ $# -ge 2 ] || fail "--port requires a port number (e.g. 38180)"
       APP_PORT_ARG="$2"; shift 2 ;;
+    --dir)
+      [ $# -ge 2 ] || fail "--dir requires a path (e.g. --dir /home/ubuntu/ryasai-chatbot)"
+      APP_DIR_ARG="$2"; shift 2 ;;
     --license-signing-public-key)
       [ $# -ge 2 ] || fail "--license-signing-public-key requires a value (DER hex)"
       LICENSE_PUBKEY_ARG="$2"; shift 2 ;;
@@ -121,6 +136,11 @@ while [ $# -gt 0 ]; do
       echo "  curl -sSL https://ryasai.my.id/install.sh | bash -s -- --license-signing-public-key <hex>"
       echo
       echo "  --port <number>                 Unique host port for the web app (default: 38180)."
+      echo "  --dir <path>                    Deploy directory (default: /opt/ryasai-chatbot)."
+      echo "                                  Point this at an install that lives elsewhere. Running"
+      echo "                                  against the wrong directory creates a SECOND stack whose"
+      echo "                                  freshly generated ENCRYPTION_SECRET_KEY cannot decrypt"
+      echo "                                  the existing credentials."
       echo "  --with-searxng                  Run a private SearXNG for web_search (~256MB RAM)."
       echo "  --license-signing-public-key <hex>"
       echo "                                  Ed25519 public key (DER hex) for verifying license"
@@ -128,7 +148,7 @@ while [ $# -gt 0 ]; do
       echo "                                  If neither is given, license verification stays"
       echo "                                  DISABLED and the app fails closed on licensing."
       exit 0 ;;
-    *) fail "Unknown option: $1 (supported: --port <number>, --with-searxng, --license-signing-public-key <hex>)" ;;
+    *) fail "Unknown option: $1 (supported: --port <number>, --dir <path>, --with-searxng, --license-signing-public-key <hex>)" ;;
   esac
 done
 
@@ -191,7 +211,45 @@ WS_PORT=$(( APP_PORT + 3 ))
 CADDY_PORT=$(( APP_PORT + 1 ))
 
 # --- Deploy dir (NO SOURCE CODE CLONING) -----------------------------------
-APP_DIR=/opt/ryasai-chatbot
+#
+# APP_DIR defaults to /opt/ryasai-chatbot but is OVERRIDABLE, and that is not a convenience.
+#
+# MEASURED INCIDENT (2026-09-27). An existing deployment lived at /home/ubuntu/ryasai-chatbot. Running
+# this installer against it produced a SECOND, EMPTY deployment in /opt/ryasai-chatbot instead of
+# updating the real one — because the directory was hardcoded and nothing looked for an existing
+# install anywhere else. That is bad on its own (the customer's data stays behind while a blank stack
+# starts), and it got worse: the fresh `.env` contained a NEWLY GENERATED ENCRYPTION_SECRET_KEY, and
+# `docker compose` in the new directory recreated the app container using it. AES-256-GCM configs
+# (`LlmConfig.encryptedApiKey`, integrations, vector-store keys) are encrypted with that key, so the
+# app would have failed to decrypt the customer's own credentials.
+#
+# Verified by attempting decryption of a real `LlmConfig.encryptedApiKey` with both keys:
+#   /opt key  -> GAGAL (Unsupported state or unable to authenticate data)
+#   /home key -> OK (apiKey recovered)
+# which is why the wrong directory is a DATA problem, not a cosmetic one.
+#
+# Two defences now: `--dir` names the target explicitly, and an unset APP_DIR is probed for a likely
+# existing deployment before defaulting, with the choice printed.
+if [ -n "$APP_DIR_ARG" ]; then
+  APP_DIR="$APP_DIR_ARG"
+  info "Deploy directory (explicit): $APP_DIR"
+else
+  APP_DIR=/opt/ryasai-chatbot
+  if [ ! -f "$APP_DIR/.env" ]; then
+    # No install at the default path — look for one before creating a second stack.
+    FOUND=""
+    for cand in /home/ubuntu/ryasai-chatbot /home/*/ryasai-chatbot /root/ryasai-chatbot /srv/ryasai-chatbot /opt/ryasai; do
+      if [ -f "$cand/.env" ] && [ -f "$cand/docker-compose.prod.yml" ]; then FOUND="$cand"; break; fi
+    done
+    if [ -n "$FOUND" ]; then
+      warn "Found an existing install at $FOUND, but this installer defaults to $APP_DIR."
+      warn "Continuing would create a SECOND deployment with a NEW ENCRYPTION_SECRET_KEY, and the"
+      warn "app would then be unable to decrypt existing credentials (they are keyed to the old one)."
+      warn "To update it instead, re-run with:  --dir $FOUND"
+      fail "Refusing to run against $APP_DIR while an install exists at $FOUND."
+    fi
+  fi
+fi
 BACKUP_DIR="$APP_DIR/backups"
 IS_UPDATE=false
 
