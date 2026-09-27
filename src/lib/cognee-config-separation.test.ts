@@ -171,3 +171,54 @@ describe('cognee: the separate config file is not overridden by compose', () => 
     expect(installSh).toMatch(/^EMBEDDING_API_KEY=.+$/m)
   })
 })
+
+describe('installer: cognee separation must not break the update path', () => {
+  /**
+   * Two bugs found by running the update against a real deployment. Both are the kind that a
+   * happy-path test misses, because each only fires on an install that is ALREADY RUNNING.
+   */
+  const root = join(import.meta.dir, '..', '..')
+  const src = readFileSync(join(root, 'install.sh'), 'utf-8')
+
+  test('reading a possibly-absent value cannot abort the script', () => {
+    // The script runs under `set -euo pipefail`. `VAL="$(grep ... | head -1 | cut -d= -f2-)"` returns
+    // grep's exit status through the command substitution, so the FIRST missing key killed the
+    // installer with EXIT=1 and no message — measured on the production update.
+    const migrate = src.slice(src.indexOf('# --- Migrate a pre-separation cognee config'))
+    const line = migrate.split('\n').find((l) => l.includes('grep -E "^${SRC_KEY}="'))
+    expect(line, 'the migration value lookup must exist').toBeTruthy()
+    expect(
+      line,
+      'a bare grep inside a command substitution aborts under set -e when it matches nothing; ' +
+        'the lookup needs `|| true`',
+    ).toContain('|| true')
+  })
+
+  test('an update keeps the port instead of treating its own app as a collision', () => {
+    // The port check ran BEFORE the update was detected, so a running install looked like "another
+    // service on this host" and the installer moved to 38181 — silently, while every container
+    // reported healthy. The customer's reverse proxy still points at the old port, so the site goes
+    // dark. The check must consult the detected install first.
+    const portIdx = src.indexOf('if is_port_in_use "$APP_PORT"; then')
+    expect(portIdx).toBeGreaterThan(-1)
+    const dirIdx = src.indexOf('PRE_DETECT_DIR')
+    expect(dirIdx, 'the install must be detected before the port check').toBeGreaterThan(-1)
+    expect(
+      dirIdx,
+      'PRE_DETECT_DIR must be computed BEFORE the port check, not after',
+    ).toBeLessThan(portIdx)
+    // And the update branch must not renumber the port.
+    const branch = src.slice(portIdx, portIdx + 900)
+    expect(branch).toMatch(/PRE_IS_UPDATE/)
+  })
+
+  test('.env.cognee is written before the compose file references it', () => {
+    // compose fails the whole `up` when a listed env_file does not exist, so the writer must run
+    // first. Ordering is invisible in a fresh-install test that never reads the compose back.
+    const writeIdx = src.indexOf('COGNEE_ENV_FILE=".env.cognee"')
+    const composeIdx = src.indexOf('- .env.cognee')
+    expect(writeIdx).toBeGreaterThan(-1)
+    expect(composeIdx).toBeGreaterThan(-1)
+    expect(writeIdx).toBeLessThan(composeIdx)
+  })
+})

@@ -192,18 +192,43 @@ is_port_in_use() {
 
 APP_PORT="${APP_PORT_ARG:-${APP_PORT:-$DEFAULT_APP_PORT}}"
 
+# Is this an UPDATE at the deploy dir? Resolved BEFORE the port check, because on an update the
+# port is EXPECTED to be in use — by this install's own app container.
+#
+# MEASURED BUG THIS FIXES (2026-09-27, real deployment): the port check ran FIRST, saw the running
+# app on 38180, and concluded "another service" held it:
+#
+#     WARN: Port 38180 is already in use by another service on this host.
+#     ==> Automatically selected free unique port: 38181
+#
+# On a fresh install that is correct behaviour. On an UPDATE it silently moved the app to a different
+# port — and because the customer's reverse proxy / SSH tunnel forwards to the OLD port, the site
+# goes dark while every container reports healthy. The check now inspects the deploy dir first.
+PRE_DETECT_DIR=""
+for cand in "$APP_DIR_ARG" /opt/ryasai-chatbot /home/*/ryasai-chatbot /root/ryasai-chatbot /srv/ryasai-chatbot; do
+  [ -n "$cand" ] || continue
+  if [ -f "$cand/.env" ] && [ -f "$cand/docker-compose.prod.yml" ]; then PRE_DETECT_DIR="$cand"; break; fi
+done
+PRE_IS_UPDATE=false
+[ -n "$PRE_DETECT_DIR" ] && PRE_IS_UPDATE=true
+
 if is_port_in_use "$APP_PORT"; then
-  warn "Port $APP_PORT is already in use by another service on this host."
-  if [ -z "$APP_PORT_ARG" ]; then
-    for candidate in $(seq 38181 38220); do
-      if ! is_port_in_use "$candidate"; then
-        info "Automatically selected free unique port: $candidate"
-        APP_PORT="$candidate"
-        break
-      fi
-    done
+  if [ "$PRE_IS_UPDATE" = true ]; then
+    # Expected: our own container. Keep the port — moving it would break the reverse proxy.
+    info "Port $APP_PORT is in use — assumed to be the existing install at $PRE_DETECT_DIR (updating in place)."
   else
-    fail "Specified port $APP_PORT is in use. Please choose an available port with --port <number>."
+    warn "Port $APP_PORT is already in use by another service on this host."
+    if [ -z "$APP_PORT_ARG" ]; then
+      for candidate in $(seq 38181 38220); do
+        if ! is_port_in_use "$candidate"; then
+          info "Automatically selected free unique port: $candidate"
+          APP_PORT="$candidate"
+          break
+        fi
+      done
+    else
+      fail "Specified port $APP_PORT is in use. Please choose an available port with --port <number>."
+    fi
   fi
 fi
 
@@ -435,7 +460,12 @@ if grep -qE '^COGNEE_(LLM|EMBEDDING)_' .env 2>/dev/null; then
     SRC_KEY="${pair%%:*}"; DST_KEY="${pair##*:}"
     # Only when the destination is absent or empty: never clobber a value already set here.
     if grep -qE "^${DST_KEY}=.+" "$COGNEE_ENV_FILE" 2>/dev/null; then continue; fi
-    VAL="$(grep -E "^${SRC_KEY}=" .env 2>/dev/null | head -1 | cut -d= -f2-)"
+    # `|| true` IS REQUIRED, not defensive: the script runs under `set -euo pipefail`, and a grep
+    # that matches nothing exits 1. Command substitution inherits that status, so the assignment
+    # ABORTED THE WHOLE INSTALLER on the first key whose old variable was absent — measured on a real
+    # deployment, which stopped here with EXIT=1 and no error message. Reading a possibly-absent
+    # value must never be able to kill the script that is doing the reading.
+    VAL="$(grep -E "^${SRC_KEY}=" .env 2>/dev/null | head -1 | cut -d= -f2- || true)"
     [ -n "$VAL" ] || continue
     if grep -qE "^${DST_KEY}=" "$COGNEE_ENV_FILE" 2>/dev/null; then
       sed -i "s|^${DST_KEY}=.*|${DST_KEY}=${VAL}|" "$COGNEE_ENV_FILE"
