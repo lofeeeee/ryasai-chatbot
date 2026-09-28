@@ -1,10 +1,10 @@
 {
-  "linePct": 75.62,
-  "linesHit": 25220,
-  "linesFound": 33351,
+  "linePct": 75.61,
+  "linesHit": 25221,
+  "linesFound": 33358,
   "reachableLinePct": 86.41,
-  "reachableLinesHit": 21918,
-  "reachableLinesFound": 25365,
+  "reachableLinesHit": 21919,
+  "reachableLinesFound": 25366,
   "fnPct": 89.21,
   "fnsHit": 2256,
   "fnsFound": 2529,
@@ -193,9 +193,9 @@
     },
     {
       "file": "src/lib/mcp-client.ts",
-      "hit": 324,
-      "found": 613,
-      "pct": 52.85481239804242,
+      "hit": 325,
+      "found": 620,
+      "pct": 52.41935483870967,
       "fHit": 38,
       "fFound": 56,
       "fPct": 67.85714285714286
@@ -1434,6 +1434,15 @@
       "fPct": 100
     },
     {
+      "file": "src/lib/public-config.ts",
+      "hit": 10,
+      "found": 10,
+      "pct": 100,
+      "fHit": 1,
+      "fFound": 1,
+      "fPct": 100
+    },
+    {
       "file": "src/app/api/chat/sessions/route.ts",
       "hit": 47,
       "found": 47,
@@ -2133,15 +2142,6 @@
       "pct": 100,
       "fHit": 6,
       "fFound": 6,
-      "fPct": 100
-    },
-    {
-      "file": "src/lib/public-config.ts",
-      "hit": 10,
-      "found": 10,
-      "pct": 100,
-      "fHit": 1,
-      "fFound": 1,
       "fPct": 100
     },
     {

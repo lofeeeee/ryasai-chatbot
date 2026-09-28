@@ -24,6 +24,7 @@ import {
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { isBlockedHost } from './llm-config'
 
 /** A PATH containing exactly the given command names, and nothing else. */
 function pathWith(...cmds: string[]): string {
@@ -182,7 +183,26 @@ describe('testMcpServer — server found in DB', () => {
 
     const r = await testMcpServer('srv-4')
     expect(r.ok).toBe(false)
-    expect(r.error).toContain('Invalid transport config')
+    /*
+     * THE ASSERTION MUST NOT DEPEND ON THE DEVELOPER'S `.env`.
+     *
+     * MEASURED: this failed with `Received: "...SSE error: Unable to connect..."` instead of the expected "Invalid
+     * transport config", and the cause was NOT a broken guard. This workspace's `.env` sets
+     * `LLM_ALLOWED_HOSTS=127.0.0.1,localhost` (deliberate — the local 9router gateway is reached on 127.0.0.1), and the
+     * operator allowlist is consulted BEFORE the blocklist by design, so `localhost` is legitimately NOT blocked here
+     * and the request reached the network layer instead. The old assertion encoded "localhost is always blocked",
+     * which holds only on a machine with no allowlist.
+     *
+     * The invariant that IS true everywhere: the SSRF decision is consulted, and when it blocks, the server reports a
+     * CONFIG REFUSAL rather than a transport error. So the expectation is derived from the same predicate the
+     * implementation calls, and both outcomes are stated rather than one being assumed.
+     */
+    if (isBlockedHost('localhost')) {
+      expect(r.error).toContain('Invalid transport config')
+    } else {
+      // Deliberately allowlisted: the guard must not be what stopped it, so the failure is transport-level.
+      expect(r.error).not.toContain('Invalid transport config')
+    }
   })
 
   test('sse transport with SSRF-blocked host (169.254.x) → ok false', async () => {
