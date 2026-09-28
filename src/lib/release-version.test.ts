@@ -88,6 +88,31 @@ describe('release: one version across every stamped location', () => {
       why: 'reported in telemetry, so a wrong value makes traces un-attributable to a release',
     },
     {
+      file: 'src/lib/mcp-client.ts',
+      /*
+       * THE ONE THIS GUARD MISSED, which is why it is here now. v1.1.0 shipped with `createClient()` still sending
+       * `version: '1.0.0'` as a literal, so every MCP server an operator connected was told the client was a release
+       * behind. Nothing in the UI shows a handshake, so it was invisible: the tag was right, the image was right, and
+       * the client lied. Found by grepping the BUILT image for the previous number after publishing.
+       *
+       * The pattern matches the LITERAL form so a regression that reintroduces one is caught; the current code reads
+       * `publicConfig.appVersion`, and this extractor resolves that to the value public-config declares, so the two
+       * cannot disagree.
+       */
+      extract: (s) => {
+        const literal = s.match(/name:\s*'ryasai-chatbot',\s*version:\s*'([0-9]+\.[0-9]+\.[0-9]+)'/)
+        if (literal) return literal[1]
+        if (/name:\s*'ryasai-chatbot',\s*version:\s*publicConfig\.appVersion/.test(s)) {
+          // Delegated: the value IS public-config's, which is checked above — return that so this entry agrees
+          // rather than reporting null (a null would be reported as "extraction failed", the wrong diagnosis).
+          const pc = read('src/lib/public-config.ts')
+          return pc.match(/appVersion:\s*process\.env\.NEXT_PUBLIC_APP_VERSION\s*\?\?\s*'([0-9]+\.[0-9]+\.[0-9]+)'/)?.[1] ?? null
+        }
+        return null
+      },
+      why: 'the MCP client handshake reports this to every connected server; a literal here made 1.1.0 introduce itself as 1.0.0, with no UI to notice',
+    },
+    {
       file: 'CHANGELOG.md',
       extract: (s) => s.match(/^##\s*\[([0-9]+\.[0-9]+\.[0-9]+)\]/m)?.[1] ?? null,
       why: 'the released heading; `[Unreleased]` means the release notes were never cut',

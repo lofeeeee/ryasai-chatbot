@@ -36,6 +36,7 @@ import { db } from '@/lib/db'
 import { decryptConfig } from '@/lib/crypto'
 import { isBlockedHost, isBlockedHostAsync } from '@/lib/llm-config'
 import { resolveIsolation, buildIsolatedArgv } from '@/lib/plugin-sandbox'
+import { publicConfig } from '@/lib/public-config'
 
 /** A resource advertised by an MCP server (a readable artifact — file, record, page). */
 export interface McpResource {
@@ -244,7 +245,13 @@ export async function notifyRootsChanged(): Promise<number> {
 
 function createClient(): Client {
   const client = new Client(
-    { name: 'ryasai-chatbot', version: '1.0.0' },
+    /*
+     * The version comes from `appVersion`, NOT a literal. MEASURED defect: this said '1.0.0' while the shipped image
+     * was 1.1.0, so every MCP server an operator connected was told the client was a release behind — invisible,
+     * because a version string in a handshake has no UI. Found by grepping the BUILT image for the old number, which
+     * is how the release checklist is meant to be verified.
+     */
+    { name: 'ryasai-chatbot', version: publicConfig.appVersion },
     {
       // CLIENT capabilities — the surfaces WE offer the server, as opposed to
       // `tools`/`resources`/`prompts` which the SERVER offers us.
