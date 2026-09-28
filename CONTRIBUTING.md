@@ -52,6 +52,32 @@ project squash-merges, so `git merge-base --is-ancestor <branch> main` reports a
 because the original commits never entered `main`. `git diff main..<branch> --stat` showing only DELETIONS is
 the signal that `main` is strictly ahead.
 
+### After every release: merge `main` back into `dev`
+
+**Do not skip this.** Squashing a `dev` branch onto `main` ALWAYS leaves the two diverged: the squashed commit
+on `main` is not the commits on `dev`, so git sees `dev -> main` as permanently out of date and the next release
+PR conflicts on every line the release touched.
+
+```bash
+git checkout dev && git merge origin/main     # resolves the version-number conflicts
+```
+
+The conflicts are almost always the version stamp, in the same files every time (`package.json`, `.env.example`,
+`install.sh`, `otel.ts`, `public-config.ts`, `topbar.tsx`, `CHANGELOG.md`). **Resolve by one stated rule: the
+NEWER version wins** — `dev` carries it. Deciding by "whichever side I read first" is how a release ends up stamped
+with a version that is not the one being shipped, which is precisely what `release-version.test.ts` exists to
+catch, and it will catch it only if you run it after resolving:
+
+```bash
+grep -rl '<<<<<<<' . --exclude-dir=node_modules --exclude-dir=.git   # MUST be empty
+bun test src/lib/release-version.test.ts                             # all locations agree
+```
+
+TWO ALTERNATIVES, if the merge-back becomes annoying enough to justify them: merge `dev` into `main` with a merge
+commit instead of squashing (the graph stays connected and nothing needs syncing), or rebase `dev` onto `main`
+after each release (rewrites history, so it breaks anyone else with the branch checked out). The merge-back is
+the cheapest of the three; pick deliberately rather than by accident.
+
 ## Release tagging — every release gets a tag
 
 A moving image tag is a pointer, not a release: `:app` silently advances to whatever `main` last produced, so
