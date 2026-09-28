@@ -5,6 +5,18 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] - 2026-09-28
+
+### Fixed
+- **The MCP client reported the wrong version.** It sent a hardcoded `1.0.0` in its server handshake, so the 1.1.0
+  image told every connected MCP server it was a release behind. Found by grepping the BUILT image for the previous
+  version number after publishing, not by trusting the tag — it was the ninth place the version is stamped and the
+  only one the release-version guard did not know about.
+- **A test whose result depended on the developer's `.env`.** `mcp-client.test.ts` asserted that `localhost` is
+  SSRF-blocked, which is only true where `LLM_ALLOWED_HOSTS` does not include it — and this project's own documented
+  topology does include it, because the local 9router gateway is reached on `127.0.0.1`. The test now derives its
+  expectation from the same predicate the implementation consults and states both outcomes.
+
 ## [1.1.0] - 2026-09-28
 
 Six features and thirty fixes since 1.0.0, with no breaking change. Every item below was found by running the
