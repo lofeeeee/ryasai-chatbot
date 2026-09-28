@@ -41,6 +41,22 @@ export interface AgentOrchestratorOptions {
   question: string
   userId: string
   organizationId?: string
+  /**
+   * An API key's allowed tool families (`SQL | RAG | REST | CHAT`), or null/absent for every tool.
+   *
+   * Threaded in so the scope reaches the ONE place the tool surface is assembled. Before this, nothing on
+   * this path carried the restriction: a key limited to `['RAG']` still had SQL offered to the model, and a
+   * model offered a tool chooses it. The scope was stored, validated and DISPLAYED while enforcing nothing.
+   */
+  allowedTools?: string[] | null
+  /**
+   * The API-key DOCUMENT scope, threaded to the tool executors.
+   *
+   * Separate from `allowedTools` on purpose: that one decides which tool families are OFFERED (a filter on the
+   * list), while this decides what a permitted tool may READ (a filter on the query). A family can be allowed
+   * and still be scoped, and the two mechanisms fail independently.
+   */
+  documentIds?: string[] | null
   sessionId?: string
   context?: 'chat' | 'agentic'
   isAdmin?: boolean
@@ -82,6 +98,10 @@ export async function runAgentOrchestrator(
     query: options.question,
     context,
     isAdmin: options.isAdmin,
+    // The key's tool scope, applied at the ASSEMBLY point so a family the key may not use is never offered to
+    // the model. A model offered a tool will eventually choose it, which is why this REMOVES rather than
+    // refuses — the refusal for an explicit request lives in the transport.
+    allowedTools: options.allowedTools,
   })
   const llmToolDefs: LlmToolDef[] = tools.map(toLlmToolDef)
 
@@ -164,6 +184,11 @@ export async function runAgentOrchestrator(
         organizationId: options.organizationId,
         sessionId: options.sessionId,
         isAdmin: options.isAdmin,
+        // The scope reaches the EXECUTORS, not only the tool LIST. The filter above keeps a forbidden family
+        // out of the surface, but `SQL_TOOL`, `RAG_TOOL` and `REST_TOOL` each build their own router call — so
+        // without this a permitted tool still ran unscoped. Removing a tool and scoping a tool are two
+        // different guarantees, and this is the second one.
+        documentIds: options.documentIds,
       }
 
       const executionPromises = toolCalls.map(async (call) => {

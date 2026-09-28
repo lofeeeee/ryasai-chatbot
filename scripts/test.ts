@@ -4,7 +4,48 @@
 // Each test file gets its own bun process for perfect mock isolation.
 // Revert to `bun test src/` when Bun fixes mock.module cross-file isolation.
 
+import { readFileSync } from 'node:fs'
 import { parseBunSummary } from './test-summary'
+
+/*
+ * THE BUN VERSION IS CHECKED, because verifying on a different runtime than CI is a silent way to be wrong.
+ *
+ * MEASURED COST of not doing this: this repo pins `packageManager: bun@1.4.2` and `engines.bun >= 1.4.2`, CI pins
+ * `bun-version: 1.4.2`, while the machine that produced this session's earlier measurements was running 1.3.14.
+ * That mismatch produced a recorded "CI measures lower than local" offset which the gate file justified loosening
+ * ten coverage floors by 5-10 points for. Running the SAME tree through BOTH versions showed the numbers are
+ * IDENTICAL to the line (25093/33051 = 75.92% on each) — so the offset never existed, the baseline was stale, and
+ * the loosening was justified by a misdiagnosis.
+ *
+ * A WARNING, not a hard failure: a contributor on a newer patch release should not be blocked, but they should know
+ * that "it passes locally" was measured somewhere the gate does not run. CI is authoritative and always pins.
+ */
+function checkBunVersion(): void {
+  const pinned = (() => {
+    try {
+      const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
+        packageManager?: string
+      }
+      return pkg.packageManager?.split('@')[1] ?? null
+    } catch {
+      return null
+    }
+  })()
+  if (!pinned) return
+  const running = Bun.version
+  if (running === pinned) return
+  // A DIFFERENT MINOR is the case that bit us, so it is called out as such.
+  const sameMinor = running.split('.').slice(0, 2).join('.') === pinned.split('.').slice(0, 2).join('.')
+  console.warn(
+    `[test] WARNING: running bun ${running} but package.json pins ${pinned}` +
+      (sameMinor ? ' (same minor, different patch — usually fine)' : ' (DIFFERENT MINOR — CI pins this version)') +
+      '.\n[test] CI pins it for a reason; re-run with the pinned version before trusting a comparison.',
+  )
+}
+
+// Called at module scope so it runs before any test output can be mistaken for a
+// clean verification. Cheap (one small file read) and it cannot fail the run.
+checkBunVersion()
 
 const CONCURRENCY = 8
 
@@ -67,7 +108,17 @@ const files: string[] = []
 // artifacts most likely to be quoted as findings, were the one thing with no
 // automated check. Both benchmark test files are fully mocked (no live Postgres,
 // no network, no cognee server), so this costs one subprocess each.
-for await (const f of new Bun.Glob('{src,benchmark}/**/*.test.ts').scan()) {
+//
+// `.tsx` IS INCLUDED, and this was a real hole rather than a nicety: the glob used to be
+// `**/*.test.ts`, which does NOT match `.test.tsx`. MEASURED: `cognee-diagnostics-render.test.tsx` was
+// collected by nothing and had NEVER RUN in CI. A component test that never runs is worse than no test —
+// it looks like coverage of a surface nothing checks. `scripts/coverage.ts` globs the same narrow pattern,
+// so such a file does not even show up as missing there.
+//
+// This is the SECOND instance of this shape inside one loop (`benchmark/` before, `.tsx` now), which is why
+// the fix belongs in the glob: renaming one file leaves the next one to fail the same way. A guard in
+// `release-images.test.ts` now asserts this glob covers both extensions.
+for await (const f of new Bun.Glob('{src,benchmark}/**/*.test.{ts,tsx}').scan()) {
   if (isIntegration(f) !== runIntegration) continue
   files.push(f)
 }

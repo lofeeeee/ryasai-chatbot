@@ -5,7 +5,8 @@ import { handleApiError, writeAudit } from '@/lib/session'
 import { runAgentOrchestrator } from '@/lib/agent-orchestrator'
 import { rememberChatTurn } from '@/lib/cognee'
 import { rateLimit } from '@/lib/redis'
-import { getOrgContext } from '@/lib/prisma-tenant'
+import { enterWithOrg, getOrgContext } from '@/lib/prisma-tenant'
+import { resolveScope } from '@/lib/api-key-scope'
 import { logSwallowed } from '@/lib/logger'
 
 async function writeApiLog(args: {
@@ -41,6 +42,24 @@ export async function POST(req: NextRequest) {
   try {
     const identity = await requireExternalApiKey(req)
     apiKeyId = identity.apiKeyId
+
+    /*
+     * ENTER THE ORG HERE, explicitly.
+     *
+     * `requireExternalApiKey` calls `enterWithOrg` internally, but `AsyncLocalStorage.enterWith()` does NOT
+     * propagate back to the caller's frame — MEASURED by the audit with a standalone probe: a route that
+     * never enters resolves `undefined`, while one that does resolves its own org. So every DB query in THIS
+     * handler ran with no org context, and the tenant extension skips injection entirely when the context is
+     * empty (`prisma-tenant.ts`: `if (!orgId) return query(args)`).
+     *
+     * CONSEQUENCE, proven on the live database inside a transaction the audit rolled back: a FOREIGN org's
+     * document was returned by the unscoped query here. That is a cross-tenant read, not merely a missing
+     * scope — and `db.user.findFirst` below had the same exposure, which is why it could pick another
+     * tenant's user as the run's actor.
+     *
+     * `src/app/api/v1/chat/completions/route.ts` already did this; the two routes had diverged.
+     */
+    enterWithOrg(identity.organizationId)
 
     // ponytail: Redis burst-protection rate limit — falls back to DB-based limiting
     // in requireExternalApiKey when Redis is down (rateLimit returns null).
@@ -95,6 +114,18 @@ export async function POST(req: NextRequest) {
       sessionId: body.sessionId,
       context: 'agentic',
       isAdmin: false,
+      /*
+       * The key's tool scope, finally enforced on THIS path.
+       *
+       * It was stored, validated and rendered in the admin UI while nothing consulted it: `scopeAllowsTool`
+       * had zero production callers, so a key created with `allowedTools: ['RAG']` could still be handed SQL
+       * and run it. `resolveScope` runs first so a malformed stored value fails CLOSED instead of being read
+       * as "unrestricted" — the same convention the chat route uses.
+       */
+      allowedTools: resolveScope(identity.scope).tools,
+      // The DOCUMENT scope, so the tools that run are scoped and not merely filtered. Without it a granted
+      // tool could still read documents the key was restricted away from — measured reachable on this route.
+      documentIds: resolveScope(identity.scope).documentIds,
     })
 
     const answer = orchestratorResult.answer

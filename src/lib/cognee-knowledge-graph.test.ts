@@ -859,6 +859,37 @@ describe('server backend — cognifyDocument issues ONE remember call', () => {
     expect(last.status).toBe('failed')
     expect(last.error).toBe('embedding dimension mismatch')
   })
+
+  test('a REFUSED write (HTTP 200, status running, 0 items) is FAILED, not completed', async () => {
+    /*
+     * THE false success this file was missing, and the reason the check now lives in ONE place.
+     *
+     * `res && !res.error` was the entire test here, so the sidecar's refusal shape —
+     * `{"status":"running","items_processed":0,"pipeline_run_id":null}`, returned with HTTP 200 while a
+     * dataset's pipeline is busy — fell through to `completed` and returned `true`. MEASURED before the
+     * fix: `cognifyDocument` returned `true` and pushed `cognifyStatus: 'completed'` for a document
+     * nothing had stored.
+     *
+     * WHY THIS ONE IS NOT COVERED BY THE WRITE QUEUE. The KB dataset is `org:<id>:kb`; the queue
+     * serialises the CHAT dataset (`org:<id>`). And a document wrongly marked `completed` is never
+     * retried, because `cognifyBatch`'s eligibility query excludes `completed` rows — so the document
+     * stays unsearchable forever with every surface reporting success.
+     *
+     * A refusal is also the ORDINARY case under load: any upload overlapping a chat turn hits it.
+     */
+    core.serverOptions = SERVER_OPTS
+    httpState.rememberResult = { status: 'running', items_processed: 0, pipeline_run_id: null }
+    expect(await cognifyDocument(docs[0])).toBe(false)
+    const last = core.updateCalls[core.updateCalls.length - 1]
+    expect(last.status).toBe('failed')
+    // The reason must be actionable: it names the two fields the sidecar used to say "nothing stored".
+    expect(last.error).toContain('items_processed=0')
+    // And the control: the same call with a stored result still completes.
+    core.updateCalls = []
+    httpState.rememberResult = { status: 'completed', items_processed: 1 }
+    expect(await cognifyDocument(docs[0])).toBe(true)
+    expect(core.updateCalls.map((c) => c.status)).toEqual(['processing', 'completed'])
+  })
 })
 
 describe('server backend — recall', () => {
@@ -1101,9 +1132,77 @@ describe('server backend — forget / reset', () => {
     expect(await forgetAll()).toBe(true)
     expect(httpState.forgetCalls).toHaveLength(1)
   })
+
+  test('resetCognee reports FAILURE when the sidecar ANSWERS false, not only when it throws', async () => {
+    /*
+     * THE MISSING HALF OF THE FIX ABOVE, and it was still live.
+     *
+     * The test above reversed the assertion for a THROWN forget and documents why a false success is the
+     * worst outcome for a GDPR wipe. But `cogneeForget` does not throw when the sidecar refuses — it
+     * returns `false` (its documented graceful-degradation contract), and `resetCognee` only handled the
+     * `catch`. So the exact failure the sibling test exists to prevent was still reachable through the
+     * OTHER failure shape: MEASURED with `cogneeForget -> false`, `resetCognee()` returned `true` and
+     * cleared every `cognifyStatus` while the memory was still there.
+     *
+     * `forgetAll` and `forgetKnowledgeGraph` both already checked the boolean — this function was the
+     * outlier, which is the "one function in a family gets the rule right, its sibling does not" pattern.
+     */
+    core.serverOptions = SERVER_OPTS
+    httpState.forgetResult = false
+    expect(await resetCognee()).toBe(false)
+    // The statuses must NOT be cleared, or the app would believe documents are unindexed.
+    expect(dbState.updateManyCalls).toHaveLength(0)
+  })
+
+  test('resetCognee on a stored payload still succeeds and clears statuses (the control)', async () => {
+    // Without this direction an unconditional `return false` would satisfy the test above.
+    core.serverOptions = SERVER_OPTS
+    httpState.forgetResult = true
+    expect(await resetCognee()).toBe(true)
+    expect(dbState.updateManyCalls).toHaveLength(1)
+  })
 })
 
 describe('server backend — cognifyBatch retry loop', () => {
+  test('a REFUSED batch is retried and never counted as processed', async () => {
+    /*
+     * The batch twin of the `cognifyDocument` defect, and the more damaging of the two: MEASURED before
+     * the fix, `cognifyBatch` returned `{processed: 1, failed: 0}` and marked every document `completed`
+     * for a write the sidecar had refused with HTTP 200 / `items_processed: 0`. The admin UI renders that
+     * count, so the corpus reported as fully cognified while none of it was stored.
+     *
+     * A refusal must also be treated as TRANSIENT here. It means the dataset's pipeline was busy, and the
+     * retry succeeds once it frees — that is the same reasoning the write queue is built on. Scripted so
+     * attempt 1 is refused and attempt 2 stores, which is the real sequence rather than an inference.
+     */
+    core.serverOptions = SERVER_OPTS
+    core.settings = { cognifyBatchSize: 5, cognifyMaxRetries: 3 }
+    httpState.rememberScript = {
+      1: { status: 'running', items_processed: 0, pipeline_run_id: null },
+      2: { status: 'completed', items_processed: 1, pipeline_run_id: 'x' },
+    }
+    const res = await cognifyBatch({ documents: docs })
+    expect(httpState.rememberCalls).toHaveLength(2)
+    expect(res).toEqual({ processed: 1, failed: 0, skipped: 0 })
+    expect(core.updateCalls.map((c) => c.status)).toEqual(['processing', 'completed'])
+  }, 15000)
+
+  test('a batch refused on EVERY attempt is FAILED, never reported as processed', async () => {
+    // The other direction: without it, "retries and succeeds" would not distinguish a loop that
+    // eventually gives up correctly from one that reports success regardless of the outcome.
+    core.serverOptions = SERVER_OPTS
+    core.settings = { cognifyBatchSize: 5, cognifyMaxRetries: 3 }
+    httpState.rememberResult = { status: 'running', items_processed: 0, pipeline_run_id: null }
+    const res = await cognifyBatch({ documents: docs })
+    expect(httpState.rememberCalls).toHaveLength(3)
+    expect(res).toEqual({ processed: 0, failed: 1, skipped: 0 })
+    const statuses = core.updateCalls.map((c) => c.status)
+    expect(statuses).toContain('failed')
+    expect(statuses).not.toContain('completed')
+    const failed = core.updateCalls.find((c) => c.status === 'failed')
+    expect(failed!.error).toContain('did not store')
+  }, 15000)
+
   test('a batch of two documents rides ONE remember call', async () => {
     core.serverOptions = SERVER_OPTS
     core.settings = { cognifyBatchSize: 2, cognifyMaxRetries: 2 }
@@ -1296,5 +1395,64 @@ describe.skip('server backend — the SDK path is still used when no server is c
     core.serverOptions = undefined as any
     expect(await cognifyDocument(docs[0])).toBe(true)
     expect(httpState.rememberCalls).toHaveLength(0)
+  })
+})
+
+describe('the knowledge-graph read is SCOPED by node_set, and the write TAGS it', () => {
+  /**
+   * THE ONE LEG THAT LEAKED. MEASURED by an audit: a recall restricted to `documentIds: ['allowed-doc']`
+   * returned the correct document chunks but a `graphContext` string containing relations from OTHER
+   * documents — and `src/lib/tool-branches.ts` injects that string into the answer prompt as
+   * `CONTEXT (KNOWLEDGE GRAPH)`. So a scoped API key could read another document's facts.
+   *
+   * It could not be filtered downstream: the recall returns TEXT with no per-document metadata, and
+   * `KgRelation` carries a `chunkId` but no `documentId`. cognee's own `node_name` filter is the only place it
+   * can be applied — verified against the v1.6.0 OpenAPI rather than assumed.
+   *
+   * THE FILTER AND THE TAG ARE ONE MECHANISM. Sending `node_name` while never writing `node_set` would match
+   * NOTHING, converting a cross-document leak into a silently empty knowledge graph for exactly the keys the
+   * feature exists to protect. Both halves are pinned below, using the file's own recording seam
+   * (`httpState.recallCalls` / `httpState.rememberCalls`) so the assertions read the REAL arguments the
+   * transport built rather than a mock's return value.
+   */
+  test('recall forwards nodeNames to the sidecar as node_name', async () => {
+    // Opt into the SERVER branch. `beforeEach` sets `core.serverOptions = null` on purpose, so that a leaked
+    // serverOptions cannot silently move every other test off the SDK branch it exists to cover — and
+    // `recallKnowledgeGraph` returns '' immediately when there is no server. My first version of these three
+    // tests omitted this line and failed with an empty `recallCalls`, which is the same trap the file's own
+    // comment warns about.
+    core.serverOptions = { baseUrl: 'http://cognee:8000' }
+    httpState.recallCalls.length = 0
+    await recallKnowledgeGraph({ query: 'merger', topK: 3, nodeNames: ['doc-allowed'] })
+
+    expect(httpState.recallCalls.length).toBeGreaterThan(0)
+    for (const c of httpState.recallCalls) {
+      // Cognee's own field name, not ours: the transport must translate.
+      expect(c.args.nodeNames).toEqual(['doc-allowed'])
+    }
+  })
+
+  test('an UNSCOPED recall passes no nodeNames, so it still sees every node', async () => {
+    // The opposite direction, and the one that would break every existing install: an empty list means
+    // "restrict to nothing" while an absent field means "all nodes". They are opposites.
+    core.serverOptions = { baseUrl: 'http://cognee:8000' }
+    httpState.recallCalls.length = 0
+    await recallKnowledgeGraph({ query: 'merger' })
+    expect(httpState.recallCalls.length).toBeGreaterThan(0)
+    for (const c of httpState.recallCalls) expect(c.args.nodeNames).toBeUndefined()
+  })
+
+  test('a document WRITE is tagged with its own id, which is what the filter selects on', async () => {
+    // Without this half the filter matches nothing. The tag is the DOCUMENT ID because that is what the scope
+    // stores (`allowedDocumentIds`), so no mapping is needed in either direction.
+    core.serverOptions = { baseUrl: 'http://cognee:8000' }
+    httpState.rememberCalls.length = 0
+    await cognifyDocument({
+      documentId: 'doc-xyz',
+      documentName: 'policy.txt',
+      chunks: [{ content: 'Annual leave is 12 days.', chunkIndex: 0 }],
+    })
+    expect(httpState.rememberCalls.length).toBeGreaterThan(0)
+    expect(httpState.rememberCalls[0]!.args.nodeSet).toEqual(['doc-xyz'])
   })
 })

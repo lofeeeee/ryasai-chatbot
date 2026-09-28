@@ -1,4 +1,4 @@
-import { test, expect, describe, mock, beforeEach } from 'bun:test'
+import { test, expect, describe, mock, beforeEach, afterEach, spyOn } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { MEMORY_WRITE_MAX_CHARS } from '@/lib/constants'
@@ -53,9 +53,31 @@ mock.module('./cognee-core', () => ({
     return ''
   },
 }))
+/*
+ * EVERY export this module graph reaches must be here, not just the ones a given test reads.
+ *
+ * MEASURED CONSEQUENCE OF THE SHORT VERSION: `writeNotStored` and `capWritePayload` were absent, so
+ * `else if (writeNotStored(res))` in `writeTurnInline` threw `TypeError: writeNotStored is not a function`,
+ * the surrounding `catch` swallowed it, and the refusal branch was UNREACHABLE from this file. The tests
+ * still passed — they only asserted that nothing was thrown — so the arm the cognee audit had just added
+ * showed as uncovered and a negative control on it SURVIVED. A partial mock does not fail loudly; it makes
+ * production branches dead and silently reduces what the suite measures.
+ *
+ * `writeNotStored` is re-implemented here rather than imported from the real module, because a mock that
+ * delegates to the module it is replacing cannot detect a change in that module. Its shape is pinned in
+ * `cognee-types.test.ts`; here it only has to behave like the real predicate.
+ */
 mock.module('./cognee-types', () => ({
   datasetFor: () => 'org:acme',
   kbDatasetFor: () => 'org:acme:kb',
+  // Marker copied from the REAL implementation: the test asserts the stored body carries it, so a
+  // mock with its own wording would fail against correct production code — which is how this was caught.
+  capWritePayload: (text: string, maxChars = 4000) =>
+    text.length <= maxChars ? text : `${text.slice(0, maxChars)}\n[memory truncated for extraction]`,
+  writeNotStored: (res: { status?: string; items_processed?: number } | null) => {
+    if (!res) return true
+    return res.status === 'running' || res.items_processed === 0
+  },
 }))
 // The HTTP transport. Spied rather than faked at the `fetch` layer so a test can assert
 // on the ACTUAL arguments cognee-memory.ts builds (dataset, runInBackground, the text
@@ -671,6 +693,41 @@ describe('session cache — TTL and capacity', () => {
     await recallContext({ query: 'q', sessionId: 'drop' })
     expect(state.searchCalls.length).toBeGreaterThan(before)
   })
+
+  test('the number of SESSIONS is capped too, not just the entries within one', async () => {
+    /*
+     * THE MAP THAT GREW WITHOUT LIMIT. The test above pins `SESSION_CACHE_MAX` (100 entries in ONE
+     * session) and it passes, which is what hid this: the OUTER map is keyed by sessionId and had no
+     * bound at all, and `getSessionCache` creates an entry on the READ path too — so every recall with a
+     * sessionId, hit or miss, permanently added a session. `clearSessionCache(id)` runs only from the
+     * session DELETE route, which does nothing for a session a user merely abandons.
+     *
+     * MEASURED (rss, validated by a control that the instrument sees a known 3.88MiB retention): a
+     * session at its full 100-entry cap costs ~1.4MiB because each entry holds a recall result already
+     * capped at MEMORY_CONTEXT_MAX_CHARS. 500 full sessions ≈ 688MiB, 2000 ≈ 2.75GiB, in a long-lived
+     * server process. `SESSION_CACHE_MAX_SESSIONS` is 500.
+     *
+     * Asserted BEHAVIOURALLY rather than by reading the map: the OLDEST session must miss after the cap
+     * is passed, while a recent one still hits. A source scan would not show that the eviction is in the
+     * path that actually runs.
+     */
+    state.client = fakeClient()
+    state.searchImpl = (q: string) => [`answer for ${q}`]
+    const CAP = 500 // SESSION_CACHE_MAX_SESSIONS — not exported, so pinned by value.
+    for (let i = 0; i < CAP; i++) {
+      await recallContext({ query: 'q', sessionId: `s-${i}` })
+    }
+    // The newest session is cached (nothing evicted it).
+    const beforeRecent = state.searchCalls.length
+    await recallContext({ query: 'q', sessionId: `s-${CAP - 1}` })
+    expect(state.searchCalls.length).toBe(beforeRecent)
+
+    // One more session pushes past the cap, evicting the OLDEST.
+    await recallContext({ query: 'q', sessionId: 's-extra' })
+    const afterInsert = state.searchCalls.length
+    await recallContext({ query: 'q', sessionId: 's-0' })
+    expect(state.searchCalls.length).toBeGreaterThan(afterInsert)
+  }, 30000)
 })
 
 describe('recallFromSession — degradation', () => {
@@ -1008,8 +1065,26 @@ describe('rememberChatTurn — a REJECTED concurrent write must be visible, not 
       .split('\n')
       .map((l) => (l.trimStart().startsWith('//') || l.trimStart().startsWith('*') || l.trimStart().startsWith('/*') ? '' : l))
       .join('\n')
-    expect(src).toMatch(/res\.items_processed === 0/)
-    expect(src).toMatch(/res\.status === 'running'/)
+    /*
+     * REWRITTEN 2026-09-28, and the old expectation was WRONG — it pinned a LITERAL where the rule
+     * now lives in a SHARED function.
+     *
+     * It used to require `/res\.items_processed === 0/` and `/res\.status === 'running'/` in THIS file.
+     * That inlined copy is exactly the defect found this round: `cognifyDocument` and `cognifyBatch`
+     * had no such check at all, so a refused write was reported as completed, and nothing could catch
+     * the divergence because each file was only ever checked against itself.
+     *
+     * The rule moved to `writeNotStored()` in cognee-types.ts. Keeping the old assertion would have
+     * FORCED a copy back into this file, so it now asserts the INVOCATION and pins the rule itself in
+     * cognee-types.test.ts (which is what "prefer an invocation over a bare identifier" means here).
+     */
+    expect(src).toMatch(/writeNotStored\(res\)/)
+    // The check must be an `else if` arm AFTER the error arms: reordering it above `res.error` would
+    // report a server-supplied reason as a mere concurrency refusal.
+    const errorArm = src.indexOf('} else if (res.error) {')
+    const notStoredArm = src.indexOf('} else if (writeNotStored(res)) {')
+    expect(errorArm).toBeGreaterThan(-1)
+    expect(notStoredArm).toBeGreaterThan(errorArm)
     // And it must say the turn was NOT stored, so an operator reading the log knows what was lost.
     expect(src).toMatch(/NOT stored/)
   })
@@ -1058,5 +1133,88 @@ describe('rememberChatTurn — the queue path and the inline path must each writ
     expect(parsed.assistant).toBe('Rp 5m')
     // The dataset name must be the org's — a wrong one would write the turn where recall cannot find it.
     expect(args.datasetName).toContain('org:')
+  })
+})
+
+describe('rememberChatTurn — the INLINE path distinguishes a refused write from a failure', () => {
+  /**
+   * COVERAGE FINDING that pointed at real logic rather than trivia. The gate reported uncovered lines in this
+   * file; three were the `writeNotStored(res)` arm the cognee audit ADDED — the fix for `cognifyDocument`
+   * reporting `completed` for a write the sidecar refused. Uncovered code inside a fresh fix is how the fix
+   * gets deleted later by someone who cannot see what depended on it.
+   *
+   * The reaction here deliberately DIFFERS from the queue path. This is the INLINE path (taken when Redis is
+   * down) and `rememberChatTurn` is fire-and-forget at every call site, so a throw would be swallowed by their
+   * `.catch(() => {})` and reach nobody. The queue path THROWS on the same condition to earn a retry; the
+   * PREDICATE is shared, the reaction is deliberately not.
+   *
+   * Asserted against `console.warn` because that is what the production code calls — a spied console measures
+   * the real call rather than a mock of it.
+   */
+  let warnSpy: ReturnType<typeof spyOn>
+
+  beforeEach(() => {
+    warnSpy = spyOn(console, 'warn').mockImplementation(() => {})
+  })
+  afterEach(() => {
+    warnSpy.mockRestore()
+  })
+
+  test('a refused write warns and does NOT throw', async () => {
+    state.serverOptions = { baseUrl: 'http://cognee:8000' }
+    // The measured refusal: HTTP 200, so it looks like a success to any check that only tests `res.error`.
+    state.httpRememberImpl = () => ({ status: 'running', items_processed: 0, pipeline_run_id: null })
+
+    await expect(
+      rememberChatTurn({ userMessage: 'q', aiMessage: 'a', sessionId: 's1', toolRuns: [] }),
+    ).resolves.toBeUndefined()
+
+    // Resolving is the contract (fire-and-forget), so the LOSS must be visible in the log instead.
+    const logged = warnSpy.mock.calls.map((c) => String(c[0])).join(' ')
+    expect(logged).toContain('NOT stored')
+    expect(logged).toContain('running')
+  })
+
+  test('a COMPLETED write says nothing about a refusal', async () => {
+    // The opposite direction: a normal write must not emit the skipped-turn warning, or the log becomes noise
+    // an operator filters out — which is how a real loss hides inside it.
+    state.serverOptions = { baseUrl: 'http://cognee:8000' }
+    state.httpRememberImpl = () => ({ status: 'completed', items_processed: 1, pipeline_run_id: 'x' })
+
+    await rememberChatTurn({ userMessage: 'q', aiMessage: 'a', sessionId: 's1', toolRuns: [] })
+    expect(warnSpy.mock.calls.map((c) => String(c[0])).join(' ')).not.toContain('NOT stored')
+  })
+
+  test('a response carrying NEITHER marker is not treated as refused', async () => {
+    // `items_processed` is undefined when the sidecar omits the field. Treating that as a refusal would warn on
+    // every successful write — and on the queue path would RETRY it, which is worse.
+    state.serverOptions = { baseUrl: 'http://cognee:8000' }
+    state.httpRememberImpl = () => ({ status: 'ok' })
+
+    await rememberChatTurn({ userMessage: 'q', aiMessage: 'a', sessionId: 's1', toolRuns: [] })
+    expect(warnSpy.mock.calls.map((c) => String(c[0])).join(' ')).not.toContain('NOT stored')
+  })
+})
+
+describe('rememberChatTurn — a server-supplied error reason is logged verbatim', () => {
+  /**
+   * COVERAGE FINDING. The `res.error` arm was the one uncovered line left after the refusal arm was made
+   * reachable. It matters because the sidecar's own message is the only actionable detail: a generic
+   * "remember failed" tells an operator nothing about WHICH rejection it was.
+   */
+  let warnSpy: ReturnType<typeof spyOn>
+  beforeEach(() => { warnSpy = spyOn(console, 'warn').mockImplementation(() => {}) })
+  afterEach(() => { warnSpy.mockRestore() })
+
+  test('the error string reaches the log', async () => {
+    state.serverOptions = { baseUrl: 'http://cognee:8000' }
+    state.httpRememberImpl = () => ({ error: 'cognify for dataset org:acme is already running' })
+
+    await expect(
+      rememberChatTurn({ userMessage: 'q', aiMessage: 'a', sessionId: 's1', toolRuns: [] }),
+    ).resolves.toBeUndefined()
+
+    const logged = warnSpy.mock.calls.map((c) => c.map(String).join(' ')).join(' ')
+    expect(logged).toContain('already running')
   })
 })
