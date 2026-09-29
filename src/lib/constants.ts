@@ -65,7 +65,14 @@ export const RATE_LIMIT_DEFAULT = 60
 // back HTTP 429 with EMPTY answers, because they never reached the handler. That run
 // produced 196/200 "failures" that were pure throttling. Defaults to 30 (unchanged).
 export const RATE_LIMIT_CHAT = Number(process.env.RATE_LIMIT_CHAT_PER_MIN ?? '') || 30
+// Failed sign-in attempts, counted per NORMALIZED ACCOUNT and per CLIENT ADDRESS, never per request.
+// Per request is what the middleware used to do, and it refused the 11th CORRECT password in a minute
+// because it could not tell a guess from a sign-in (measured, see src/lib/login-throttle.ts).
 export const RATE_LIMIT_LOGIN = 10
+// The address axis is deliberately LOOSER than the account axis: an office behind one NAT address shares
+// it, and the account axis is the tight brute-force bound. It still caps spraying across many accounts,
+// which is the case the account axis cannot see.
+export const RATE_LIMIT_LOGIN_PER_IP = 30
 export const RATE_LIMIT_AGENT = 20
 export const RATE_LIMIT_UPLOAD = 20
 

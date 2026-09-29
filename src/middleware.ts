@@ -3,28 +3,35 @@ import {
   RATE_LIMIT_WINDOW_MS,
   RATE_LIMIT_DEFAULT,
   RATE_LIMIT_CHAT,
-  RATE_LIMIT_LOGIN,
   RATE_LIMIT_AGENT,
   RATE_LIMIT_UPLOAD,
 } from '@/lib/constants'
+import { getClientIp } from '@/lib/client-ip'
 
 /**
- * Public paths that still need the rate limiter.
+ * Public paths that still need the middleware's generic per-request limiter.
  *
  * `PUBLIC_API_PATHS` means "do not require a session", and the early return for it used to skip the rate
- * limiter entirely -- so the bucket whose own comment reads `// brute force protection` never ran for
- * `/api/auth/login`. Measured before the fix: 200 POSTs to /api/auth/login -> 200 x HTTP 200, while a
- * NON-public path with the same key went 20 x 200 then 180 x 429.
+ * limiter entirely -- so a guard never ran for the one endpoint whose own comment read
+ * `// brute force protection`. Measured at the time: 200 POSTs to /api/auth/login -> 200 x HTTP 200, while
+ * a NON-public path with the same key went 20 x 200 then 180 x 429.
  *
- * The three credential-guessing endpoints are listed here because they have NO session to key on and NO
- * second limiter inside the handler. The other public paths are deliberately absent:
+ * `/api/auth/login` IS DELIBERATELY ABSENT NOW, and the reason is the OPPOSITE defect from the one above.
+ * A per-request counter cannot tell a guess from a correct sign-in, so it spent quota on both, and it
+ * keyed the bucket on the session cookie -- which a login request cannot have, collapsing every anonymous
+ * caller into the single key `session::/api/auth/login`. Measured: the 11th login inside one 60-second
+ * window came back 429 with `Retry-After: 60`, on an install whose entire purpose is to let people log in.
+ * Brute-force protection now counts FAILURES, per account and per client address, inside the route where
+ * the outcome is known: src/lib/login-throttle.ts.
+ *
+ * The two remaining entries create an organization or a user, with NO session and NO second limiter, which
+ * is expensive work worth bounding. The other public paths are deliberately absent:
  *   - `/api/v1/chat/completions` and `/api/v1/agent/run` rate-limit per API KEY inside their handlers;
  *   - `/api/webhooks/*` and `/api/billing/webhook` are signature-authenticated server-to-server callers,
  *     and throttling them would DROP DELIVERIES rather than block an attacker;
  *   - `/api/v1/health`, `/api/health` and `/api` are read-only liveness probes hit by orchestrators.
  */
 const PUBLIC_PATHS_RATE_LIMITED = new Set([
-  '/api/auth/login',
   '/api/auth/signup',
   '/api/auth/register',
 ])
@@ -70,7 +77,10 @@ const ROUTE_LIMITS: Array<[string, number]> = [
   ['/api/v1/chat/completions', RATE_LIMIT_CHAT],
   ['/api/v1/agent/run', RATE_LIMIT_AGENT],
   ['/api/agent/dashboard', RATE_LIMIT_AGENT],
-  ['/api/auth/login', RATE_LIMIT_LOGIN], // brute force protection
+  // NOT /api/auth/login. A per-request counter here counted SUCCESSFUL sign-ins and keyed them on a session
+  // cookie a login request cannot have, so every anonymous caller shared ONE bucket and the 11th person to
+  // sign in inside a minute was refused. Login's brute-force guard counts failures, in the route:
+  // src/lib/login-throttle.ts. Re-adding an entry here would silently restore the defect.
   ['/api/documents', RATE_LIMIT_UPLOAD], // upload/processing
   ['/api/integrations', RATE_LIMIT_UPLOAD], // connection testing
 ]
@@ -87,7 +97,13 @@ function rateLimitKey(req: NextRequest, route: string): string {
   const apiKey = req.headers?.get?.('authorization')?.replace(/^Bearer\s+/i, '') ?? ''
   if (apiKey) return `apikey:${apiKey.slice(0, 13)}:${route}`
   const session = req.cookies?.get?.('x-active-user')?.value ?? ''
-  return `session:${session.slice(0, 20)}:${route}`
+  if (session) return `session:${session.slice(0, 20)}:${route}`
+  // ANONYMOUS callers have no session cookie by definition, so the old `session::<route>` key collapsed all
+  // of them into a SINGLE bucket: one caller's requests spent everyone's quota. Key on the address the proxy
+  // observed instead (src/lib/client-ip.ts explains why the LAST forwarded hop is the trustworthy one).
+  // A caller able to forge the header buys a fresh bucket, never a bypass -- an anonymous request holds no
+  // credential to bypass with, and the bucket only decides whether the request reaches the handler.
+  return `ip:${getClientIp(req)}:${route}`
 }
 
 /**
@@ -129,8 +145,8 @@ export function middleware(req: NextRequest) {
 
   if (!isApi) return NextResponse.next()
 
-  // Throttle the credential-guessing endpoints even though they are public. This MUST happen before the public
-  // early-return below, which is exactly where the limiter used to be skipped.
+  // Throttle the credential-CREATING public paths even though they are public. This MUST happen before the
+  // public early-return below, which is exactly where the limiter used to be skipped.
   if (PUBLIC_PATHS_RATE_LIMITED.has(pathname) && RATE_LIMITED_METHODS.has(req.method)) {
     const limited = applyRateLimit(req, pathname)
     if (limited) return limited

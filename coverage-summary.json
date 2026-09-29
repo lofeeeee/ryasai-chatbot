@@ -1,14 +1,14 @@
 {
   "linePct": 75.45,
-  "linesHit": 25244,
-  "linesFound": 33456,
-  "reachableLinePct": 86.39,
-  "reachableLinesHit": 21942,
-  "reachableLinesFound": 25400,
-  "fnPct": 89.17,
-  "fnsHit": 2256,
-  "fnsFound": 2530,
-  "filesMeasured": 242,
+  "linesHit": 25583,
+  "linesFound": 33907,
+  "reachableLinePct": 86.32,
+  "reachableLinesHit": 22238,
+  "reachableLinesFound": 25761,
+  "fnPct": 89.01,
+  "fnsHit": 2275,
+  "fnsFound": 2556,
+  "filesMeasured": 246,
   "failedTestFiles": [],
   "files": [
     {
@@ -127,6 +127,15 @@
       "fHit": 20,
       "fFound": 21,
       "fPct": 95.23809523809523
+    },
+    {
+      "file": "src/lib/client-ip.ts",
+      "hit": 18,
+      "found": 43,
+      "pct": 41.86046511627907,
+      "fHit": 2,
+      "fFound": 2,
+      "fPct": 100
     },
     {
       "file": "src/components/ui/alert.tsx",
@@ -309,6 +318,15 @@
       "fPct": 86.66666666666667
     },
     {
+      "file": "src/components/views/knowledge-base/vector-store-panel.tsx",
+      "hit": 107,
+      "found": 159,
+      "pct": 67.29559748427673,
+      "fHit": 5,
+      "fFound": 10,
+      "fPct": 50
+    },
+    {
       "file": "src/components/ui/button.tsx",
       "hit": 89,
       "found": 132,
@@ -363,6 +381,15 @@
       "fPct": 75
     },
     {
+      "file": "src/app/api/documents/route.ts",
+      "hit": 185,
+      "found": 269,
+      "pct": 68.77323420074349,
+      "fHit": 5,
+      "fFound": 11,
+      "fPct": 45.45454545454545
+    },
+    {
       "file": "src/lib/ai.ts",
       "hit": 467,
       "found": 678,
@@ -406,15 +433,6 @@
       "fHit": 6,
       "fFound": 8,
       "fPct": 75
-    },
-    {
-      "file": "src/components/views/knowledge-base/vector-store-panel.tsx",
-      "hit": 155,
-      "found": 214,
-      "pct": 72.42990654205607,
-      "fHit": 5,
-      "fFound": 15,
-      "fPct": 33.33333333333333
     },
     {
       "file": "src/lib/web-fetch.ts",
@@ -876,6 +894,15 @@
       "fPct": 100
     },
     {
+      "file": "src/components/views/knowledge-base/external-vector-fields.tsx",
+      "hit": 96,
+      "found": 106,
+      "pct": 90.56603773584906,
+      "fHit": 3,
+      "fFound": 9,
+      "fPct": 33.33333333333333
+    },
+    {
       "file": "src/lib/metrics.ts",
       "hit": 163,
       "found": 179,
@@ -904,12 +931,12 @@
     },
     {
       "file": "src/lib/vector-stores.ts",
-      "hit": 353,
-      "found": 384,
-      "pct": 91.92708333333334,
-      "fHit": 28,
-      "fFound": 41,
-      "fPct": 68.29268292682927
+      "hit": 360,
+      "found": 391,
+      "pct": 92.07161125319693,
+      "fHit": 29,
+      "fFound": 42,
+      "fPct": 69.04761904761905
     },
     {
       "file": "src/app/api/chat/sessions/[id]/send/route.ts",
@@ -1201,8 +1228,8 @@
     },
     {
       "file": "src/lib/constants.ts",
-      "hit": 40,
-      "found": 40,
+      "hit": 41,
+      "found": 41,
       "pct": 100,
       "fHit": 1,
       "fFound": 1,
@@ -1282,11 +1309,20 @@
     },
     {
       "file": "src/app/api/auth/login/route.ts",
-      "hit": 66,
-      "found": 66,
+      "hit": 87,
+      "found": 87,
       "pct": 100,
       "fHit": 5,
       "fFound": 5,
+      "fPct": 100
+    },
+    {
+      "file": "src/lib/login-throttle.ts",
+      "hit": 46,
+      "found": 46,
+      "pct": 100,
+      "fHit": 8,
+      "fFound": 8,
       "fPct": 100
     },
     {
@@ -1539,6 +1575,15 @@
       "pct": 100,
       "fHit": 2,
       "fFound": 2,
+      "fPct": 100
+    },
+    {
+      "file": "src/lib/bounded-concurrency.ts",
+      "hit": 22,
+      "found": 22,
+      "pct": 100,
+      "fHit": 4,
+      "fFound": 4,
       "fPct": 100
     },
     {
@@ -1903,8 +1948,8 @@
     },
     {
       "file": "src/app/api/vector-store/route.ts",
-      "hit": 106,
-      "found": 106,
+      "hit": 119,
+      "found": 119,
       "pct": 100,
       "fHit": 9,
       "fFound": 9,
@@ -1989,15 +2034,6 @@
       "pct": 100,
       "fHit": 6,
       "fFound": 6,
-      "fPct": 100
-    },
-    {
-      "file": "src/lib/bounded-concurrency.ts",
-      "hit": 22,
-      "found": 22,
-      "pct": 100,
-      "fHit": 4,
-      "fFound": 4,
       "fPct": 100
     },
     {

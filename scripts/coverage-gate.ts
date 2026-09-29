@@ -263,7 +263,13 @@ const FLOORS: Record<string, number> = {
   'src/app/api/org/license/route.ts': 100, // merged 100.00%
   'src/app/api/auth/invite/route.ts': 100, // merged 100.00%
   'src/app/api/users/[id]/role/route.ts': 100, // merged 100.00%; was UNTESTED (one of 42 routes with no test at all)
-  'src/middleware.ts': 100, // measured 100.00% (85/85); had NO test file at all
+  'src/middleware.ts': 100, // re-measured 100.00% (97/97); had NO test file at all
+  'src/lib/login-throttle.ts': 100, // re-measured 100.00% (46/46); the failure-based login guard that replaced middleware rate limiting
+  // NOT gated, and the reason is the merged-vs-single-file gap rather than a gap in its tests: `client-ip.ts`
+  // measures 100.00% (18/18) in its own run but 41.86% (18/43) merged, because Bun's instrumented copies in the
+  // route and middleware processes report DA records for lines those processes never execute. A floor here would
+  // ratchet a denominator the tests cannot lower. The behaviour is pinned by client-ip.test.ts and by the
+  // IP-keyed cases in middleware.test.ts and the login route tests.
   'src/lib/tool-branches.ts': 70, // re-measured 73.76% (669/907); was 84
   'src/lib/embeddings.ts': 80, // re-measured 81.66% (334/409); was 82
   'src/lib/smart-router.ts': 55, // re-measured 56.12% (243/433); was 74
@@ -491,7 +497,8 @@ const FLOORS: Record<string, number> = {
   // THE AUTHENTICATION BOUNDARY. The 401 must stay generic (no user enumeration),
   // a failure must be audited, and a success must rotate sessionVersion so old
   // cookies die. The route sat at 35.14% executable with the entire POST flow
-  // unexecuted; measured 100.00% (66/66) merged.
+  // unexecuted; re-measured 100.00% (87/87) merged after the failed-attempt throttle
+  // moved in here from the middleware (which could not see whether a try succeeded).
   'src/app/api/auth/login/route.ts': 100,
   // THE AUDIT LOG READ PATH. Tenant scoping depends entirely on enterWithOrg
   // running before the query, and the severity filter is an allow-list so an

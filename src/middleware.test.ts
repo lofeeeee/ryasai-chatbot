@@ -4,10 +4,18 @@
  * WHY THIS FILE EXISTS. `src/middleware.ts` had no test file at all, so the two branches that
  * actually protect the install had never executed:
  *
- *   - the 429 refusal (brute-force protection on /api/auth/login, LLM-cost protection on the chat
- *     and agent endpoints) — reaching it needs the SAME key to exceed its limit within one window,
- *     which no single request can do, and
+ *   - the 429 refusal (LLM-cost protection on the chat and agent endpoints, signup/register
+ *     protection on the credential-CREATING public paths) — reaching it needs the SAME key to
+ *     exceed its limit within one window, which no single request can do, and
  *   - the stale-bucket eviction sweep, which runs only once the map passes 1000 entries.
+ *
+ * `/api/auth/login` USED to be pinned here as rate limited, and that pin is now replaced by its
+ * INVERSION: login must NOT be limited by the middleware at all. The per-request counter could not
+ * see whether an attempt succeeded, so it spent quota on correct passwords too, and — because a
+ * login request carries no session cookie — it keyed every anonymous caller on the single shared
+ * key `session::/api/auth/login`. Measured: the 11th successful sign-in inside one 60-second window
+ * came back 429. Brute-force protection counts FAILURES now, inside the route, per account and per
+ * client address: src/lib/login-throttle.ts (+ its own test file).
  *
  * The module keeps its counters in a module-scope Map with a 60-second window, so a test has to
  * either use up real quota or reset that map. There is no exported reset, so this file drives the
@@ -22,11 +30,12 @@ import { RATE_LIMIT_LOGIN, RATE_LIMIT_DEFAULT, RATE_LIMIT_WINDOW_MS } from '@/li
 /** A NextRequest with the session cookie the middleware's existence check looks for. */
 function req(
   pathname: string,
-  init: { method?: string; session?: string | null; bearer?: string } = {},
+  init: { method?: string; session?: string | null; bearer?: string; ip?: string } = {},
 ): NextRequest {
   const method = init.method ?? 'GET'
   const headers: Record<string, string> = {}
   if (init.bearer) headers.authorization = `Bearer ${init.bearer}`
+  if (init.ip) headers['x-forwarded-for'] = init.ip
   // `session: null` means "send no cookie at all", which is the unauthenticated case.
   if (init.session !== null) headers.cookie = `x-active-user=${init.session ?? 'sess-abc'}`
   return new NextRequest(`http://localhost${pathname}`, { method, headers })
@@ -87,36 +96,67 @@ describe('middleware — the session existence gate', () => {
     expect(nextResponse(res)).toBe(true)
   })
 
-  test('FIXED: /api/auth/login IS rate limited, so password guessing is bounded', () => {
-    // THIS TEST USED TO PIN THE FAIL-OPEN. The public-path early return ran BEFORE the rate limiter, so the
-    // bucket whose own comment reads `// brute force protection` never executed for the one endpoint that needs
-    // it -- measured at the time: 200 POSTs -> 200 x HTTP 200, while a non-public path went 20 x 200 then
-    // 180 x 429. Credential-guessing paths are now throttled BEFORE that early return. The SAME loop body is
-    // kept, so the inversion is a genuine flipper rather than a fresh assertion.
-    const session = uniqueSession()
-    let allowed = 0
-    let firstBlocked: Response | undefined
+  test('INVERTED: /api/auth/login is NOT limited by the middleware, so a correct password is never refused', () => {
+    // THIS TEST PINS THE OPPOSITE OF WHAT IT USED TO. The login limiter was moved here from the public-path
+    // early return to fix a genuine fail-open (200 POSTs -> 200 x HTTP 200 while a non-public path went
+    // 20 x 200 then 180 x 429). THAT fix then produced a worse defect, measured: the bucket counted EVERY
+    // request -- including a CORRECT sign-in, because the middleware cannot see the outcome -- and, since a
+    // login request has no session cookie, keyed every anonymous caller on the shared literal
+    // `session::/api/auth/login`. The 11th person to sign in inside one 60-second window got HTTP 429 on an
+    // install whose whole purpose is letting people log in. Brute-force protection now counts FAILURES,
+    // per account and per client address, inside the route (src/lib/login-throttle.ts). So the middleware
+    // must let every one of these through: no cookie, no address header, same shared identity that used to
+    // be exhausted at RATE_LIMIT_LOGIN.
+    let refused: Response | undefined
     for (let i = 0; i < RATE_LIMIT_LOGIN + 50; i += 1) {
-      const res = middleware(req('/api/auth/login', { method: 'POST', session }))
-      if (res.status === 200) allowed += 1
-      else if (!firstBlocked) firstBlocked = res
+      const res = middleware(req('/api/auth/login', { method: 'POST', session: null }))
+      if (res.status === 429) refused = res
     }
-    // Exactly the configured limit gets through, and the next attempt is refused.
-    expect(allowed).toBe(RATE_LIMIT_LOGIN)
-    expect(firstBlocked!.status).toBe(429)
+    expect(refused).toBeUndefined()
   })
 
-  test('the login limiter answers 429 with the same headers as every other limited route', async () => {
-    // The 429 shape is what a client library keys on, so the public path must not produce a different one.
-    const session = uniqueSession()
-    let last: Response | undefined
-    for (let i = 0; i <= RATE_LIMIT_LOGIN; i += 1) {
-      last = middleware(req('/api/auth/login', { method: 'POST', session }))
+  test('INVERTED: the 11th anonymous sign-in in a minute succeeds (the exact measured failure)', () => {
+    // The reported shape, reproduced deliberately: 11 logins, no cookie, no forwarded address. Before the
+    // fix attempts 1-10 passed and 11 came back 429 with Retry-After: 60. The guard that produces that
+    // refusal now lives behind the password check, where a SUCCESS never counts.
+    const statuses: number[] = []
+    for (let i = 0; i < 11; i += 1) {
+      statuses.push(middleware(req('/api/auth/login', { method: 'POST', session: null })).status)
     }
-    expect(last!.status).toBe(429)
-    expect(last!.headers.get('Retry-After')).toBe('60')
-    expect(last!.headers.get('X-RateLimit-Limit')).toBe(String(RATE_LIMIT_LOGIN))
-    expect(((await last!.json()) as { error: string }).error).toBe('Rate limit reached. Try again later.')
+    expect(statuses).toHaveLength(11)
+    expect(statuses.every((s) => s !== 429)).toBe(true)
+  })
+
+  test('an ANONYMOUS caller on a credential-creating path is keyed on the client ADDRESS, not on the missing cookie', () => {
+    // The remaining rate-limited public paths (signup/register) DO still throttle, and with no session cookie
+    // to key on they must use the forwarded address. Exhausting one address must not spend another's quota --
+    // that collapse is precisely the defect this change removes, so it has to be pinned on the path that
+    // still has a limiter.
+    const a = '203.0.113.10'
+    const b = '203.0.113.11'
+    let refusedA = false
+    for (let i = 0; i < RATE_LIMIT_DEFAULT + 5; i += 1) {
+      if (middleware(req('/api/auth/signup', { method: 'POST', session: null, ip: a })).status === 429) {
+        refusedA = true
+        break
+      }
+    }
+    expect(refusedA).toBe(true)
+    // A DIFFERENT address still gets through, which proves the key carries the address.
+    expect(nextResponse(middleware(req('/api/auth/signup', { method: 'POST', session: null, ip: b })))).toBe(true)
+  })
+
+  test('with NO forwarded address at all, anonymous callers share ONE bucket rather than none', () => {
+    // Deliberate: an install with no reverse proxy cannot distinguish its callers, so the safe reading is a
+    // shared budget (still bounded) rather than an unbounded one. Pinned so the fallback is a decision.
+    let refused = false
+    for (let i = 0; i < RATE_LIMIT_DEFAULT + 5; i += 1) {
+      if (middleware(req('/api/auth/signup', { method: 'POST', session: null })).status === 429) {
+        refused = true
+        break
+      }
+    }
+    expect(refused).toBe(true)
   })
 
   test('signup and register are throttled too -- the other two credential-creating public paths', () => {
@@ -160,13 +200,11 @@ describe('middleware — rate limiting on a state-changing method', () => {
   })
 
   test('exceeding the route limit returns 429 with Retry-After and the limit headers', async () => {
-    // The branch that had never run. /api/auth/login is limited to RATE_LIMIT_LOGIN per minute and
-    // is the brute-force guard for the install, so "does the 429 actually come back" is a security
-    // property, not a nicety.
-    // NOTE: /api/documents, NOT /api/auth/login. Login is in PUBLIC_API_PATHS, which returns before
-    // the limiter runs -- see the KNOWN FAIL-OPEN test above. The middleware's own default limit is
-    // RATE_LIMIT_DEFAULT (60); /api/documents shares RATE_LIMIT_UPLOAD, so this uses the default
-    // route to keep the assertion about the DEFAULT limit.
+    // The branch that had never run. "Does the 429 actually come back" is a security property, not a nicety.
+    // NOTE: /api/new-thing, deliberately an endpoint with no specific limit, so this pins the middleware's
+    // own DEFAULT limit (RATE_LIMIT_DEFAULT = 60). /api/auth/login is NOT used here: it has no middleware
+    // limiter at all any more (see the two INVERTED tests above), and /api/documents shares
+    // RATE_LIMIT_UPLOAD, which is a different number.
     const session = uniqueSession()
     let last: Response | undefined
     for (let i = 0; i < RATE_LIMIT_DEFAULT + 2; i += 1) {
@@ -191,7 +229,7 @@ describe('middleware — rate limiting on a state-changing method', () => {
     expect(nextResponse(middleware(req('/api/new-thing', { method: 'POST', session: b })))).toBe(true)
   })
 
-  test('the counter is PER ROUTE — using up login does not block chat', () => {
+  test('the counter is PER ROUTE — exhausting one route does not block another', () => {
     const session = uniqueSession()
     for (let i = 0; i < RATE_LIMIT_DEFAULT + 2; i += 1) {
       middleware(req('/api/new-thing', { method: 'POST', session }))
@@ -253,9 +291,10 @@ describe('middleware — rate limiting on a state-changing method', () => {
     expect(sawLimitHeader).toBe(true)
   })
 
-  test('a longer route prefix wins over a shorter one (login is not swallowed by /api)', () => {
-    // ROUTE_LIMITS is scanned in order and returns the FIRST prefix match, so /api/auth/login must
-    // appear before any broader prefix or it would inherit the wrong limit.
+  test('a route with no specific limit still counts its own requests (the prefix scan hits the default)', () => {
+    // ROUTE_LIMITS is scanned in order and returns the FIRST prefix match; when nothing matches, limitFor()
+    // falls through to the default. This pins that the fall-through still ENFORCES a limit rather than
+    // letting an unknown route run unlimited.
     const session = uniqueSession()
     let hit = 0
     for (let i = 0; i < RATE_LIMIT_DEFAULT + 2; i += 1) {
