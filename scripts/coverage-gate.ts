@@ -286,7 +286,7 @@ const FLOORS: Record<string, number> = {
   'src/lib/api-keys.ts': 80, // merged 84.78%; merged 84.78% but 78/78 executable (100.00%)
   'src/lib/alignment-check.ts': 83, // merged 83.08%; merged 83.08% but 54/54 executable (100.00%)
   'src/lib/cognee.ts': 53, // re-measured 55.70% (44/79); was 73
-  'src/lib/tool-router.ts': 45, // re-measured 54.44% (282/518); was 69
+  'src/lib/tool-router.ts': 45, // re-measured 52.68% (295/560); was 69
   'src/lib/llm-config.ts': 66, // lowered 81 -> 66 this round. NOT a regression: the file gained 81 real
   // lines (embeddedIpv4 + the v4-mapped refusal) and it is a module CONSUMED by ~32 test files, so Bun
   // instruments the whole file in every process that touches it and the denominator moves while HIT stays.
