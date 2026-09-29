@@ -1,3 +1,4 @@
+import { EMBEDDING_DIMENSIONS } from '@/lib/constants'
 export type DbProtocolFamily = 'POSTGRESQL' | 'MYSQL' | 'MSSQL' | 'CLICKHOUSE'
 
 export interface DbProviderPreset {
@@ -47,12 +48,12 @@ export interface VectorStorePreset {
 }
 
 export const VECTOR_STORE_PRESETS: VectorStorePreset[] = [
-  { id: 'INTERNAL', label: 'Internal (PostgreSQL pgvector)', backend: 'INTERNAL', baseUrlPlaceholder: '', needsApiKey: false, defaultVectorSize: 1536 },
-  { id: 'QDRANT', label: 'Qdrant (Local)', backend: 'QDRANT', baseUrlPlaceholder: 'http://localhost:6333', needsApiKey: false, defaultVectorSize: 1536 },
-  { id: 'QDRANT_CLOUD', label: 'Qdrant Cloud', backend: 'QDRANT', baseUrlPlaceholder: 'https://cluster-id.qdrant.tech:6333', needsApiKey: true, defaultVectorSize: 1536, hint: 'API key required for Qdrant Cloud' },
-  { id: 'MILVUS', label: 'Milvus', backend: 'MILVUS', baseUrlPlaceholder: 'http://localhost:19530', needsApiKey: false, defaultVectorSize: 1536 },
-  { id: 'PINECONE', label: 'Pinecone (serverless)', backend: 'PINECONE', baseUrlPlaceholder: 'https://index-name-project.svc.region.aws.pinecone.io', needsApiKey: true, defaultVectorSize: 1536, hint: 'Base URL is the INDEX host from the Pinecone console; create the index first (we never auto-create).' },
-  { id: 'CHROMA', label: 'Chroma (self-hosted)', backend: 'CHROMA', baseUrlPlaceholder: 'http://localhost:8000', needsApiKey: false, defaultVectorSize: 1536, hint: 'API key only needed when Chroma runs with CHROMA_SERVER_AUTHN_TOKEN' },
+  { id: 'INTERNAL', label: 'Internal (PostgreSQL pgvector)', backend: 'INTERNAL', baseUrlPlaceholder: '', needsApiKey: false, defaultVectorSize: EMBEDDING_DIMENSIONS },
+  { id: 'QDRANT', label: 'Qdrant (Local)', backend: 'QDRANT', baseUrlPlaceholder: 'http://localhost:6333', needsApiKey: false, defaultVectorSize: EMBEDDING_DIMENSIONS },
+  { id: 'QDRANT_CLOUD', label: 'Qdrant Cloud', backend: 'QDRANT', baseUrlPlaceholder: 'https://cluster-id.qdrant.tech:6333', needsApiKey: true, defaultVectorSize: EMBEDDING_DIMENSIONS, hint: 'API key required for Qdrant Cloud' },
+  { id: 'MILVUS', label: 'Milvus', backend: 'MILVUS', baseUrlPlaceholder: 'http://localhost:19530', needsApiKey: false, defaultVectorSize: EMBEDDING_DIMENSIONS },
+  { id: 'PINECONE', label: 'Pinecone (serverless)', backend: 'PINECONE', baseUrlPlaceholder: 'https://index-name-project.svc.region.aws.pinecone.io', needsApiKey: true, defaultVectorSize: EMBEDDING_DIMENSIONS, hint: 'Base URL is the INDEX host from the Pinecone console; create the index first (we never auto-create).' },
+  { id: 'CHROMA', label: 'Chroma (self-hosted)', backend: 'CHROMA', baseUrlPlaceholder: 'http://localhost:8000', needsApiKey: false, defaultVectorSize: EMBEDDING_DIMENSIONS, hint: 'API key only needed when Chroma runs with CHROMA_SERVER_AUTHN_TOKEN' },
 ]
 
 export function getVectorStorePreset(id: string): VectorStorePreset | undefined {

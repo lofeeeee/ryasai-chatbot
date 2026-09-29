@@ -17,13 +17,14 @@ import {
 } from '@/components/ui/select'
 import { VECTOR_STORE_PRESETS, getVectorStorePreset } from '@/lib/db-provider-presets'
 import { extractError } from '@/lib/extract-error'
+import { EMBEDDING_DIMENSIONS } from '@/lib/constants'
 
 export function VectorStorePanel() {
   const [provider, setProvider] = useState('INTERNAL')
   const [baseUrl, setBaseUrl] = useState('')
   const [apiKey, setApiKey] = useState('')
   const [collectionName, setCollectionName] = useState('ryasai_chunks')
-  const [vectorSize, setVectorSize] = useState('1536')
+  const [vectorSize, setVectorSize] = useState(String(EMBEDDING_DIMENSIONS))
   /*
    * The dimension the CHUNKS actually hold, and the model they were embedded with.
    *
@@ -82,7 +83,7 @@ export function VectorStorePanel() {
         setProvider(json.data.provider ?? 'INTERNAL')
         setBaseUrl(json.data.baseUrl ?? '')
         setCollectionName(json.data.collectionName ?? 'ryasai_chunks')
-        setVectorSize(String(json.data.vectorSize ?? 1536))
+        setVectorSize(String(json.data.vectorSize ?? EMBEDDING_DIMENSIONS))
         setStoredVectorSize(typeof json.data.storedVectorSize === 'number' ? json.data.storedVectorSize : null)
         setStoredModel(typeof json.data.storedEmbeddingModel === 'string' ? json.data.storedEmbeddingModel : null)
         setDistance(json.data.distance ?? 'Cosine')
@@ -110,7 +111,7 @@ export function VectorStorePanel() {
           baseUrl,
           apiKey: apiKey || undefined,
           collectionName,
-          vectorSize: Number(vectorSize) || 1536,
+          vectorSize: Number(vectorSize) || EMBEDDING_DIMENSIONS,
           distance,
         }),
       })
