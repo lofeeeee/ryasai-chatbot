@@ -1,11 +1,13 @@
 # CLAUDE.md — ryasai Chatbot (Super-App Track)
 
 > Living document. Update the **Progress Log** at the bottom every session.
-> Last updated 2026-09-25. Version 1.0.0. PostgreSQL 16. All PLAN.md phases P0–P5 + S4 + RAG complete. Language standardized to English.
+> Last updated 2026-09-29. Version 1.1.1. PostgreSQL 16. All PLAN.md phases P0–P5 + S4 + RAG complete. Language standardized to English.
 >
-> **Counts and versions in this file drift.** Sections 1–2 and 8 describe CURRENT state and are
-> corrected to 1.0.0; section 9 (Progress Log) is HISTORICAL and its numbers were true when
-> written — do not "fix" them. When you need a number, run the command.
+> **Counts and versions in this file drift.** Section 1 and 8 describe CURRENT state and are
+> corrected to 1.1.1; section 9 (Progress Log) is HISTORICAL and its numbers were true when
+> written — do not "fix" them. When you need a number, run the command. (Section 2 was three
+> releases stale — it claimed 6825 tests across 265 files when this tree measures 7206 across 289 —
+> which is why it moved to docs/ rather than being re-corrected in place.)
 
 ---
 
@@ -17,115 +19,24 @@
 | Stack | Next.js 16 (App Router) · React 19 · TypeScript 5 · Prisma 6 · PostgreSQL 16 (pgvector + pg_trgm) · Bun · Tailwind 4 · shadcn/ui |
 | Runtime | Bun for dev/test, Node standalone for prod build |
 | Domain | Multi-tenant AI assistant deployed **on-prem per customer**, licensed with a signed machine-bound key: natural-language → SQL, RAG over company docs, whitelisted REST calls, streaming chat |
-| Status | **Release 1.0.0** (2026-09-25). Verified by execution, not assertion: `tsc` 0 · `lint` 0 · `bun run test` 265/265 files, 6825 pass, 0 fail · `bun run e2e` 16/16 (dev) and `e2e:prod` 16/16 against the standalone build |
-| Version | 1.0.0 |
+| Status | **Release 1.1.1** (2026-09-29). Verified by execution, not assertion: `tsc` 0 · `lint` 0 · `bun run test` 289/289 files, 7206 pass, 0 fail · `e2e` dev and `e2e:prod` both green in CI |
+| Version | 1.1.1 |
 | Language | English (standardized — all UI, errors, system prompts, comments in English) |
 
 ---
 
-## 2. Audit Summary (current state)
+## 2. Audit Summary (moved)
 
-### 2.1 What exists and works
+The component-by-component inventory — auth and tenancy, the data layer, the AI pipeline, guardrails, connectors,
+observability, the intent pipeline, the agentic loop and the scheduler — now lives in
+**`docs/architecture-reference.md`**, beside the AI/RAG internals it overlaps with.
 
-**Auth & tenancy**
-- Scrypt password hashing (`src/lib/passwords.ts`), signed httpOnly session cookie (`src/lib/session.ts`), `AUTH_DEMO_FALLBACK=false` fail-closed mode.
-- Multi-tenant: `Organization` → `User` (RBAC: admin/analyst/viewer) → all resources scoped by `organizationId` via Prisma extension.
-- Login/logout routes, `/api/me` identity, setup wizard gate (`AppConfig.setupCompleted`).
+It is there rather than here for a MEASURED reason: `CLAUDE.md` plus `AGENTS.md` came to 97 KB against a 65,536-byte
+instruction budget, so the tail of `AGENTS.md` was silently truncated. Both files describe the same system, so the
+inventory belongs with the architecture rather than in a history log.
 
-**Multi-tenant architecture**
-- `Organization` is the tenant root; `User.organizationId` links 1 user → 1 org. Every data model carries `organizationId`.
-- Prisma tenant extension (`src/lib/prisma-tenant.ts`) auto-injects `organizationId` via AsyncLocalStorage. Use `bypassOrg()` for setup/SSO queries.
-- License validation: `LICENSE_VALIDATOR_URL` env. Signup validates license before org creation (`src/lib/license-client.ts`).
-- RBAC: `admin > analyst > viewer`. `requireRole(user, 'admin')` guards admin routes.
-- Plan gating: `starter | pro | enterprise`. `hasPlan(user.plan, 'pro')` gates premium features (`src/lib/plan-gating.ts`).
-- SSO/SAML: enterprise-tier feature, integrates with organization identity providers.
-- Session: `getActiveUser()` calls `enterWithOrg()` to set context, checks license status.
-
-**Data layer (Prisma schema — 31 models; verify with `grep -c "^model " prisma/schema.prisma`)**
-- `Organization` (tenant root), `User` (RBAC `admin|analyst|viewer`), `Integration` (encrypted config), `IntegrationSchema` (reflected table/columns cache).
-  **There is no `Company` model** — an earlier revision listed one. Verified: `grep -c "^model Company " prisma/schema.prisma` = 0, `companyId` = 0, `organizationId` = 93.
-- `LlmConfig` + `VectorStoreConfig` (per-tenant LLM + vector store, AES-256-GCM encrypted keys).
-- `Document` → `DocumentChunk` (content, keywords, embeddingJson, embeddingModel).
-- `RestApiConnector` → `RestApiEndpoint` (whitelisted method+path+paramSchema).
-- `ChatSession` → `ChatMessage` (citations, chartData, status).
-- `ToolRun`, `RestApiRequestLog`, `ApiRequestLog`, `ApiKey`, `AuditLog`, `QueryHistory`, `SmartMapping`, `AppConfig`.
-
-**AI pipeline (`src/lib/ai.ts` + `src/lib/tool-router.ts`)**
-- `resolveBackend`: configured OpenAI/Anthropic-compatible endpoint. Fail-closed: throws `LlmNotConfiguredError` when no LLM configured (z-ai-web-dev-sdk removed).
-- `routeQuery`: LLM router → `SQL | RAG | REST | CHAT` (temp=0, deterministic).
-- `generateSql`: Text-to-SQL with schema description, JSON output.
-- `generateAnswer` / `streamAnswer`: NL synthesis from context.
-- `generateRestCall`: picks one whitelisted endpoint + builds query/body.
-- Tool-toggle enforcement from `promptSettings` (admin can disable SQL/RAG/REST).
-- `allowMultiStepDag` flag: when true, calls planner → executePlan → synthesizeAnswer for multi-tool queries.
-
-**RAG (`src/lib/rag.ts`, 675 lines — the strongest subsystem)**
-- Hybrid retrieval: lexical (keyword overlap + phrase hits) + semantic (cosine on stored embeddings) + external vector store (Qdrant/Milvus) + FTS (BM25-style via `rag-fts.ts`).
-- Candidate selection: vector store hits → FTS chunk IDs → fallback to all chunks.
-- Score fusion: `combineHybridScore(lexicalTotal, semanticSimilarity)`.
-- Per-document cap (`maxPerDocument=2`) for diversity.
-- Chunking: double-newline split + hard ceiling (1400 chars, 180 overlap).
-- Query-level cache (in-memory, 1min TTL, 200 entries) — invalidated on document upload/delete.
-- LLM reranker (opt-in `RAG_LLM_RERANK=true`): retrieves 3x candidates, LLM ranks by relevance.
-
-**Guardrails (`src/lib/guardrails.ts`)**
-- AST-walk (pure TS, mirrors spec's `sqlglot`): rejects DML/DDL, transaction control, system procs, comments, statement chaining, `INTO`, `LOAD_FILE`, system tables.
-- Forces `LIMIT 100` cap, single-statement guarantee.
-- `GUARDRAIL_BLOCK` audit at `critical` severity.
-
-**Connectors (`src/lib/connectors.ts`)**
-- Registry pattern: `getConnector(id, provider, config)`. Provider: POSTGRESQL | MYSQL | MSSQL | CLICKHOUSE | REST_API. **There is no `SQLITE_DEMO`** — it was removed; the UI offers only POSTGRESQL/MYSQL/MSSQL. Drivers load through the static `DRIVER_LOADERS` map in `real-connectors.ts` (invariant #3 in AGENTS.md), never a variable-specifier `import()`.
-- `fetchSchema()` reflection, `executeQuery(sql)`, `describeSchema()` for LLM prompts.
-
-**Streaming** — Real SSE token streaming via `runStreamingChatCompletion` in `tool-router.ts`. Old Socket.io WS service deleted (P1.5).
-
-**External API (`src/app/api/v1/chat/completions/route.ts`, 288 lines)**
-- OpenAI-compatible endpoint for programmatic access, API-key auth, rate limits, audit.
-
-**Observability**
-- `ToolRun` (per tool: type/status/latency/summaries), `AuditLog` (security events), `RestApiRequestLog`, `ApiRequestLog`, `QueryHistory`, monitoring + analytics routes.
-
-**Intent Pipeline (`src/lib/intent-pipeline.ts`)**
-- Intent Analyzer with document/integration/schema context + progressive slot filling.
-- Contextual Query Rewriter for follow-up questions.
-- Query Expansion (synonym + multilingual, max 3 expansions).
-- Multi-pass Retrieval with Reflection (`retrieveWithReflection` + `mergeRetrievalResults`).
-- GraphRAG via cognee `recallKnowledgeGraph` (wired into `retrieveWithReflection`).
-- `evaluateAnswerConfidence` — heuristic + LLM confidence scoring.
-
-**Schema Enrichment (`src/lib/schema-enrichment.ts`)**
-- `enrichSchemaDescriptions()` — LLM-generated per-table descriptions stored in `IntegrationSchema.description`.
-- `generateSchemaDescriptions()` in `ai.ts`. Wired into intent analyzer + `routeQuery` context for better SQL generation.
-
-**Agentic Confidence Loop**
-- `runAgenticLoop` — max 3 iterations, heuristic pre-check (skips LLM for obvious cases), cross-source fallback.
-- `runStreamingAgenticLoop` — streaming variant for SSE. Closes G10 (single LLM call, no self-correction).
-
-**Execution History (Scheduler)**
-- `ScheduledRunLog` model — full execution history (status, answer, error, toolRuns JSON, latency, executedAt).
-- `GET /api/schedules/[id]/runs` — last 50 execution logs.
-- `GET /api/schedules/[id]/runs/export?format=json|csv` — export with Content-Disposition attachment header.
-- UI polling (15s) + toast notification on run completion. History dialog with export buttons.
-
-**Tests**
-- 6825 unit tests across 265 files (`bun run test` — per-file subprocess runner for mock isolation), 16 Playwright e2e (`bun run e2e`), mock LLM server for determinism. **Do not trust a count you did not just run** — earlier revisions of this file said "913 across 56" long after both numbers had changed.
-
-### 2.2 Gaps & risks (super-app blockers)
-
-| # | Gap | Impact |
-|---|-----|--------|
-| G1 | **Router picks ONE tool** — no multi-step plans, no tool chaining | Cannot answer "compare DB sales with the SOP for returns" (needs SQL + RAG) |
-| G2 | **No agent memory** — each message is stateless beyond chat history | No learning across sessions, no entity tracking, no relationship recall |
-| G3 | **RAG is flat chunks** — no knowledge graph, no entity/relation extraction | Multi-hop reasoning ("who reports to the person who approved invoice X?") fails |
-| G4 | **REST branch absent from WS service** — only HTTP tool-router has it | Streaming users can't use REST tools |
-| G5 | **No scheduled/triggered runs** — purely request/response | No "every morning summarize anomalies" capability |
-| G6 | ~~**SQLite**~~ — **RESOLVED 2026-07-27**: migrated to PostgreSQL 16 (pgvector + pg_trgm), 66,435 demo rows migrated | — |
-| G7 | **No plugin/tool registry for third parties** — connectors are hardcoded | Not a true super-app (super-apps host external modules) |
-| G8 | ~~**Embeddings stored as JSON string in SQLite**~~ — **RESOLVED 2026-07-27**: pgvector native vector storage + semantic scoring (40% keyword + 60% embedding blend) | — |
-| G9 | **No streaming for REST/SQL branches in WS** — only final answer streams | User waits blind during SQL execution |
-| G10 | ~~**Single LLM call per tool**~~ — **RESOLVED 2026-07-27**: agentic confidence loop (max 3 iterations, heuristic pre-check, cross-source fallback) | — |
-
----
+**Counts there are historical.** Verify with `grep -c` against the code — this section spent months claiming
+"913 tests across 56 files" long after both numbers had changed.
 
 ## 3. Super-App Vision
 
@@ -232,155 +143,13 @@ User query
 
 ---
 
-## 5. Algorithms
+## 5. Algorithms (moved)
 
-### 5.1 Routing (current — single-tool)
+The routing, planning, hybrid-retrieval, guardrail, memory-write and agentic-loop sketches are in
+**`docs/architecture-reference.md`**.
 
-```
-routeQuery(question, hasIntegrations, hasDocuments, hasRestApis, smartMappingHints):
-  prompt = ROUTER_SYSTEM + question + context flags + smart mapping hints
-  decision = LLM(prompt, temp=0) → "SQL" | "RAG" | "REST" | "CHAT"
-  if decision needs unavailable source → fallback CHAT
-  if promptSettings disables decision → fallback CHAT
-  return decision
-```
-
-**Limitation**: one tool per turn. Keep for fast-path single-intent queries.
-
-### 5.2 Planning (super-app — multi-tool)
-
-```
-planQuery(question, availableTools[], memoryContext):
-  prompt = PLANNER_SYSTEM
-         + "Available tools: " + tools.map(t => `${t.id}: ${t.description} (${t.params})`)
-         + "Prior memory: " + memoryContext
-         + "Question: " + question
-         + "Output JSON: { steps: [{ tool, input, dependsOn }, ...], needsSynthesis: bool }"
-  plan = LLM(prompt, temp=0) → parsed JSON
-  validate plan:
-    - every tool.id ∈ registry
-    - no circular deps
-    - max 6 steps (configurable)
-  return plan
-```
-
-**Execution** (DAG, topological order):
-```
-executePlan(plan, ctx):
-  results = {}
-  for step in topoSort(plan.steps):
-    input = resolveInputs(step.input, results)  // substitute ${step.dependsOn.output}
-    if step.tool in [SQL, REST] and not whitelisted → block + audit
-    result = runTool(step.tool, input, ctx)
-    results[step.id] = result
-    emit status_update(step.tool, "done")
-  return results
-```
-
-**Self-correction loop** (closes G10):
-```
-if result.error and retries < 2:
-  corrected = LLM("This failed: {error}. Original input: {input}. Fix it.", temp=0)
-  retry runTool(corrected)
-```
-
-### 5.3 Hybrid retrieval (current — keep, wrap cognee as outer ring)
-
-```
-retrieveRelevantChunks(query, topK):
-  queryTokens = tokenize(query)
-  queryEmbedding = embed(query) if embeddingConfigured
-  vectorHits = vectorStore.search(queryEmbedding) if vectorStoreConfigured
-  candidates = vectorHits ? loadChunks(vectorHits.ids) : loadFtsChunks(queryTokens)
-  for chunk in candidates:
-    lexical = scoreChunk(queryTokens, chunk)         // content + keyword + phrase
-    semantic = cosine(queryEmbedding, chunk.embedding) or vectorHits[chunk.id]
-    total = combineHybridScore(lexical, semantic)
-  return selectTopWithDiversity(scored, topK, maxPerDocument=2)
-```
-
-**Cognee outer ring** (Phase 2+):
-```
-retrieveWithGraph(query, topK):
-  flat = retrieveRelevantChunks(...)        // existing
-  graph = cognee.recall(query, { dataset: kbDatasetFor() })  // org:<id>:kb
-  // graph returns entities + relationship-aware chunks
-  return mergeDedupe(flat, graph, preferGraphForMultiHop(query))
-```
-
-### 5.4 Guardrail pipeline (unchanged — already strong)
-
-```
-validateAndSanitizeLlmSql(sql):
-  1. dangerous pattern scan (comments, xp_, sp_, ;, load_file, system tables)
-  2. tokenize; leading keyword must be SELECT | WITH
-  3. walk tokens, reject any MUTATION_KEYWORD outside string literals
-  4. reject INTO, multiple statements
-  5. clamp LIMIT to 100, append if missing
-  return { ok, sanitized } or { ok: false, reason, detectedNodes }
-```
-
-### 5.5 Memory write-back (new — cognee Phase 1)
-
-```
-afterChatTurn(sessionId, userMsg, aiMsg, toolRuns[]):
-  await cognee.remember({
-    type: "chat_turn",
-    user: userMsg,
-    assistant: aiMsg,
-    tools: toolRuns.map(t => ({ type: t.type, status: t.status, latency: t.latencyMs })),
-    timestamp: now()
-  }, { dataset: datasetFor(), session_id: sessionId })  // org:<id>
-  // fire-and-forget; never block the response on memory write
-```
-
-### 5.6 Intent Pipeline (production RAG)
-
-```
-analyzeAndRewrite(question, sessionHistory, context):
-  parallel:
-    - rewriteQuery(question, sessionHistory)   // contextual follow-up resolution
-    - loadSchemaContext()                       // IntegrationSchema + documents
-    - recallContext(question)                   // cognee memory
-  intent = analyzeIntent(question, rewritten, context)  // progressive slot filling
-  expansions = expandQuery(rewritten, max=3)    // synonym + multilingual
-  return { intent, rewritten, expansions, memoryContext }
-```
-
-```
-retrieveWithReflection(question, expansions, topK):
-  passes = []
-  for q in [question, ...expansions]:
-    hits = retrieveRelevantChunks(q, topK)
-    passes.push({ query: q, hits })
-  graph = cognee.recallKnowledgeGraph(question)   // GraphRAG outer ring
-  merged = mergeRetrievalResults(passes, graph)    // dedupe + rerank
-  if merged.confidence < threshold and passes.length < maxPasses:
-    refined = refineQuery(question, merged.gaps)  // reflection
-    merged = retrieveWithReflection(refined, [], topK)
-  return merged
-```
-
-### 5.7 Agentic Confidence Loop (closes G10)
-
-```
-runAgenticLoop(question, context, maxIter=3):
-  for i in 1..maxIter:
-    if i == 1 and heuristicConfident(question, context):
-      result = runDirect(question, context)       // skip LLM for obvious cases
-    else:
-      result = runTool(question, context)
-    confidence = evaluateAnswerConfidence(question, result)
-    if confidence >= threshold:
-      return result
-    // cross-source fallback: try next source if current one failed
-    context = adaptContext(context, result.gaps)
-  return bestResult  // highest confidence across iterations
-```
-
-`runStreamingAgenticLoop` — same logic, emits SSE events (`thinking`, `tool_start`, `tool_end`, `answer`) per iteration.
-
----
+They describe the pipeline, so they sit with the pipeline. The sketches are DESIGN INTENT: where the shipped code
+differs, the code wins — check the module before quoting a formula from here.
 
 ## 6. Best Practices (enforced)
 
@@ -407,7 +176,7 @@ runAgenticLoop(question, context, maxIter=3):
 ### Testing
 - `bunx tsc --noEmit` — zero errors.
 - `bun run lint` — zero errors.
-- `bun run test` — per-file subprocess runner, must report 0 fail (265 files as of 1.0.0; the runner prints the real count, so read it rather than this line). Any new lib file ships with `*.test.ts`.
+- `bun run test` — per-file subprocess runner, must report 0 fail (the runner prints the real count; READ THAT, not a number written here — this line said 265 for three releases after it changed). Any new lib file ships with `*.test.ts`.
 - `bun run e2e` — 16 golden-path specs with mock LLM, keep green. Also run `bun run e2e:prod` before shipping; dev and the standalone build diverge.
 - **New rule for super-app work**: every new tool in the registry ships with a unit test for its executor + a guardrail test if it touches external systems.
 
@@ -619,3 +388,43 @@ worse than no test, because it reports safety.
 extraction call vs 1.3s for "Say OK"), all write sites are fire-and-forget so answers are never
 blocked; memory FRAMING shows no measurable effect (14/15 vs 14/15, unproven); the provider
 occasionally returns an empty body and retries recover it.
+
+### 2026-09-29 — Repo cleanup: 63 dead files, a duplicated implementation, and a truncated instruction file
+
+**The instruction budget was the real defect.** `AGENTS.md` (59,565 B) plus this file (37,433 B) came to 97 KB against
+a 65,536-byte read budget, and truncation keeps the HEAD — so everything in `AGENTS.md` past byte ~28,000 was
+silently dropped, including `## Cross-tenant IDOR` (a real IDOR incident) and `## Silent-failure classes` (20 defect
+patterns). The rules an agent most needs were the ones not being delivered. Fixed by MOVING reference out, not by
+deleting content: `docs/architecture-reference.md` (pipeline internals + this file's audit summary and algorithm
+sketches), `docs/billing-and-prompts-reference.md`, `docs/build-and-deploy-reference.md`. Now 55,084 B total, every
+rule section inside the budget, and each moved section left a pointer that states why it moved.
+
+**Dead files, found by measurement after a wrong first answer.** `grep -r` claimed 46 orphan modules including
+`chat-view.tsx` — obviously false, because a recursive grep matches a file's own contents and matches SUBSTRINGS (it
+"found" a consumer for an unused `toggle.tsx` via the local `toggleSidebar`). Replaced with specifier resolution,
+kept as `scripts/audit/dead-modules.mjs`. Real result: 2 shadcn components (`toggle.tsx`, `use-mobile.ts`) and
+`__connector-mocks.ts` — the last a FAILED EXTRACTION whose richer mocks nobody imports while `rag-fts.test.ts`
+defines its own inline.
+
+**61 files at the repo root (6.2 MB)** — screenshots, DOM dumps, probe JSON — had all landed in ONE commit whose
+message is about a guardrail fix, because nothing ignored them. Removed after verifying each was unreferenced (which
+is how `views.json` was caught as a false positive rather than reported live). `.gitignore` now blocks the SHAPES
+they take, scoped to the root: a global `*.png`/`*.txt` would silently hide the next asset in `docs/screenshots/` or
+`test-data/wikipedia/` (24 such files are tracked today). `coverage-summary.json` is deliberately NOT ignored — it
+looks like a build artifact and is an INPUT the gate reads.
+
+**`dedupeByPrefix` existed twice**, as `dedupeByPrefix` and `dedupeJoin`, differing only in whether they joined the
+result. The memory copy's comment said "mirrors the KB recall path" — a note documenting duplication instead of
+removing it. Consolidated into `cognee-core.ts` ("shared helpers", imports neither caller, so no cycle).
+
+**Consolidating it exposed a vacuous guard.** The dedupe test used `'P'.repeat(100)` for both hits, so changing
+`slice(0, 100)` to `slice(0, 50)` left the file at 45 pass / 0 fail. It now pins the boundary from both sides and
+fails in both directions. Building it also required measuring that one call issues FOUR HTTP recalls, not two.
+
+**Eight coverage floors quoted a stale measurement**, and the gate surfaced it (`cognee-memory` floored at 62 against
+a real 61.42%). `rag-retrieval.ts` claimed 70.79% against 62.72%; `tool-router.ts` claimed 62.62% against 54.44%. A
+stale number there is worse than none — it looks like evidence and answers the question wrongly. All 11 refreshed,
+and `coverage-floor-consistency.test.ts` now fails when a comment stops matching `coverage-summary.json`, when a
+floor sits above its measurement, or when a floor names a file the summary no longer measures.
+
+**Verified:** `tsc` 0 · `lint` 0 · 289/289 files, 7206 pass, 0 fail, 71 skip · coverage:gate exit 0.
