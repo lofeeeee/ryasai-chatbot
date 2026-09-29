@@ -1003,18 +1003,39 @@ describe('server backend — recall', () => {
 })
 
 describe('server backend — dedupe helpers', () => {
-  test('recall results sharing their first 100 chars collapse to one', async () => {
+  test('the key length is 100: hits agreeing on 100 chars collapse, hits differing at 100 do not', async () => {
     core.serverOptions = SERVER_OPTS
-    // dedupeByPrefix keys on `r.slice(0, 100)`, NOT on the whole string. Two
-    // results that share a 100-char prefix are treated as the same hit even when
-    // their tails differ — asserted here as the REAL behaviour, so a change to
-    // the key length has to be a deliberate one.
-    const shared = 'P'.repeat(100)
-    httpState.recallResult = [{ text: shared + ' different tail' }]
-    const out = await recallKnowledgeGraph({ query: 'q' })
-    expect(out).toBe(shared + ' different tail')
-    // Two strategies × one identical hit = one line, not two.
-    expect(out.split('\n')).toHaveLength(1)
+    /*
+     * THE BOUNDARY ITSELF, asserted from both sides.
+     *
+     * The original version of this test used `'P'.repeat(100)` for BOTH hits, so the keys matched whether the prefix
+     * was 100 characters or 50. A NEGATIVE CONTROL proved it: changing `slice(0, 100)` to `slice(0, 50)` in
+     * `cognee-core.ts` left this file at 45 pass / 0 fail. A test that cannot fail on the value it names is not
+     * testing that value — the same "guard that cannot fail" shape this project keeps hitting.
+     *
+     * These two assertions pin the number from each side, so any change to the key length breaks one of them.
+     */
+    const p100 = 'P'.repeat(100)
+    // Agrees for the first 100 characters, differs after -> ONE hit, the first one.
+    httpState.recallScript = [[{ text: p100 + 'Alice tail' }], [{ text: p100 + 'Bob tail' }]]
+    const collapsed = await recallKnowledgeGraph({ query: 'q' })
+    expect(collapsed.split('\n')).toHaveLength(1)
+    expect(collapsed).toBe(p100 + 'Alice tail')
+
+    // Differs AT character 100 -> the keys differ, so BOTH survive.
+    const p99 = 'P'.repeat(99)
+    // MEASURED with a probe: one `recallKnowledgeGraph` call issues FOUR HTTP recall calls, not two. A 2-entry
+    // script therefore ran out and the remaining calls returned null, which read as "the server returned nothing".
+    // The script is padded to cover the extra calls so the assertion is about dedupe behaviour, not about how many
+    // strategies happen to be configured.
+    httpState.recallScript = [
+      [{ text: p99 + 'X and a long tail' }],
+      [{ text: p99 + 'Y and a long tail' }],
+      [{ text: p99 + 'X and a long tail' }],
+      [{ text: p99 + 'Y and a long tail' }],
+    ]
+    const distinct = await recallKnowledgeGraph({ query: 'q' })
+    expect(distinct.split('\n')).toHaveLength(2)
   })
 
   test('results shorter than 100 chars are compared whole', async () => {

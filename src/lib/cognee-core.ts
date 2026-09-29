@@ -522,3 +522,30 @@ function formatSearchOutput(output: any): string {
   }
   return ''
 }
+
+/**
+ * Drop recall results that repeat an already-seen PREFIX, keyed on the first 100 characters.
+ *
+ * WHY A PREFIX AND NOT THE WHOLE STRING: the recall strategies (SUMMARIES, CHUNKS, lexical) overlap heavily — the same
+ * passage comes back summarised, then verbatim, then in a lexical hit — and they agree on the opening while differing
+ * in the tail. Keying on the whole string would keep all three and repeat the passage to the model three times.
+ *
+ * WHY THIS LIVES IN `core` AND NOT IN A CALLER: it was implemented TWICE, in `cognee-memory.ts` as `dedupeJoin` and
+ * in `cognee-knowledge-graph.ts` as `dedupeByPrefix`, differing only in whether they returned the array or joined it.
+ * Both were correct on the day they were written and neither knew about the other, so a future change to the key
+ * length (or to the sort order) would have fixed one path and silently left the other. The memory version even carried
+ * the comment "mirrors the KB recall path" — a note that documents the duplication instead of removing it, which is
+ * how this kind of pair survives review. Two callers, one rule.
+ */
+export function dedupeByPrefix(results: string[]): string[] {
+  const seen = new Set<string>()
+  const deduped: string[] = []
+  for (const r of results) {
+    const key = r.slice(0, 100)
+    if (!seen.has(key)) {
+      seen.add(key)
+      deduped.push(r)
+    }
+  }
+  return deduped
+}

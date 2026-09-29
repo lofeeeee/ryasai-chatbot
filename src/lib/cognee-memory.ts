@@ -5,7 +5,7 @@
 import type { ChatTurnMemory } from './cognee-types'
 import { datasetFor, writeNotStored, capWritePayload } from './cognee-types'
 import { MEMORY_CONTEXT_MAX_CHARS, MEMORY_WRITE_MAX_CHARS } from '@/lib/constants'
-import { isCogneeEnabled, getCogneeClient, getCogneeOwnerId, formatSearchResponse, withDeadline, getCogneeGraphProvider, supportsNaturalLanguageSearch, getCogneeServerOptions } from './cognee-core'
+import { isCogneeEnabled, getCogneeClient, getCogneeOwnerId, formatSearchResponse, withDeadline, getCogneeGraphProvider, supportsNaturalLanguageSearch, getCogneeServerOptions, dedupeByPrefix } from './cognee-core'
 import { cogneeRemember, cogneeRecall } from './cognee-http'
 import { enqueueMemoryWrite } from '@/lib/memory-queue'
 import { getOrgContext } from '@/lib/prisma-tenant'
@@ -497,18 +497,9 @@ async function recallFromGraph(c: any, query: string): Promise<string> {
   }
 }
 
-/** Dedupe overlapping strategy outputs before joining — mirrors the KB recall path. */
+/** Join the deduplicated recall results. The dedupe RULE itself is shared — see `dedupeByPrefix` in `cognee-core.ts`. */
 function dedupeJoin(results: string[]): string {
-  const seen = new Set<string>()
-  const deduped: string[] = []
-  for (const r of results) {
-    const key = r.slice(0, 100)
-    if (!seen.has(key)) {
-      seen.add(key)
-      deduped.push(r)
-    }
-  }
-  return deduped.join('\n')
+  return dedupeByPrefix(results).join('\n')
 }
 
 async function recallFromSession(c: any, query: string, sessionId: string): Promise<string> {

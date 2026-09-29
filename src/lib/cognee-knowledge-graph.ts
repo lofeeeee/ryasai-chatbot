@@ -18,6 +18,7 @@ import {
   getCogneeGraphProvider,
   supportsNaturalLanguageSearch,
   getCogneeServerOptions,
+  dedupeByPrefix,
 } from './cognee-core'
 import { cogneeRemember, cogneeRecall, cogneeForget, cogneeCognify } from './cognee-http'
 import { db } from '@/lib/db'
@@ -369,20 +370,6 @@ export async function recallKnowledgeGraph(args: {
   // No in-process client (see getCogneeClient): without COGNEE_SERVER_URL there
   // is no recall path, and the server branch above already returned.
   return ''
-}
-
-/** Drop results that repeat an already-seen prefix — strategies overlap heavily. */
-function dedupeByPrefix(results: string[]): string[] {
-  const seen = new Set<string>()
-  const deduped: string[] = []
-  for (const r of results) {
-    const key = r.slice(0, 100)
-    if (!seen.has(key)) {
-      seen.add(key)
-      deduped.push(r)
-    }
-  }
-  return deduped
 }
 
 // ---------------------------------------------------------------------------
