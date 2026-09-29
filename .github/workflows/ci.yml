@@ -2,8 +2,13 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # `dev` IS THE INTEGRATION BRANCH — a push to it must be verified, not only a PR. MEASURED gap: the repo's
+    # branch policy moved work onto `dev`, but CI still ran only for `main` and for pull requests, so a direct
+    # push to `dev` (a merge-back, for instance) got NO CI run at all and looked verified while nothing checked it.
+    branches: [main, dev]
   pull_request:
+  # Lets a run be started by hand for any ref, which is what to use if a push is ever missed again.
+  workflow_dispatch:
 
 permissions:
   contents: read
