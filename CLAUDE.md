@@ -94,7 +94,7 @@ User query
 
 - **Open-source, self-hostable** (Apache-2.0) — no vendor lock-in, tenant data stays in your infra.
 - **TypeScript client exists**: `@cognee/cognee-ts` — drops into Next.js without a Python sidecar.
-- **Single-Postgres memory layer** (cognee 1.0) — graph + vectors + sessions + metadata in one Postgres. Replaces the JSON-embedding-in-SQLite hack (G8) and the flat-chunks problem (G3) in one move.
+- **One Postgres instance for memory** — cognee 1.0 keeps vectors + sessions + metadata in Postgres (its own `cognee_db`), beside the app's data. Replaces the JSON-embedding-in-SQLite hack (G8) and the flat-chunks problem (G3) in one move. The GRAPH is the exception and stays on embedded Kuzu — upstream labels its Postgres graph adapter a demo.
 - **Four operations**: `remember`, `recall`, `forget`, `improve` — matches our mental model exactly.
 - **BEAM benchmark SOTA** at 100K and 10M tokens — proven for long-context agent memory.
 - **MCP server** available — future-proof for tool-using agents.
@@ -125,14 +125,26 @@ User query
 
 ### Cognee deployment
 
-- **Dev**: cognee local mode (SQLite + LanceDB + Kuzu, zero services). Env: `LLM_API_KEY` reuses tenant's key.
-- **Prod**: single Postgres with `pgvector` + cognee's Postgres graph backend. One container, one DB. Env:
-  ```
-  DB_PROVIDER=postgres
-  VECTOR_DB_PROVIDER=pgvector
-  GRAPH_DATABASE_PROVIDER=postgres
-  CACHE_BACKEND=postgres
-  ```
+Both composes (`docker-compose.yml`, and the one `install.sh` generates) wire cognee identically —
+there is no dev/prod store split any more:
+
+- **Relational + vector + cache: the bundled PostgreSQL**, in cognee's OWN database `cognee_db`.
+  Never the app's `ryasai` database: `migrate` runs `prisma db push` on every boot, which DROPS an
+  unknown table it finds EMPTY (silently), and refuses to boot at all when that table has rows.
+- **Graph: embedded Kuzu**, unchanged. Upstream labels its Postgres graph adapter a demo ("not
+  production-ready"), so the `cogneedata` volume is still required.
+- **`cognee-db-init`** (one-shot) creates `cognee_db` before cognee starts; cognee declares
+  `depends_on: {cognee-db-init: {condition: service_completed_successfully}}`, because a missing
+  database makes cognee exit(1) — under `restart: unless-stopped` that reads as a crash loop.
+- **No `CACHE_DB_URL`.** With `CACHE_BACKEND=postgres` and the URL unset the cache reuses the
+  relational database; a separate cache database aborts alembic `c3d5e7f9a1b2` and the sidecar
+  never becomes healthy.
+- Env names are cognee's, UNPREFIXED (`DB_*`, `VECTOR_DB_*`, `CACHE_BACKEND`, `GRAPH_DATABASE_*`);
+  the `COGNEE_*` names belong to this app's `.env` and are not read by the sidecar. `LLM_*` /
+  `EMBEDDING_*` deliberately live in `.env.cognee`, NOT in `environment:` (which always overrides).
+- Guarded by `src/lib/cognee-store-wiring.test.ts`, which reads BOTH composes: every one of these
+  reverts SILENTLY in production — cognee boots fine on the wrong store, it just writes where
+  nobody looks.
 - **Isolation**: cognee datasets are namespaced `org:<id>`. The wrapper in `cognee-types.ts` is the only place a dataset name is built, so no call can reach a name without an org. Verified against the code, not the design sketch.
 
 ### When NOT to use cognee

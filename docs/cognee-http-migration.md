@@ -163,9 +163,21 @@ For a second write, assert BOTH tokens are visible via `CHUNKS` (not via
 
 - pinned image `cognee/cognee:1.6.0` (never `:latest` — the app must
   be able to read what the store wrote),
-- local mode (sqlite + kuzu + lancedb) so there is **no second database**,
-- named volume `cogneedata` so the graph survives a recreate,
-- healthcheck on `/health`, `start_period: 90s` (first boot inits the stores),
+- relational + vector + cache on the **bundled PostgreSQL**, in cognee's own database `cognee_db`
+  (never the app's `ryasai`: `migrate` runs `prisma db push` on every boot, which drops an unknown
+  EMPTY table silently and refuses to boot when it has rows). A one-shot `cognee-db-init` creates
+  the database first, and cognee waits for it with
+  `depends_on: {cognee-db-init: {condition: service_completed_successfully}}` — a missing database
+  makes cognee exit(1), which under `restart: unless-stopped` reads as a crash loop. **No
+  `CACHE_DB_URL`**: with `CACHE_BACKEND=postgres` and the URL unset the cache reuses the relational
+  database, while a separate cache database aborts alembic `c3d5e7f9a1b2`.
+- the **graph stays on embedded Kuzu** (a previous revision of this list said "local mode
+  (sqlite + kuzu + lancedb) so there is no second database" — the vector store moved, and upstream
+  calls its Postgres graph adapter a demo), which is why the `cogneedata` volume is still required,
+- healthcheck on `/health`, `start_period: 180s`. It was 90s while the sidecar only bootstrapped a
+  local sqlite/lancedb store; it now runs relational migrations against `cognee_db` (35 tables plus
+  the `vector` extension) and initialises Kuzu, and the installer's generated compose measures the
+  same work at 180s.
 - **no published port** — the app reaches it by service name, and exposing an
   unauthenticated memory API to the host is not acceptable,
 - app/scheduler use `condition: service_started`, NOT `service_healthy`: memory

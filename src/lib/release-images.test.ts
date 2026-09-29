@@ -145,6 +145,106 @@ describe('installer: a failed database backup must not be reported as saved', ()
   })
 })
 
+describe("installer: the pre-update backup must also cover cognee's memory database", () => {
+  /**
+   * WHY THIS EXISTS. The backup dumped exactly one database, `-d ryasai`. That was complete while
+   * conversation memory lived in sqlite/lancedb FILES on the `cogneedata` volume — this script never
+   * writes to that volume, so it never had to preserve it. Memory has since moved into its own
+   * PostgreSQL database (`cognee_db`) on the same instance, which puts it OUTSIDE the `ryasai` dump:
+   * an update would have printed "DB backup saved", been believed, and left every memory with no
+   * restore point. The failure is silent in the worst way — the artifact an operator reaches for
+   * during an incident exists and is valid, it just does not contain the data they lost.
+   *
+   * The name is read from the compose rather than hardcoded, so renaming the database cannot leave
+   * this guard asserting about a database nobody creates.
+   */
+  const here = join(import.meta.dir, '..', '..')
+  const installShRaw = readFileSync(join(here, 'install.sh'), 'utf-8')
+  const composeRaw = readFileSync(join(here, 'docker-compose.yml'), 'utf-8')
+
+  /** Strip comments — the block's own prose quotes `-d ryasai` and `cognee_db` throughout. */
+  const noComments = (src: string) =>
+    src
+      .split('\n')
+      .map((l) => (l.trimStart().startsWith('#') ? '' : l))
+      .join('\n')
+  const installSh = noComments(installShRaw)
+  const compose = noComments(composeRaw)
+
+  const memoryDb = compose.match(/^\s*-\s*DB_NAME=(\S+)\s*$/m)?.[1]
+
+  test('the memory database name comes from the compose the installer generates', () => {
+    // Anti-vacuity: every assertion below is parameterised by this value, so an unset or wrong one
+    // would make the whole block pass while checking nothing real.
+    expect(memoryDb).toBeTruthy()
+    expect(compose).toMatch(/^\s*-\s*DB_PROVIDER=postgres\s*$/m)
+  })
+
+  test('a second dump covers that database, with the same non-empty discipline', () => {
+    expect(installSh).toMatch(new RegExp(`pg_dump -U ryasai -d ${memoryDb!}`))
+    expect(installSh).toMatch(/BACKUP_TMP_COGNEE=/)
+    // The `-s` test is what keeps a truncated dump from entering the rotation — same reason as the
+    // app dump above, and it would be easy to forget on the copy.
+    expect(installSh).toMatch(/\[ -s "\$BACKUP_TMP_COGNEE" \]/)
+    expect(installSh).toMatch(/mv "\$BACKUP_TMP_COGNEE" "\$BACKUP_DIR\/ryasai-cognee-\$STAMP\.sql"/)
+  })
+
+  test('its absence is checked first, so "no memory DB yet" is not a failure', () => {
+    // An install predating the store switch has no `cognee_db`. Reporting that as a failed backup
+    // would train the operator to ignore the one message that matters.
+    //
+    // NEGATIVE CONTROL CAUGHT THIS TEST BEING VACUOUS. Its first version only asserted that the
+    // existence query appeared before the dump — which stayed true when the condition was replaced
+    // with `if true`, so the dump ran unconditionally and the guard still passed. Ordering is not
+    // gating. The result now has to be CAPTURED and that captured variable has to be the thing the
+    // `if` tests, and the dump has to sit after that `if`.
+    // The SQL literal is quoted (`datname='cognee_db'`), so the name is matched OUT of the quotes
+    // rather than by "everything that is not a quote" — the first version of this pattern excluded
+    // quotes and therefore matched nothing, failing on the capture instead of on the mechanism.
+    //
+    // The body is `[^()]*` on purpose. A lazy `[\s\S]*?` matched the FIRST `NAME=$(...)` in the
+    // whole script and ran forward to this query, so `existsVar` came back as `TOTAL_MB` (a disk
+    // figure from the prerequisites section) and the test failed while looking like a real defect.
+    // A command substitution's body cannot contain an unescaped paren here, so excluding parens
+    // binds the capture to the assignment that actually contains the query.
+    const capture = installSh.match(/^\s*([A-Z_][A-Z0-9_]*)=\$\([^()]*pg_database WHERE datname='([A-Za-z0-9_]+)'/m)
+    expect(capture, 'the existence query must be captured into a variable').toBeTruthy()
+    const [, existsVar, checkedDb] = capture!
+    // And it must ask about the database that is actually dumped, or the check gates on the wrong one.
+    // Both operands need the `!`: a destructured regex group is `string | undefined` under
+    // `noUncheckedIndexedAccess`, and `expect()` only accepts a `string` here. `memoryDb` is asserted
+    // truthy by the anti-vacuity test above, so this narrowing is real and not a way past the check.
+    expect(checkedDb!).toBe(memoryDb!)
+
+    const guard = installSh.indexOf(`if [ "$${existsVar}" = "1" ]; then`)
+    const dumpAttempt = installSh.indexOf('pg_dump -U ryasai -d ' + memoryDb!)
+    expect(guard, `the dump must be gated on $${existsVar}, not merely ordered after the query`).toBeGreaterThan(-1)
+    expect(dumpAttempt).toBeGreaterThan(guard)
+  })
+
+  test('the two kinds of dump rotate separately', () => {
+    // `ryasai-*.sql` matches `ryasai-cognee-*.sql`, so ONE rotation would count both kinds together
+    // and silently halve the app's retention — the depth an operator needs most during an incident.
+    //
+    // The anchor is a CODE line, not the `# Keep newest 5 dumps` heading it sits under: this slice
+    // runs on comment-stripped text, where that heading no longer exists, so indexing on it returned
+    // -1 and the slice measured the last byte of the script. A guard that fails for the wrong reason
+    // is not a guard — caught by negative control, and the reason `ls -1t` is used here.
+    const anchor = installSh.indexOf('ls -1t "$BACKUP_DIR"/')
+    expect(anchor).toBeGreaterThan(-1)
+    const rotation = installSh.slice(anchor)
+    expect(rotation).toMatch(/ls -1t "\$BACKUP_DIR"\/ryasai-cognee-\*\.sql/)
+    expect(rotation).toMatch(/grep -v 'ryasai-cognee-'/)
+  })
+
+  test('a memory backup failure does not claim the app dump is also lost', () => {
+    // The two dumps fail independently; a blanket "backup failed" would send the operator to check a
+    // database that is fine, and understate the one that is not.
+    expect(installSh).toMatch(/Memory DB backup FAILED/)
+    expect(installSh).toMatch(/cognee_db has NO restore point/)
+  })
+})
+
 describe('installer: the cognee healthcheck window must exceed its measured boot time', () => {
   /**
    * MEASURED on the production host: the cognee sidecar's server does not listen until its boot work

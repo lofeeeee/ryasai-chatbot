@@ -190,7 +190,11 @@ Suggested next attempts, cheapest first:
 2. Reduce batch size from 50 to 10–20 (the `--docs=200` smoke run completed fine).
 3. Restart the server on a supervisor loop that restarts on connection refusal.
 4. Only if the above fail: consider the Postgres/pgvector backend instead of
-   sqlite/kuzu/lancedb, which is also closer to the shipped on-prem shape.
+   sqlite/kuzu/lancedb. **This is now the shipped shape** — relational + vector +
+   cache run on the bundled PostgreSQL (`cognee_db`), graph on embedded Kuzu — so
+   a re-run should simply adopt the compose wiring rather than reproduce this
+   benchmark's local sqlite/lancedb config. Results from the old local mode are
+   not transferable.
 
 Recall alone (after ingest) is ~4.4s/question × 1000 / concurrency 6 ≈ **75 min** and
 was previously completing without crashes — the instability is concentrated in ingest.

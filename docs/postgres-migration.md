@@ -151,19 +151,26 @@ bunx prisma migrate dev --name init
 bun run scripts/seed.ts
 ```
 
-## Step 6 — Cognee Postgres Backend (optional)
+## Step 6 — Cognee backend (handled by the composes, not by `.env`)
 
-If using cognee memory layer, configure it for Postgres:
+Cognee's relational, vector and cache stores already run on the bundled PostgreSQL, in cognee's own
+database `cognee_db`, and its graph runs on embedded Kuzu. **You do not set this in `.env`.**
 
-```env
-COGNEE_ENABLED=true
-COGNEE_DB_PROVIDER=postgres
-COGNEE_VECTOR_DB_PROVIDER=pgvector
-COGNEE_GRAPH_DATABASE_PROVIDER=postgres
-COGNEE_CACHE_BACKEND=postgres
-```
+Two reasons the block that used to live here was wrong rather than merely outdated:
 
-This gives cognee a single-Postgres backend for graph + vectors + sessions.
+- The names were prefixed `COGNEE_DB_PROVIDER`, `COGNEE_VECTOR_DB_PROVIDER`, … The sidecar does not
+  read those. Its names are unprefixed: `DB_PROVIDER`, `VECTOR_DB_PROVIDER`, `GRAPH_DATABASE_PROVIDER`,
+  `CACHE_BACKEND`. `COGNEE_*` is THIS APP's `.env` vocabulary (`COGNEE_SERVER_URL`, `COGNEE_LLM_*`).
+- It set `GRAPH_DATABASE_PROVIDER=postgres`. Upstream labels its Postgres graph adapter a demo
+  ("not production-ready"), so the graph deliberately stays on Kuzu; the `cogneedata` volume is
+  still required.
+
+The wiring is hardcoded in `docker-compose.yml` and in the compose `install.sh` generates — it is a
+property of the image and the topology, not a per-install choice. Setting any of it as
+`${VAR:-default}` in `environment:` would override `.env.cognee` with an empty string when unset.
+`src/lib/cognee-store-wiring.test.ts` reads both composes and fails if any of it regresses, because
+every one of these reverts silently: cognee boots happily on the wrong store and writes where
+nobody looks.
 
 ## Step 7 — Verify
 

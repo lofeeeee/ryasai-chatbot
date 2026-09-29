@@ -86,8 +86,14 @@ alternative, is not a candidate: it was measured failing after **193 341 ms**.
 - Keep the graph-backend gate: skip `NATURAL_LANGUAGE` on kuzu, use `CHUNKS_LEXICAL` there.
   The predicate is `supportsNaturalLanguageSearch()` in `src/lib/cognee-core.ts`.
 - Keep treating `datasets.has()` as **advisory only** — `false` must not suppress recall.
-- For production, move the graph backend to Postgres (`COGNEE_DB_PROVIDER=postgres`).
-  The kuzu path is dev-only and is where every measured graph failure occurred.
+- **The graph backend stays Kuzu, and that is a decision, not an oversight.** This note used to
+  say "for production, move the graph backend to Postgres (`COGNEE_DB_PROVIDER=postgres`)" — wrong
+  on both counts. The prefix is wrong (`COGNEE_*` is this app's `.env`; the sidecar reads the
+  unprefixed `DB_PROVIDER`/`GRAPH_DATABASE_PROVIDER`), and upstream labels its Postgres graph
+  adapter a demo — "Using Postgres as a graph store is currently a demo feature and is not
+  production-ready" — so the risk it was trading against was never retired. The kuzu path is where
+  every measured graph failure occurred, and it is also the only supported one today. Every
+  non-graph store (relational, vector, cache) DOES run on Postgres now, in `cognee_db`.
 
 ## How to re-evaluate (the probe that produced the table above)
 

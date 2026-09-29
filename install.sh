@@ -574,11 +574,46 @@ if [ "$IS_UPDATE" = true ]; then
     warn "DB backup FAILED — continuing, but there is NO restore point for this update."
     warn "  Check that the db service is healthy, then re-run the update."
   fi
+
+  # --- Memory database (`cognee_db`), when it exists --------------------------
+  #
+  # WHY THIS IS A SECOND DUMP. Conversation memory used to live in sqlite/lancedb files on the
+  # `cogneedata` volume, which this script never touches and never has. It now lives in its OWN
+  # database (`cognee_db`) on this same PostgreSQL instance — so it is NOT inside the `ryasai` dump
+  # above, and without this block an update would leave every memory without a restore point while
+  # still printing "DB backup saved".
+  #
+  # IT MAY LEGITIMATELY NOT EXIST. An install created before the store switch has no `cognee_db`,
+  # and a fresh one is created empty by `cognee-db-init`. Existence is therefore checked FIRST, so
+  # "nothing to back up yet" is not reported as a failure — an operator sent chasing a healthy
+  # system is how the next real failure gets ignored.
+  #
+  # A failure here does NOT invalidate the app dump above, so it warns rather than aborting; it
+  # names which half has no restore point instead of a blanket "backup failed".
+  COGNEE_DB_EXISTS=$(docker compose -f docker-compose.prod.yml exec -T db \
+    psql -U ryasai -d ryasai -tAc "SELECT 1 FROM pg_database WHERE datname='cognee_db'" 2>/dev/null | tr -d '[:space:]')
+  if [ "$COGNEE_DB_EXISTS" = "1" ]; then
+    BACKUP_TMP_COGNEE="$BACKUP_DIR/.ryasai-cognee-$STAMP.sql.tmp"
+    if docker compose -f docker-compose.prod.yml exec -T db pg_dump -U ryasai -d cognee_db > "$BACKUP_TMP_COGNEE" 2>/dev/null \
+       && [ -s "$BACKUP_TMP_COGNEE" ]; then
+      mv "$BACKUP_TMP_COGNEE" "$BACKUP_DIR/ryasai-cognee-$STAMP.sql"
+      info "Memory backup saved -> $(du -h "$BACKUP_DIR/ryasai-cognee-$STAMP.sql" | cut -f1) $BACKUP_DIR/ryasai-cognee-$STAMP.sql"
+    else
+      rm -f "$BACKUP_TMP_COGNEE"
+      warn "Memory DB backup FAILED — the app backup above is valid, but cognee_db has NO restore point."
+    fi
+  fi
+
   # Delete 0-byte dumps left by EARLIER releases so the rotation cannot offer one as a restore point.
   # `-size 0` matches only those; a real dump is never empty.
   find "$BACKUP_DIR" -maxdepth 1 -name 'ryasai-*.sql' -size 0 -delete 2>/dev/null || true
-  # Keep newest 5 dumps
-  ls -1t "$BACKUP_DIR"/ryasai-*.sql 2>/dev/null | tail -n +6 | xargs -r rm -f || true
+  # Keep newest 5 dumps OF EACH KIND. Two rotations, not one: a single glob over `ryasai-*.sql`
+  # would count app and memory dumps together, so every update would silently halve the number of
+  # restore points an operator has for the app database — the depth that matters most during an
+  # incident. The app rotation excludes the memory dumps explicitly, because `ryasai-*.sql` also
+  # matches `ryasai-cognee-*.sql`.
+  ls -1t "$BACKUP_DIR"/ryasai-cognee-*.sql 2>/dev/null | tail -n +6 | xargs -r rm -f || true
+  ls -1t "$BACKUP_DIR"/ryasai-*.sql 2>/dev/null | grep -v 'ryasai-cognee-' | tail -n +6 | xargs -r rm -f || true
 
   # --- Environment drift check ----------------------------------------------
   #
@@ -750,6 +785,42 @@ services:
     restart: unless-stopped
     networks: [ryasai-net]
 
+  # cognee's OWN database, created before the sidecar boots.
+  #
+  # WHY IT CANNOT BE THE APP'S DATABASE: the `migrate` service above runs
+  # `prisma db push` on every boot and treats every table it does not recognise as
+  # drift. MEASURED on a scratch database: an unknown EMPTY table is DROPPED
+  # SILENTLY ("Your database is now in sync"), and an unknown table WITH ROWS
+  # makes push REFUSE the whole boot. A shared database would therefore either
+  # lose cognee's memory quietly or stop the app from starting.
+  #
+  # WHY AN INIT SERVICE RATHER THAN A NOTE IN THE DOCS: cognee EXITS(1) on a
+  # missing database — measured, `asyncpg.exceptions.InvalidCatalogNameError:
+  # database "cognee_never_created" does not exist` was the last line from a
+  # container that was otherwise configured correctly. Without this step the
+  # sidecar sits in a restart loop and the operator has to know to run `createdb`
+  # by hand BEFORE the first `up`.
+  cognee-db-init:
+    image: pgvector/pgvector:pg16
+    environment:
+      # Matches the `db` service's POSTGRES_PASSWORD below, the same hardcoded
+      # credentials the app's own DATABASE_URL already carries.
+      - PGPASSWORD=ryasai
+    # Idempotent on purpose: `-tAc` yields a bare `1` or nothing, `grep -q` turns
+    # that into an exit status, so a second run against an existing database is a
+    # no-op. CREATE DATABASE has no IF NOT EXISTS.
+    entrypoint:
+      - sh
+      - -c
+      - >-
+        psql -h db -U ryasai -d ryasai -tAc
+        "SELECT 1 FROM pg_database WHERE datname='cognee_db'" | grep -q 1 ||
+        createdb -h db -U ryasai cognee_db
+    depends_on:
+      db: { condition: service_healthy }
+    restart: "no"
+    networks: [ryasai-net]
+
   cognee:
     image: cognee/cognee:1.6.0
     # TWO env files, and this is the only arrangement in which a SEPARATE cognee config works.
@@ -774,9 +845,38 @@ services:
       # would otherwise be a `${VAR:-default}` line that SILENTLY OVERRIDES .env.cognee (see above).
       - SYSTEM_ROOT_DIRECTORY=/cognee-storage/system
       - DATA_ROOT_DIRECTORY=/cognee-storage/data
-      - DB_PROVIDER=sqlite
+      # Relational + vector + cache all live in the SAME database as each other, in cognee's OWN
+      # database on the bundled Postgres — never the app's. The `migrate` service above runs
+      # `prisma db push` every boot: MEASURED, it drops an unknown EMPTY table silently and REFUSES
+      # to boot at all on an unknown table that has rows, so cognee sharing `ryasai` would either
+      # lose memory quietly or stop the app from starting.
+      - DB_PROVIDER=postgres
+      # DB_PORT is not optional: cognee feeds it to asyncpg as `int(db_port)`, and the config
+      # default is None, so omitting it fails with "TypeError: int() argument must be a string ...
+      # or a number, not 'NoneType'" rather than anything that mentions a port.
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_NAME=cognee_db
+      - DB_USERNAME=ryasai
+      - DB_PASSWORD=ryasai
+      # The VECTOR_DB_* group is set EXPLICITLY even though cognee falls back to DB_* when it is
+      # absent: measured, the fallback logs "PGVector credentials are not fully configured;
+      # falling back to the relational database configuration" on every boot, and a warning that
+      # fires on a healthy install is how a real one gets ignored.
+      - VECTOR_DB_PROVIDER=pgvector
+      - VECTOR_DB_HOST=db
+      - VECTOR_DB_PORT=5432
+      - VECTOR_DB_NAME=cognee_db
+      - VECTOR_DB_USERNAME=ryasai
+      - VECTOR_DB_PASSWORD=ryasai
+      # CACHE_BACKEND=postgres WITHOUT CACHE_DB_URL: the cache then reuses the relational URL, so
+      # alembic revision c3d5e7f9a1b2 sees one database and no-ops. A SEPARATE cache database is
+      # rejected by that migration and the sidecar never becomes healthy.
+      - CACHE_BACKEND=postgres
+      # The graph DELIBERATELY stays on embedded Kuzu. Upstream labels its Postgres graph adapter
+      # a demo ("Using Postgres as a graph store is currently a demo feature and is not
+      # production-ready"), which is also why `cogneedata` is still a required volume here.
       - GRAPH_DATABASE_PROVIDER=kuzu
-      - VECTOR_DB_PROVIDER=lancedb
       - ENABLE_BACKEND_ACCESS_CONTROL=false
       - COGNEE_SKIP_CONNECTION_TEST=true
       - LITELLM_DROP_PARAMS=true
@@ -785,6 +885,12 @@ services:
       # EVERYTHING ELSE — LLM_*, EMBEDDING_*, LLM_ALLOWED_HOSTS, AUTO_FEEDBACK, IMPROVE_AUTO_ENABLED —
       # lives in .env.cognee under cognee's own variable names. That is the separation: one file an
       # operator edits for memory, and a compose block that cannot contradict it.
+    # The app treats memory as optional (see `app`/`scheduler`, which only use service_started),
+    # but cognee cannot start before its database exists: it exits(1) with
+    # `asyncpg.exceptions.InvalidCatalogNameError`, and `restart: unless-stopped` would turn that
+    # into a loop that reads as a crash rather than a missing step.
+    depends_on:
+      cognee-db-init: { condition: service_completed_successfully }
     # The sidecar must reach the customer's own model endpoints. On a single-host install
     # those are usually on the host itself (an on-prem gateway, a local embedding server),
     # and a container cannot resolve `localhost` to its host — without this, writes fail

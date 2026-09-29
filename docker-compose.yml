@@ -190,21 +190,93 @@ services:
   # writer. Measured here: write 9s, recall 0.21s, and the stored token is FOUND.
   # See docs/cognee-http-migration.md.
   #
+  # cognee's OWN database, created before the sidecar boots.
+  #
+  # WHY IT CANNOT BE THE APP'S DATABASE: `prisma db push` runs on every boot
+  # (`migrate` service) and treats every table it does not recognise as drift.
+  # MEASURED on a scratch database: an unknown EMPTY table is DROPPED SILENTLY
+  # ("Your database is now in sync"), and an unknown table WITH ROWS makes push
+  # REFUSE the whole boot. So a shared database would either lose cognee's data
+  # quietly or stop the app from starting.
+  #
+  # WHY AN INIT SERVICE RATHER THAN DOCUMENTATION: cognee EXITS(1) on a missing
+  # database — measured, `asyncpg.exceptions.InvalidCatalogNameError: database
+  # "cognee_never_created" does not exist` was the last line of a container that
+  # was otherwise configured correctly. Without this step a bare
+  # `docker compose up -d` produces a memory sidecar in a restart loop, and the
+  # operator has to know to run `createdb` by hand.
+  #
+  # A one-shot, same as `migrate` above: `restart: "no"`, and cognee waits on it.
+  cognee-db-init:
+    image: pgvector/pgvector:pg16
+    environment:
+      # Matches the `db` service's POSTGRES_PASSWORD below — the same hardcoded
+      # credentials the app's own DATABASE_URL already uses.
+      - PGPASSWORD=ryasai
+    # `-tAc` yields a bare `1` or nothing; `grep -q` turns that into an exit
+    # status, so re-running against a database that already exists is a no-op
+    # rather than an error. `IF NOT EXISTS` does not exist for CREATE DATABASE.
+    entrypoint:
+      - sh
+      - -c
+      - >-
+        psql -h db -U ryasai -d ryasai -tAc
+        "SELECT 1 FROM pg_database WHERE datname='cognee_db'" | grep -q 1 ||
+        createdb -h db -U ryasai cognee_db
+    depends_on:
+      db: { condition: service_healthy }
+    restart: "no"
+    networks:
+      - ryasai-net
+
   # PINNED, never :latest — a memory store whose format the app must read should
   # not change under a `docker compose pull`.
   cognee:
     image: cognee/cognee:1.6.0
     # ponytail: the image's entrypoint already runs the API server on :8000; we
-    # only say where to keep data and which backends to use. Local mode (sqlite +
-    # kuzu + lancedb) means ZERO extra services — no second Postgres, no Neo4j —
-    # which is what keeps this viable on an on-prem box.
+    # only say where to keep data and which backends to use.
+    #
+    # Memory runs on the SAME Postgres instance the app uses, in its OWN database
+    # (see the init service above): relational rows, vectors (pgvector) and cache
+    # all live in `cognee_db`. The GRAPH deliberately does NOT follow them —
+    # upstream labels its Postgres graph adapter a demo ("Using Postgres as a
+    # graph store is currently a demo feature and is not production-ready"), so
+    # the graph stays on embedded Kuzu, which is why the volume below is still
+    # required.
     environment:
       # Storage: named volume below, so the graph survives a container recreate.
       - SYSTEM_ROOT_DIRECTORY=/cognee-storage/system
       - DATA_ROOT_DIRECTORY=/cognee-storage/data
-      - DB_PROVIDER=sqlite
+      # STRUCTURAL, so hardcoded rather than routed through a variable: a
+      # `${VAR:-default}` here would override the operator's .env.cognee and blank
+      # it (the precedence is measured and documented in install.sh).
+      - DB_PROVIDER=postgres
+      - DB_HOST=db
+      # MUST be set: a missing DB_PORT reaches asyncpg as `int(None)` and kills
+      # the boot with `TypeError: int() argument must be ... not 'NoneType'`.
+      - DB_PORT=5432
+      - DB_NAME=cognee_db
+      - DB_USERNAME=ryasai
+      - DB_PASSWORD=ryasai
+      # pgvector: the same extension the app's own `DocumentChunk.embedding` uses.
+      - VECTOR_DB_PROVIDER=pgvector
+      # The full explicit group, not just the provider. Omit it and the sidecar
+      # logs "PGVector credentials are not fully configured; falling back to the
+      # relational database configuration" — here the fallback lands on the same
+      # database, so it works, but the warning is indistinguishable from a real
+      # misconfiguration during an incident.
+      - VECTOR_DB_HOST=db
+      - VECTOR_DB_PORT=5432
+      - VECTOR_DB_NAME=cognee_db
+      - VECTOR_DB_USERNAME=ryasai
+      - VECTOR_DB_PASSWORD=ryasai
+      # Cache: postgres, and DELIBERATELY no CACHE_DB_URL. With the URL set to a
+      # separate database, cognee's alembic migration c3d5e7f9a1b2 fails and the
+      # container never becomes healthy; leaving it unset makes the cache reuse
+      # the relational DB_* connection, which that migration accepts.
+      - CACHE_BACKEND=postgres
+      # The graph stays on the embedded engine — see the block comment above.
       - GRAPH_DATABASE_PROVIDER=kuzu
-      - VECTOR_DB_PROVIDER=lancedb
       # The app reaches this over the private compose network with no auth. The
       # port is NOT published to the host (see below), so it is not exposed.
       - ENABLE_BACKEND_ACCESS_CONTROL=false
@@ -257,6 +329,12 @@ services:
       - AUTO_FEEDBACK=${COGNEE_AUTO_FEEDBACK:-false}
       - IMPROVE_AUTO_ENABLED=${COGNEE_IMPROVE_AUTO:-false}
       - USAGE_LOGGING=false
+    # Memory is optional and the app must not wait on it (see `app`/`scheduler`,
+    # which use service_started), but cognee itself MUST wait for its database to
+    # exist: it exits(1) on a missing one, and `restart: unless-stopped` would
+    # turn that into a loop that looks like a crash rather than a missing step.
+    depends_on:
+      cognee-db-init: { condition: service_completed_successfully }
     # Applies tools/cognee-server/patch-fence-strip.sh, then runs the image's own
     # entrypoint. The image ships an ANCHORED fence-stripper that only handles a fence
     # wrapping the ENTIRE response, so prose before or after the block is rejected and
@@ -286,8 +364,13 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      # Long start period: first boot initialises the sqlite/kuzu/lancedb stores.
-      start_period: 90s
+      # Long start period: first boot runs the relational migrations against
+      # `cognee_db` (35 tables + the pgvector extension) and initialises the Kuzu
+      # graph. Was 90s while the stores were sqlite/lancedb, which needed no
+      # migrations; the generated production compose measures 180s for the same
+      # work and this now matches it rather than flapping healthy-sidecar-reads-
+      # as-broken on a slower box.
+      start_period: 180s
     # ponytail: no memory cap. Upstream's compose reserves 8GB; this is a graph
     # build over the customer's documents, and a hard cap turns a slow cognify
     # into an OOM kill that loses the work. Bound the box, not the service.
