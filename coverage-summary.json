@@ -1,14 +1,14 @@
 {
-  "linePct": 75.52,
-  "linesHit": 25233,
-  "linesFound": 33412,
-  "reachableLinePct": 86.4,
-  "reachableLinesHit": 21931,
-  "reachableLinesFound": 25384,
+  "linePct": 75.45,
+  "linesHit": 25239,
+  "linesFound": 33451,
+  "reachableLinePct": 86.38,
+  "reachableLinesHit": 21937,
+  "reachableLinesFound": 25395,
   "fnPct": 89.17,
-  "fnsHit": 2255,
-  "fnsFound": 2529,
-  "filesMeasured": 241,
+  "fnsHit": 2256,
+  "fnsFound": 2530,
+  "filesMeasured": 242,
   "failedTestFiles": [],
   "files": [
     {
@@ -192,6 +192,15 @@
       "fPct": 100
     },
     {
+      "file": "src/lib/tool-router.ts",
+      "hit": 298,
+      "found": 596,
+      "pct": 50,
+      "fHit": 36,
+      "fFound": 41,
+      "fPct": 87.8048780487805
+    },
+    {
       "file": "src/lib/mcp-client.ts",
       "hit": 325,
       "found": 620,
@@ -199,15 +208,6 @@
       "fHit": 38,
       "fFound": 56,
       "fPct": 67.85714285714286
-    },
-    {
-      "file": "src/lib/tool-router.ts",
-      "hit": 295,
-      "found": 560,
-      "pct": 52.67857142857143,
-      "fHit": 36,
-      "fFound": 41,
-      "fPct": 87.8048780487805
     },
     {
       "file": "src/lib/simple-pipeline.ts",
@@ -913,9 +913,9 @@
     },
     {
       "file": "src/app/api/chat/sessions/[id]/send/route.ts",
-      "hit": 422,
-      "found": 456,
-      "pct": 92.54385964912281,
+      "hit": 424,
+      "found": 458,
+      "pct": 92.57641921397381,
       "fHit": 23,
       "fFound": 32,
       "fPct": 71.875
@@ -2007,6 +2007,15 @@
       "pct": 100,
       "fHit": 4,
       "fFound": 4,
+      "fPct": 100
+    },
+    {
+      "file": "src/lib/chat-sources.ts",
+      "hit": 1,
+      "found": 1,
+      "pct": 100,
+      "fHit": 1,
+      "fFound": 1,
       "fPct": 100
     },
     {

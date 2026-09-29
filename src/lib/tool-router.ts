@@ -44,6 +44,12 @@ export async function runNonStreamingChatCompletion(args: {
   question: string
   userId: string
   integrationId?: string
+  /**
+   * The user pinned the DOCUMENT corpus rather than a database. Sets no `integrationId`, so no SQL source is
+   * offered; the router is then free to reach RAG, which is the bias the pin is asking for. Both pins are stated in
+   * the router prompt and the UI says "prefer" for both — a router instruction is a bias, not a lock.
+   */
+  pinToDocuments?: boolean
   sessionId?: string
   chatHistory?: ChatHistoryEntry[]
   allowMultiStepDag?: boolean
@@ -74,6 +80,12 @@ async function _runNonStreamingChatCompletion(args: {
   question: string
   userId: string
   integrationId?: string
+  /**
+   * The user pinned the DOCUMENT corpus rather than a database. Sets no `integrationId`, so no SQL source is
+   * offered; the router is then free to reach RAG, which is the bias the pin is asking for. Both pins are stated in
+   * the router prompt and the UI says "prefer" for both — a router instruction is a bias, not a lock.
+   */
+  pinToDocuments?: boolean
   sessionId?: string
   chatHistory?: ChatHistoryEntry[]
   allowMultiStepDag?: boolean
@@ -245,6 +257,12 @@ export async function runStreamingChatCompletion(args: {
   question: string
   userId: string
   integrationId?: string
+  /**
+   * The user pinned the DOCUMENT corpus rather than a database. Sets no `integrationId`, so no SQL source is
+   * offered; the router is then free to reach RAG, which is the bias the pin is asking for. Both pins are stated in
+   * the router prompt and the UI says "prefer" for both — a router instruction is a bias, not a lock.
+   */
+  pinToDocuments?: boolean
   sessionId?: string
   chatHistory?: ChatHistoryEntry[]
   allowMultiStepDag?: boolean
@@ -268,6 +286,12 @@ async function _runStreamingChatCompletion(args: {
   question: string
   userId: string
   integrationId?: string
+  /**
+   * The user pinned the DOCUMENT corpus rather than a database. Sets no `integrationId`, so no SQL source is
+   * offered; the router is then free to reach RAG, which is the bias the pin is asking for. Both pins are stated in
+   * the router prompt and the UI says "prefer" for both — a router instruction is a bias, not a lock.
+   */
+  pinToDocuments?: boolean
   sessionId?: string
   chatHistory?: ChatHistoryEntry[]
   allowMultiStepDag?: boolean
@@ -484,6 +508,15 @@ export function formatSchemasForIntent(
 type DbData = Awaited<ReturnType<typeof loadDbData>>
 
 /**
+ * What the router prompt is told when the user pinned the DOCUMENT corpus.
+ *
+ * A constant rather than an inline string because the prompt only needs a NAME, and the picker's own label carries a
+ * live count ("Documents (12)") that would change the prompt text whenever a document was added — making two
+ * identical questions produce different router prompts.
+ */
+const DOCUMENTS_PIN_LABEL = 'the document corpus (all knowledge base documents)'
+
+/**
  * Render a document row for the intent prompt: name [category] — description.
  * The description comes from the uploader or the LLM first-scan (source-init);
  * it is what lets the router tell "annual leave SOP" from "Q3 invoice export".
@@ -520,6 +553,12 @@ async function resolveRouting(
   args: {
     question: string
     integrationId?: string
+  /**
+   * The user pinned the DOCUMENT corpus rather than a database. Sets no `integrationId`, so no SQL source is
+   * offered; the router is then free to reach RAG, which is the bias the pin is asking for. Both pins are stated in
+   * the router prompt and the UI says "prefer" for both — a router instruction is a bias, not a lock.
+   */
+  pinToDocuments?: boolean
     chatHistory?: ChatHistoryEntry[]
     /**
      * The key's allowed sources. This function DECIDES which database answers a SQL question, so an unscoped
@@ -594,7 +633,12 @@ async function resolveRouting(
        * otherwise. The lookup is one scoped `findFirst` on an id the route already validated, and only when a pin
        * exists, so an auto-routed turn costs nothing.
        */
-      pinnedSourceName: args.integrationId
+      // A DOCUMENT pin names the corpus, which has no single row to look up — so the directive is stated directly.
+      // Without this the picker's "Documents" option would set no `integrationId` and change nothing at all, which is
+      // the "accepted and not applied" shape this file has already been bitten by.
+      pinnedSourceName: args.pinToDocuments
+        ? DOCUMENTS_PIN_LABEL
+        : args.integrationId
         ? ((
             await db.integration.findFirst({
               // BOTH axes, and this is not belt-and-braces: `core` guards that every integration query in the chat
