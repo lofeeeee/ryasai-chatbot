@@ -1,14 +1,14 @@
 {
-  "linePct": 75.6,
-  "linesHit": 25212,
-  "linesFound": 33349,
-  "reachableLinePct": 86.41,
-  "reachableLinesHit": 21912,
-  "reachableLinesFound": 25359,
+  "linePct": 75.45,
+  "linesHit": 25239,
+  "linesFound": 33451,
+  "reachableLinePct": 86.38,
+  "reachableLinesHit": 21937,
+  "reachableLinesFound": 25395,
   "fnPct": 89.17,
-  "fnsHit": 2255,
-  "fnsFound": 2529,
-  "filesMeasured": 241,
+  "fnsHit": 2256,
+  "fnsFound": 2530,
+  "filesMeasured": 242,
   "failedTestFiles": [],
   "files": [
     {
@@ -192,6 +192,15 @@
       "fPct": 100
     },
     {
+      "file": "src/lib/tool-router.ts",
+      "hit": 298,
+      "found": 596,
+      "pct": 50,
+      "fHit": 36,
+      "fFound": 41,
+      "fPct": 87.8048780487805
+    },
+    {
       "file": "src/lib/mcp-client.ts",
       "hit": 325,
       "found": 620,
@@ -208,15 +217,6 @@
       "fHit": 13,
       "fFound": 18,
       "fPct": 72.22222222222221
-    },
-    {
-      "file": "src/lib/tool-router.ts",
-      "hit": 282,
-      "found": 518,
-      "pct": 54.440154440154444,
-      "fHit": 36,
-      "fFound": 41,
-      "fPct": 87.8048780487805
     },
     {
       "file": "src/lib/agent-orchestrator.ts",
@@ -363,21 +363,21 @@
       "fPct": 75
     },
     {
+      "file": "src/lib/ai.ts",
+      "hit": 467,
+      "found": 678,
+      "pct": 68.87905604719764,
+      "fHit": 48,
+      "fFound": 48,
+      "fPct": 100
+    },
+    {
       "file": "src/lib/rag-fts.ts",
       "hit": 109,
       "found": 157,
       "pct": 69.42675159235668,
       "fHit": 15,
       "fFound": 15,
-      "fPct": 100
-    },
-    {
-      "file": "src/lib/ai.ts",
-      "hit": 459,
-      "found": 657,
-      "pct": 69.86301369863014,
-      "fHit": 48,
-      "fFound": 48,
       "fPct": 100
     },
     {
@@ -913,9 +913,9 @@
     },
     {
       "file": "src/app/api/chat/sessions/[id]/send/route.ts",
-      "hit": 422,
-      "found": 456,
-      "pct": 92.54385964912281,
+      "hit": 424,
+      "found": 458,
+      "pct": 92.57641921397381,
       "fHit": 23,
       "fFound": 32,
       "fPct": 71.875
@@ -2007,6 +2007,15 @@
       "pct": 100,
       "fHit": 4,
       "fFound": 4,
+      "fPct": 100
+    },
+    {
+      "file": "src/lib/chat-sources.ts",
+      "hit": 1,
+      "found": 1,
+      "pct": 100,
+      "fHit": 1,
+      "fFound": 1,
       "fPct": 100
     },
     {

@@ -126,6 +126,10 @@ const FLOORS: Record<string, number> = {
   // THROWN issuance are all pinned.
   'src/app/api/billing/webhook/route.ts': 100, // measured 100.00% (106/106)
   // The Buy License pack list; the error path is handled through handleApiError.
+  // 100.00% merged since the day it was added, and every line is load-bearing: the picker and the sender must agree
+  // on BOTH the sentinel's value and its meaning — sending `__documents__` as an `integrationId` makes the server
+  // look for an integration with that id, find nothing, and return 400, so the turn breaks rather than falls back.
+  'src/lib/chat-sources.ts': 100, // measured 100.00%; guarded by chat-sources.test.ts
   'src/app/api/billing/pricing/route.ts': 100, // measured 100.00% (11/11)
   // The MCP connection pool: LRU eviction, transport-close eviction, SSRF guards,
   // env/header decryption and the tool-result error shapes.
@@ -286,7 +290,7 @@ const FLOORS: Record<string, number> = {
   'src/lib/api-keys.ts': 80, // merged 84.78%; merged 84.78% but 78/78 executable (100.00%)
   'src/lib/alignment-check.ts': 83, // merged 83.08%; merged 83.08% but 54/54 executable (100.00%)
   'src/lib/cognee.ts': 53, // re-measured 55.70% (44/79); was 73
-  'src/lib/tool-router.ts': 45, // re-measured 54.44% (282/518); was 69
+  'src/lib/tool-router.ts': 45, // re-measured 52.68% (295/560); was 69
   'src/lib/llm-config.ts': 66, // lowered 81 -> 66 this round. NOT a regression: the file gained 81 real
   // lines (embeddedIpv4 + the v4-mapped refusal) and it is a module CONSUMED by ~32 test files, so Bun
   // instruments the whole file in every process that touches it and the denominator moves while HIT stays.

@@ -12,6 +12,7 @@ import type {
 } from '@/lib/types'
 import { INITIAL_PIPELINE, TOOL_META } from './types'
 import type { PipelineState } from './types'
+import { DOCUMENTS_SOURCE_ID } from '@/lib/chat-sources'
 
 export function useChatSend() {
   const store = useChatStore()
@@ -301,8 +302,18 @@ export function useChatSend() {
              * comment documents it — but NOTHING ever sent it, so a user with three connected
              * databases had no way to say "answer from ERP". The router guessed on every turn.
              * Omitted when unset, so the server keeps its existing auto-selection.
+             *
+             * A DOCUMENT pin is NOT an integration. `__documents__` is a sentinel, and sending it as
+             * `integrationId` would make the server look for an integration with that id, find nothing, and return
+             * 400 — the turn would break outright rather than falling back. `pinToDocuments` is the signal the route
+             * understands: it skips the integration lookup, reaches the router, and the router states the corpus in
+             * its prompt.
              */
-            ...(sourceId ? { integrationId: sourceId } : {}),
+            ...(sourceId === DOCUMENTS_SOURCE_ID
+              ? { pinToDocuments: true }
+              : sourceId
+                ? { integrationId: sourceId }
+                : {}),
           }),
           signal: ac.signal,
         })

@@ -1799,3 +1799,98 @@ describe('the answer prompts must never invite a FABRICATED CAUSE or a one-sided
     expect((src.match(/Never invent data/g) ?? []).length).toBe(2)
   })
 })
+
+describe('routeQuery — the router prompt must not NAME sources outside the caller scope', () => {
+  /**
+   * MEASURED DEFECT this pins: `routeQuery` listed every table, document, table DESCRIPTION and REST path in the
+   * install to the router prompt, with no scope applied — while its caller had the scope in hand and applied it to
+   * the counts. A key restricted to one integration could not READ the others, but was told their names:
+   *
+   *     docNames          -> `Documents: Resignation-2026-Q3.xlsx, Salary-Bands.xlsx, …`
+   *     tableDescriptions -> `Table descriptions: Finance.payroll: monthly salary per employee …`
+   *
+   * Naming is the leak. A table description is business content, and a document name is often the most sensitive
+   * string in a deployment. The assertions below check the WHERE CLAUSE actually sent to each query, because a
+   * scope that is accepted and not applied is the "defence tested while callers bypass it" shape.
+   */
+  const scoped = {
+    question: 'Berapa total gaji bulan ini?',
+    hasIntegrations: true,
+    hasDocuments: true,
+    integrationIds: ['int-allowed'],
+    documentIds: ['doc-allowed'],
+  }
+
+  /**
+   * The `where` of the last call, or undefined.
+   *
+   * `.mock.calls` holds one entry PER CALL, and each entry is the ARGUMENT LIST — so the argument is `[0]` of that
+   * entry. Reading `entry.where` instead returns undefined and the assertion then fails for a reason unrelated to
+   * the scope, which is how the first version of this helper was written.
+   */
+  const lastWhere = (m: { mock: { calls: unknown[] } }): Record<string, unknown> | undefined => {
+    const call = m.mock.calls.at(-1) as Array<{ where?: Record<string, unknown> }> | undefined
+    return call?.[0]?.where
+  }
+
+  test('the document query carries the document scope', async () => {
+    mockDocumentFindMany.mockClear()
+    await routeQuery(scoped)
+    expect(lastWhere(mockDocumentFindMany)).toMatchObject({ id: { in: ['doc-allowed'] } })
+  })
+
+  test('the table-schema query carries the integration scope on the RELATION', async () => {
+    // The schema rows hang off the integration, so the constraint belongs on `integration`, not on the row.
+    mockIntegrationSchemaFindMany.mockClear()
+    await routeQuery(scoped)
+    expect(lastWhere(mockIntegrationSchemaFindMany)).toMatchObject({
+      integration: { status: 'active', id: { in: ['int-allowed'] } },
+    })
+  })
+
+  test('an ABSENT scope stays unrestricted, so keys predating the axes are not locked out', async () => {
+    /*
+     * The other half of the rule. `loadDbData` spreads its scope conditionally for exactly this reason: an empty
+     * `in: []` matches nothing, so treating "no scope" as "no sources" would break every key created before these
+     * axes existed. Both spellings must stay unrestricted.
+     */
+    for (const ctx of [{ ...scoped, integrationIds: undefined, documentIds: undefined }, { ...scoped, integrationIds: [], documentIds: [] }]) {
+      mockDocumentFindMany.mockClear()
+      mockIntegrationSchemaFindMany.mockClear()
+      await routeQuery(ctx)
+      expect(JSON.stringify(lastWhere(mockDocumentFindMany) ?? {})).not.toContain('"in"')
+      expect(JSON.stringify(lastWhere(mockIntegrationSchemaFindMany) ?? {})).not.toContain('"in"')
+    }
+  })
+})
+
+describe('routeQuery — a user-pinned source must reach the router PROMPT', () => {
+  /**
+   * The picker tells the user "other sources are excluded for this turn". MEASURED: the id never reached
+   * `routeQuery`, so the router chose from the FULL source list and a pinned-database question could still be routed
+   * to documents. The pin only bound AFTER the route was decided (`resolvedIntegrationId`, used only when the route is
+   * SQL) — which is not what the UI promises.
+   *
+   * The assertion reads the PROMPT SENT, not the code path: a pin accepted and not delivered is the "instruction
+   * never DELIVERED" class, and that class is invisible from the call site.
+   */
+  test('the pinned source name appears in the router system prompt', async () => {
+    await routeQuery({
+      question: 'Berapa jumlah pesanan?',
+      hasIntegrations: true,
+      hasDocuments: true,
+      pinnedSourceName: 'Sales Database',
+    })
+    // BOTH messages. The pin is in the USER one on purpose — see the ceiling note in ai.ts: a system message above
+    // ~2000 characters is DISCARDED by the provider, so the source lists and the pin cannot live there.
+    const prompt = getSentMessages().map((m) => m.content).join('\n')
+    expect(prompt).toContain('THE USER EXPLICITLY CHOSE THIS SOURCE')
+    expect(prompt).toContain('Sales Database')
+  })
+
+  test('with no pin the directive is absent, so an auto-routed turn is not biased', async () => {
+    await routeQuery({ question: 'Berapa jumlah pesanan?', hasIntegrations: true, hasDocuments: true })
+    const prompt = getSentMessages().map((m) => m.content).join('\n')
+    expect(prompt).not.toContain('THE USER EXPLICITLY CHOSE THIS SOURCE')
+  })
+})

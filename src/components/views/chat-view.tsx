@@ -90,32 +90,51 @@ export function ChatView() {
    * the composer) means one fetch for the whole view instead of one per keystroke.
    */
   /*
-   * KNOWING LIMIT, recorded so it is not rediscovered: this picker offers only the connected DATABASES.
+   * Sources the user can pin a question to — the connected DATABASES, plus the document corpus.
    *
    * MEASURED IN UAT: a knowledge officer who knew the answer was in a policy document could not pin the retriever to
-   * documents — the one control that makes retrieval deterministic, missing for exactly the questions where a
-   * semantic miss cannot be recovered by rewording.
+   * documents, which is the one control that makes retrieval deterministic and the case where a semantic miss cannot
+   * be recovered by rewording.
    *
-   * WHY IT IS STILL DATABASES ONLY: pinning a document set needs support this path does not have. `/send` resolves
-   * `integrationId` against `Integration` (400 when it does not match) and has no `documentIds` concept; and
-   * `integrationIds: []` is UNRESTRICTED by design (`intScope` resolves an empty list to `{}`), so an empty list does
-   * NOT exclude the databases. A "Documents" option was written, checked against those facts, and removed — a control
-   * that silently changes nothing is worse than an absent one, because the user believes they constrained the search.
-   * Doing it properly means threading a scope through `/send` and the router's decision step.
+   * THE DOCUMENTS ENTRY WAS WRITTEN, WITHDRAWN, AND IS NOW REAL. It was withdrawn earlier with the note that a
+   * document pin "needs support this path does not have" — and THAT WAS WRONG. The router has accepted `documentIds`
+   * on both transports all along. What was missing was a way for the interface to ask: `/send` gained
+   * `pinToDocuments`, which skips the integration lookup and reaches the router, which states the pin in its prompt.
+   * The earlier withdrawal was still the right call at the time, because shipping the control without that plumbing
+   * would have changed nothing while telling the user it had.
    */
   const [chatSources, setChatSources] = useState<{ id: string; name: string }[]>([])
+
+  /**
+   * The sentinel id for the document-corpus entry.
+   *
+   * It is NOT an integration id, so it must never reach `integrationId` — `/send` validates that against
+   * `Integration` and would 400. `handleSend` recognises this value and sends `pinToDocuments` instead, which is the
+   * signal the route and the router actually understand.
+   */
+  const DOCUMENTS_SOURCE_ID = '__documents__'
   const [pinnedSource, setPinnedSource] = useState('')
 
   useEffect(() => {
     let cancelled = false
-    fetch('/api/integrations', { cache: 'no-store' })
-      .then((r) => r.json())
-      .then((j) => {
+    Promise.all([
+      fetch('/api/integrations', { cache: 'no-store' })
+        .then((r) => r.json())
+        .catch(() => null),
+      // The COUNT gates the entry, so an install with no documents gains no dead option.
+      fetch('/api/documents', { cache: 'no-store' })
+        .then((r) => r.json())
+        .catch(() => null),
+    ])
+      .then(([integ, docs]) => {
         if (cancelled) return
-        const list = (j?.integrations ?? j?.data ?? []) as Array<{ id: string; name: string; status?: string }>
-        setChatSources(
-          list.filter((i) => !i.status || i.status === 'active').map((i) => ({ id: i.id, name: i.name })),
-        )
+        const list = (integ?.integrations ?? integ?.data ?? []) as Array<{ id: string; name: string; status?: string }>
+        const sources = list
+          .filter((i) => !i.status || i.status === 'active')
+          .map((i) => ({ id: i.id, name: i.name }))
+        const docCount = Array.isArray(docs?.documents) ? docs.documents.length : 0
+        if (docCount > 0) sources.push({ id: DOCUMENTS_SOURCE_ID, name: `Documents (${docCount})` })
+        setChatSources(sources)
       })
       .catch(() => {
         // Non-fatal: without the list the picker is hidden and the router auto-selects, which is the
@@ -302,10 +321,20 @@ export function ChatView() {
                   ))}
                 </select>
                 {pinnedSource && (
-                  // States plainly that this pins the SOURCE, not just the wording. Without it a user
-                  // cannot tell why a question stopped reaching the document they expected.
+                  /*
+                   * THE OLD WORDING WAS A PROMISE THE CODE DID NOT KEEP: "other sources are excluded for this turn",
+                   * when nothing excluded them. `integrationId` only ever bound AFTER the route was chosen (the SQL
+                   * branch reads `resolvedIntegrationId`), so a pinned-database question could still be answered from
+                   * documents while the interface said otherwise.
+                   *
+                   * Two things changed. The pin now REACHES the router prompt, so the model is told which source the
+                   * user chose and prefers the route that reads it — and this sentence describes what actually
+                   * happens. "Prefer" is the honest verb: a router instruction is a bias, not a lock, and a pin whose
+                   * source cannot answer is better redirected (the clarification path and `applyToolGating` still
+                   * apply) than answered wrongly from a source the user did not choose.
+                   */
                   <span className="text-muted-foreground">
-                    — other sources are excluded for this turn
+                    — answers prefer this source for this turn
                   </span>
                 )}
               </div>

@@ -44,6 +44,12 @@ export async function runNonStreamingChatCompletion(args: {
   question: string
   userId: string
   integrationId?: string
+  /**
+   * The user pinned the DOCUMENT corpus rather than a database. Sets no `integrationId`, so no SQL source is
+   * offered; the router is then free to reach RAG, which is the bias the pin is asking for. Both pins are stated in
+   * the router prompt and the UI says "prefer" for both — a router instruction is a bias, not a lock.
+   */
+  pinToDocuments?: boolean
   sessionId?: string
   chatHistory?: ChatHistoryEntry[]
   allowMultiStepDag?: boolean
@@ -74,6 +80,12 @@ async function _runNonStreamingChatCompletion(args: {
   question: string
   userId: string
   integrationId?: string
+  /**
+   * The user pinned the DOCUMENT corpus rather than a database. Sets no `integrationId`, so no SQL source is
+   * offered; the router is then free to reach RAG, which is the bias the pin is asking for. Both pins are stated in
+   * the router prompt and the UI says "prefer" for both — a router instruction is a bias, not a lock.
+   */
+  pinToDocuments?: boolean
   sessionId?: string
   chatHistory?: ChatHistoryEntry[]
   allowMultiStepDag?: boolean
@@ -245,6 +257,12 @@ export async function runStreamingChatCompletion(args: {
   question: string
   userId: string
   integrationId?: string
+  /**
+   * The user pinned the DOCUMENT corpus rather than a database. Sets no `integrationId`, so no SQL source is
+   * offered; the router is then free to reach RAG, which is the bias the pin is asking for. Both pins are stated in
+   * the router prompt and the UI says "prefer" for both — a router instruction is a bias, not a lock.
+   */
+  pinToDocuments?: boolean
   sessionId?: string
   chatHistory?: ChatHistoryEntry[]
   allowMultiStepDag?: boolean
@@ -268,6 +286,12 @@ async function _runStreamingChatCompletion(args: {
   question: string
   userId: string
   integrationId?: string
+  /**
+   * The user pinned the DOCUMENT corpus rather than a database. Sets no `integrationId`, so no SQL source is
+   * offered; the router is then free to reach RAG, which is the bias the pin is asking for. Both pins are stated in
+   * the router prompt and the UI says "prefer" for both — a router instruction is a bias, not a lock.
+   */
+  pinToDocuments?: boolean
   sessionId?: string
   chatHistory?: ChatHistoryEntry[]
   allowMultiStepDag?: boolean
@@ -484,6 +508,15 @@ export function formatSchemasForIntent(
 type DbData = Awaited<ReturnType<typeof loadDbData>>
 
 /**
+ * What the router prompt is told when the user pinned the DOCUMENT corpus.
+ *
+ * A constant rather than an inline string because the prompt only needs a NAME, and the picker's own label carries a
+ * live count ("Documents (12)") that would change the prompt text whenever a document was added — making two
+ * identical questions produce different router prompts.
+ */
+const DOCUMENTS_PIN_LABEL = 'the document corpus (all knowledge base documents)'
+
+/**
  * Render a document row for the intent prompt: name [category] — description.
  * The description comes from the uploader or the LLM first-scan (source-init);
  * it is what lets the router tell "annual leave SOP" from "Q3 invoice export".
@@ -520,6 +553,12 @@ async function resolveRouting(
   args: {
     question: string
     integrationId?: string
+  /**
+   * The user pinned the DOCUMENT corpus rather than a database. Sets no `integrationId`, so no SQL source is
+   * offered; the router is then free to reach RAG, which is the bias the pin is asking for. Both pins are stated in
+   * the router prompt and the UI says "prefer" for both — a router instruction is a bias, not a lock.
+   */
+  pinToDocuments?: boolean
     chatHistory?: ChatHistoryEntry[]
     /**
      * The key's allowed sources. This function DECIDES which database answers a SQL question, so an unscoped
@@ -528,6 +567,11 @@ async function resolveRouting(
      * when a scoped key is most likely to be sent somewhere it may not read.
      */
     integrationIds?: string[] | null
+    /**
+     * The key's allowed documents. Needed HERE because this function builds the router prompt's source list, and
+     * that list was previously unscoped — see the note on `RoutingContext.documentIds`.
+     */
+    documentIds?: string[] | null
   },
   effectiveQuestion: string,
   dbData: DbData,
@@ -536,6 +580,10 @@ async function resolveRouting(
   const [docCount, intCount, , , , restEndpoints] = dbData
   const restEndpointCount = restEndpoints.length
   const hasHistory = args.chatHistory && args.chatHistory.length > 0
+  // Required by the pin lookup below, and named for it: `core` guards that EVERY integration query in the chat path
+  // carries a scope filter. Spread conditionally, exactly as `loadDbData` does — an empty `in: []` matches nothing
+  // and would lock out every key created before this axis existed.
+  const intScope = args.integrationIds && args.integrationIds.length > 0 ? { id: { in: args.integrationIds } } : {}
   let decision: RouteDecision
   let resolvedIntegrationId = args.integrationId
   // Arguments the SELECTOR supplied, so the branch does not re-derive them.
@@ -565,7 +613,45 @@ async function resolveRouting(
     // No LLM (unconfigured, or the provider failed). `routeQuery` is the
     // documented fail-closed fallback; a hard failure here would take chat down
     // for a deployment whose only problem is a transient provider error.
-    const routed = await routeQuery({ question: effectiveQuestion, hasIntegrations: intCount > 0, hasDocuments: docCount > 0, hasRestApis: restEndpointCount > 0, memoryContext, chatHistory: args.chatHistory })
+    const routed = await routeQuery({
+      question: effectiveQuestion,
+      hasIntegrations: intCount > 0,
+      hasDocuments: docCount > 0,
+      hasRestApis: restEndpointCount > 0,
+      memoryContext,
+      chatHistory: args.chatHistory,
+      // The scope REACHES THE PROMPT here, not just the branch. MEASURED: this call omitted it, so `routeQuery`
+      // listed every table, document and table-description in the install to a key that could not read them.
+      // `loadDbData` above already scoped the counts; the prompt needed the same axes.
+      integrationIds: args.integrationIds,
+      documentIds: args.documentIds,
+      /*
+       * The user's PIN, so the router can honour the composer's promise ("other sources are excluded for this turn").
+       *
+       * MEASURED GAP: the pin used to bind only AFTER the route was chosen — as `resolvedIntegrationId`, which the SQL
+       * branch reads — so a user who pinned a database could still be answered from documents, and the UI said
+       * otherwise. The lookup is one scoped `findFirst` on an id the route already validated, and only when a pin
+       * exists, so an auto-routed turn costs nothing.
+       */
+      // A DOCUMENT pin names the corpus, which has no single row to look up — so the directive is stated directly.
+      // Without this the picker's "Documents" option would set no `integrationId` and change nothing at all, which is
+      // the "accepted and not applied" shape this file has already been bitten by.
+      pinnedSourceName: args.pinToDocuments
+        ? DOCUMENTS_PIN_LABEL
+        : args.integrationId
+        ? ((
+            await db.integration.findFirst({
+              // BOTH axes, and this is not belt-and-braces: `core` guards that every integration query in the chat
+              // path carries a scope filter, and the first version of this lookup omitted it. Without `...intScope`
+              // a key restricted away from a database could still have it NAMED back through the pin — the same
+              // "told about a source it cannot read" leak the scope work above exists to close. The pin comes from
+              // the client, so it is also an input the caller controls.
+              where: { id: args.integrationId, status: 'active', ...intScope },
+              select: { name: true },
+            })
+          )?.name ?? undefined)
+        : undefined,
+    })
     decision = routed.decision
     selectionReason = `fallback router: ${routed.reason}`
   }

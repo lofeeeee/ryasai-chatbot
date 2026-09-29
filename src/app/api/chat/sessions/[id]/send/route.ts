@@ -21,6 +21,17 @@ interface RouteCtx {
 interface SendBody {
   text?: string
   integrationId?: string
+  /**
+   * The user pinned the DOCUMENT corpus in the composer's picker, instead of a database.
+   *
+   * MEASURED: the picker could only offer databases, and a comment in `chat-view.tsx` recorded that a document pin
+   * "needs support this path does not have" — which was WRONG. The router has accepted `documentIds` on both
+   * transports all along; what was missing was a way for the UI to ask for it. This is that signal.
+   *
+   * With this set, `integrationId` stays undefined so no SQL source is offered and the router is free to reach RAG —
+   * the same bias a database pin applies in the other direction, and the UI says "prefer" for both.
+   */
+  pinToDocuments?: boolean
   timezone?: string
   promptId?: string
   messageId?: string
@@ -90,8 +101,15 @@ export async function POST(req: NextRequest, ctx: RouteCtx) {
       return NextResponse.json({ error: 'Session not found.' }, { status: 404 })
     }
 
+    /*
+     * A DOCUMENT PIN SKIPS the integration lookup, because the user chose the corpus and not a database. MEASURED:
+     * the picker could only offer databases, and a comment in `chat-view.tsx` recorded that a document pin "needs
+     * support this path does not have" — which was WRONG. The router has accepted `documentIds` on both transports
+     * all along; what was missing was any way for the UI to say so.
+     */
+    const pinToDocuments = body.pinToDocuments === true
     let integrationId: string | undefined
-    if (typeof body.integrationId === 'string' && body.integrationId.trim()) {
+    if (!pinToDocuments && typeof body.integrationId === 'string' && body.integrationId.trim()) {
       const integration = await db.integration.findFirst({
         where: {
           id: body.integrationId,
@@ -272,6 +290,9 @@ export async function POST(req: NextRequest, ctx: RouteCtx) {
                 question: contextualizedText,
                 userId: user.userId,
                 integrationId,
+                // Carried through so the router can state the pin in its prompt. Without it the docs option would
+                // set `integrationId` to undefined and change nothing — a control that silently does nothing.
+                pinToDocuments,
                 sessionId: session.id,
                 chatHistory,
                 allowMultiStepDag: true,
