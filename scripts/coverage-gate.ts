@@ -126,6 +126,10 @@ const FLOORS: Record<string, number> = {
   // THROWN issuance are all pinned.
   'src/app/api/billing/webhook/route.ts': 100, // measured 100.00% (106/106)
   // The Buy License pack list; the error path is handled through handleApiError.
+  // 100.00% merged since the day it was added, and every line is load-bearing: the picker and the sender must agree
+  // on BOTH the sentinel's value and its meaning — sending `__documents__` as an `integrationId` makes the server
+  // look for an integration with that id, find nothing, and return 400, so the turn breaks rather than falls back.
+  'src/lib/chat-sources.ts': 100, // measured 100.00%; guarded by chat-sources.test.ts
   'src/app/api/billing/pricing/route.ts': 100, // measured 100.00% (11/11)
   // The MCP connection pool: LRU eviction, transport-close eviction, SSRF guards,
   // env/header decryption and the tool-result error shapes.
