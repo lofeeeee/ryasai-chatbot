@@ -5,6 +5,34 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-09-29
+
+### Added
+- **The source picker can pin the DOCUMENT corpus.** A question can now be aimed at the knowledge base instead of a
+  connected database — the one control that makes retrieval deterministic, and the case where a semantic miss cannot
+  be recovered by rewording. The option appears only when documents exist.
+
+### Fixed
+- **The router prompt listed every source in the install, unscoped.** Table names, table DESCRIPTIONS and document
+  names reached the prompt for a key restricted away from them. Naming is the leak: a table description is business
+  content and a document name is often the most sensitive string in a deployment.
+- **A pinned source never reached the router.** `integrationId` bound only AFTER the route was chosen, so a
+  pinned-database question could still be answered from documents while the interface said the other sources were
+  excluded. The pin now reaches the prompt, and the wording was corrected to match what actually happens.
+- **A coverage-floor guard that failed in CI** because it asserted equality against an artifact the job order cannot
+  refresh, making its verdict depend on which job ran first.
+- **A formatter assertion in the MCP dedupe path** that could not fail on the value it named.
+
+### Changed
+- **The instruction files fit their read budget again.** `AGENTS.md` plus `CLAUDE.md` came to 97 KB against a
+  65,536-byte budget, so the tail of `AGENTS.md` — including the cross-tenant IDOR rule and the silent-failure
+  catalogue — was silently never delivered. Reference material moved to `docs/`, and a guard now fails when any
+  section begins past the allowance.
+- **Sixty-three dead files removed** (6.2 MB of UAT screenshots and probe dumps at the repo root), one duplicated
+  implementation consolidated, and `.gitignore` taught the shapes so it cannot recur.
+- **CI runs on pushes to `dev`**, not only to `main`.
+- **The Dependabot queue is capped** so a full queue cannot block security updates.
+
 ## [1.1.1] - 2026-09-28
 
 ### Fixed
