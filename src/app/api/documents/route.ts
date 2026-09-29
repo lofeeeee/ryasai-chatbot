@@ -16,6 +16,8 @@ import { invalidateSourceEmbeddingCache } from '@/lib/smart-router'
 import { indexChunkKnowledgeGraph } from '@/lib/knowledge-graph'
 import { enterWithOrg } from '@/lib/prisma-tenant'
 import { checkQuota, quotaExceededMessage } from '@/lib/plan-gating'
+import { getKnowledgeStorageChoice } from '@/lib/vector-stores'
+import { AppError } from '@/lib/errors'
 
 export const runtime = 'nodejs'
 
@@ -172,6 +174,34 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         { ok: false, error: quotaExceededMessage('maxDocuments', quota), code: 'QUOTA_EXCEEDED' },
         { status: 402 },
+      )
+    }
+
+    /*
+     * STORAGE CHOICE GATE.
+     *
+     * A document is not just a row: it is embedded into a store, and the operator has to have said WHICH store. That
+     * question used to have no answer anyone could point at — a fresh install quietly took documents into the
+     * bundled pgvector store, `VectorStoreConfig` appeared only if an admin happened to visit the vector panel, and
+     * "what is our knowledge base running on?" could only be answered by reading the data. Now it is an explicit
+     * first-run step (setup wizard) and a Knowledge → Storage control, and upload refuses until it is answered.
+     *
+     * WHERE this check sits is the point: after the session/role/quota checks (so it never masks a cheaper, more
+     * actionable refusal) and BEFORE `extractFileText` — a refused upload must not cost a parse, an embedding call or
+     * a chunk write. Fail-closed, so a missing row (nobody has ever saved) refuses rather than defaulting to
+     * internal: silently choosing a store on the operator's behalf is the behaviour this replaces.
+     *
+     * `SETUP_REQUIRED` (503) rather than a 4xx: nothing about the request is malformed — the install is not
+     * finished — and the UI keys on the code to offer the setup link instead of a red validation message.
+     */
+    const storage = await getKnowledgeStorageChoice()
+    if (!storage.chosen) {
+      throw new AppError(
+        'SETUP_REQUIRED',
+        'Choose where the knowledge base is stored before uploading documents.',
+        {
+          hint: 'Open Knowledge → Storage and pick Internal (bundled PostgreSQL) or an external vector database.',
+        },
       )
     }
 

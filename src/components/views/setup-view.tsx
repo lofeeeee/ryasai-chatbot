@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { Loader2, CheckCircle2, ArrowLeft } from 'lucide-react'
+import { Loader2, CheckCircle2, ArrowLeft, Database, HardDrive } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Card,
@@ -17,7 +17,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { toast } from 'sonner'
 import { extractError } from '@/lib/extract-error'
 
-const STEPS = ['LLM API', 'Test Model', 'Document', 'Data Source', 'Test Chat'] as const
+const STEPS = ['LLM API', 'Test Model', 'Knowledge Storage', 'Document', 'Data Source', 'Test Chat'] as const
 
 interface SetupViewProps {
   onDone: () => void
@@ -50,9 +50,10 @@ export function SetupView({ onDone }: SetupViewProps) {
         <CardContent className="min-h-[280px]">
           {step === 0 && <LlmStep onNext={next} />}
           {step === 1 && <TestModelStep onNext={next} onPrev={prev} />}
-          {step === 2 && <DocumentStep onNext={next} onPrev={prev} />}
-          {step === 3 && <DataSourceStep onNext={next} onPrev={prev} />}
-          {step === 4 && <TestChatStep onFinish={finish} onPrev={prev} />}
+          {step === 2 && <KnowledgeStorageStep onNext={next} onPrev={prev} />}
+          {step === 3 && <DocumentStep onNext={next} onPrev={prev} />}
+          {step === 4 && <DataSourceStep onNext={next} onPrev={prev} />}
+          {step === 5 && <TestChatStep onFinish={finish} onPrev={prev} />}
         </CardContent>
       </Card>
     </div>
@@ -205,7 +206,103 @@ function TestModelStep({ onNext, onPrev }: { onNext: () => void; onPrev: () => v
   )
 }
 
-/* --------------------------- Step 3: Document ---------------------------- */
+/* ------------------------ Step 3: Knowledge Storage ---------------------- */
+
+/**
+ * The first-run half of the storage decision; Knowledge → Storage is the same control afterwards.
+ *
+ * WHY IT IS IN THE WIZARD. The upload route refuses documents until a storage choice exists, and this wizard
+ * contains a Document step — so a first run that skipped the choice would offer an upload that 503s, which reads as
+ * "the product is broken" rather than "you have not finished setting up". It is also the honest place to show the
+ * AI-Memory / Knowledge-storage distinction for the first time: the two look alike and are not the same thing.
+ *
+ * It cannot be skipped. Both answers are one click and neither is destructive — "bundled PostgreSQL" is a complete,
+ * valid answer — so a Skip button would only let someone defer a decision that gates the next step.
+ */
+function KnowledgeStorageStep({ onNext, onPrev }: { onNext: () => void; onPrev: () => void }) {
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+
+  async function chooseInternal() {
+    setSaving(true)
+    try {
+      const res = await fetch('/api/vector-store', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: 'INTERNAL', baseUrl: '' }),
+      })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        toast.error(extractError(json.error, 'Failed to save the storage choice'))
+        return
+      }
+      setSaved(true)
+      toast.success('Knowledge storage saved')
+      onNext()
+    } catch {
+      toast.error('Failed to save the storage choice')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <p className="text-xs text-muted-foreground">
+        Two different things are stored, and only one of them is a choice. <strong>AI Memory</strong> (conversation
+        memory and the knowledge graph) always uses this install&apos;s bundled PostgreSQL. <strong>Knowledge
+        storage</strong> — where uploaded documents are embedded for search — is yours to pick here, and document
+        upload stays blocked until it is set.
+      </p>
+      <div className="grid gap-2">
+        <button
+          type="button"
+          onClick={chooseInternal}
+          disabled={saving || saved}
+          className="text-left rounded-lg border p-3 transition-colors hover:border-primary/40 disabled:opacity-60"
+        >
+          <div className="flex items-center gap-2">
+            <HardDrive className="h-4 w-4 shrink-0" />
+            <span className="text-xs font-medium">Bundled PostgreSQL (recommended)</span>
+            {saving && <Loader2 className="h-3.5 w-3.5 animate-spin ml-auto" />}
+            {saved && <CheckCircle2 className="h-3.5 w-3.5 text-success ml-auto" />}
+          </div>
+          <p className="mt-1 text-[11px] leading-snug text-muted-foreground">
+            pgvector in this install&apos;s own database. Nothing extra to run and documents never leave the
+            server. This is what almost every install should use.
+          </p>
+        </button>
+        <div className="rounded-lg border p-3 text-[11px] leading-snug text-muted-foreground">
+          <div className="flex items-center gap-2">
+            <Database className="h-4 w-4 shrink-0" />
+            <span className="text-xs font-medium text-foreground">External vector database</span>
+          </div>
+          <p className="mt-1">
+            Qdrant, Milvus, Pinecone or Chroma — including a collection you have already indexed. Choose this in
+            Knowledge → Storage after setup; saving the connection there records the choice, and uploads stay
+            blocked until it is saved.
+          </p>
+        </div>
+      </div>
+      <div className="flex gap-2">
+        <Button variant="outline" icon={<ArrowLeft className="h-4 w-4" />} onClick={onPrev} disabled={saving}>
+          Back
+        </Button>
+        <Button className="flex-1" onClick={onNext} disabled={saving || !saved}>
+          Continue →
+        </Button>
+      </div>
+      {!saved && (
+        <p className="text-[11px] text-muted-foreground">
+          Choose a storage option to continue — the next step uploads a document, and the upload is refused until
+          the choice is saved.
+        </p>
+      )}
+    </div>
+  )
+}
+
+/* --------------------------- Step 4: Document ---------------------------- */
 
 function DocumentStep({ onNext, onPrev }: { onNext: () => void; onPrev: () => void }) {
   const [uploading, setUploading] = useState(false)

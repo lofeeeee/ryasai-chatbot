@@ -46,15 +46,28 @@ test('first run: register → activate license → setup wizard → dashboard', 
   await expect(page.getByText('Setup Wizard — Test Model')).toBeVisible({ timeout: 10_000 })
   await page.getByRole('button', { name: /Skip/i }).click()
 
-  // Wizard step 3: Document — skip
+  // Wizard step 3: Knowledge Storage — choose the bundled store.
+  //
+  // This step CANNOT be skipped, and that is deliberate: the Document step one
+  // screen later POSTs to /api/documents, which now refuses with 503
+  // SETUP_REQUIRED until a storage choice exists. A Skip here would let the
+  // wizard offer an upload that is guaranteed to fail.
+  //
+  // So this clicks the real control (not a role=button match on prose — the
+  // option is a <button> whose accessible name is the whole card text):
+  // choosing it PUTs /api/vector-store {provider:'INTERNAL'} and advances.
+  await expect(page.getByText('Setup Wizard — Knowledge Storage')).toBeVisible({ timeout: 10_000 })
+  await page.getByRole('button', { name: /Bundled PostgreSQL/ }).click()
+
+  // Wizard step 4: Document — skip
   await expect(page.getByText('Setup Wizard — Document')).toBeVisible({ timeout: 10_000 })
   await page.getByRole('button', { name: /Skip/i }).click()
 
-  // Wizard step 4: Data Source — acknowledge
+  // Wizard step 5: Data Source — acknowledge
   await expect(page.getByText('Setup Wizard — Data Source')).toBeVisible({ timeout: 10_000 })
   await page.getByRole('button', { name: /Got it, Continue|Continue/i }).click()
 
-  // Wizard step 5: Test Chat — finish
+  // Wizard step 6: Test Chat — finish
   await expect(page.getByText('Setup Wizard — Test Chat')).toBeVisible({ timeout: 10_000 })
   await page.getByRole('button', { name: /Finish/i }).click()
 

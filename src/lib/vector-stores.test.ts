@@ -13,6 +13,7 @@ import {
   buildQdrantSearchBody,
   buildVectorPoint,
   ensureVectorCollection,
+  getKnowledgeStorageChoice,
   getVectorStoreRuntimeConfig,
   parseMilvusSearchResponse,
   parseQdrantSearchResponse,
@@ -376,6 +377,87 @@ describe('getVectorStoreRuntimeConfig', () => {
     const cfg = await getVectorStoreRuntimeConfig()
     expect(cfg).not.toBeNull()
     expect(cfg!.apiKey).toBe('')
+  })
+})
+
+describe('getKnowledgeStorageChoice — the predicate the upload gate reads', () => {
+  /**
+   * WHY THIS IS ITS OWN DESCRIBE. `VectorStoreConfig.provider` defaults to `INTERNAL` and the row is created lazily,
+   * so "the provider says INTERNAL" and "an admin chose the bundled store" are the SAME VALUE for two different
+   * situations. The upload route refuses documents until the choice exists, which means a predicate that reports
+   * `chosen: true` for the DEFAULT would open the gate on an install where nobody decided anything — a silent
+   * regression with no error to read. Every branch below is that distinction.
+   */
+  test('no row at all → NOT chosen, and the provider is the INTERNAL default', async () => {
+    mockFindFirst.mockImplementationOnce(async () => null)
+    const c = await getKnowledgeStorageChoice()
+    expect(c.chosen).toBe(false)
+    expect(c.chosenAt).toBeNull()
+    // Reported anyway because the API shape has to be total; the comment on the interface says `provider` is only
+    // meaningful with `chosen`, and this is the case that makes that true.
+    expect(c.provider).toBe('INTERNAL')
+  })
+
+  test('a row with provider INTERNAL and NO timestamp → NOT chosen', async () => {
+    // The inversion this whole column exists for. A pre-upgrade row — or one created by an older code path — has
+    // `provider: 'INTERNAL'` because that is the schema default, not because anyone picked it.
+    mockFindFirst.mockImplementationOnce(async () => ({
+      provider: 'INTERNAL',
+      storageChosenAt: null,
+    }))
+    const c = await getKnowledgeStorageChoice()
+    expect(c.chosen).toBe(false)
+    expect(c.chosenAt).toBeNull()
+  })
+
+  test('a row with a timestamp → chosen, and the timestamp is returned', async () => {
+    const when = new Date('2026-02-01T03:04:05.000Z')
+    mockFindFirst.mockImplementationOnce(async () => ({
+      provider: 'INTERNAL',
+      storageChosenAt: when,
+    }))
+    const c = await getKnowledgeStorageChoice()
+    expect(c.chosen).toBe(true)
+    expect(c.chosenAt).toBe(when)
+    // INTERNAL + chosen is the deliberate "bundled PostgreSQL" answer, and it must be distinguishable from the
+    // default above — that is the entire point of returning both fields.
+    expect(c.provider).toBe('INTERNAL')
+  })
+
+  test('an external provider is normalized, and stays chosen', async () => {
+    mockFindFirst.mockImplementationOnce(async () => ({
+      provider: 'QDRANT_CLOUD',
+      storageChosenAt: new Date('2026-02-01'),
+    }))
+    const c = await getKnowledgeStorageChoice()
+    expect(c.provider).toBe('QDRANT')
+    expect(c.chosen).toBe(true)
+  })
+
+  test('an unrecognised provider cannot fake a choice', async () => {
+    // `normalizeVectorStoreProvider` maps anything unknown to INTERNAL. If that mapping were applied to the GATE
+    // instead of to the value — e.g. `chosen: normalize(...) !== undefined` — a typo'd provider in the column would
+    // read as a decision. Asserted against the value only: `chosen` comes from the timestamp and nothing else.
+    mockFindFirst.mockImplementationOnce(async () => ({
+      provider: 'QDRANTT',
+      storageChosenAt: null,
+    }))
+    const c = await getKnowledgeStorageChoice()
+    expect(c.provider).toBe('INTERNAL')
+    expect(c.chosen).toBe(false)
+  })
+
+  test('it reads the org-scoped singleton with findFirst, once', async () => {
+    // The read must go through the tenant extension. `findUnique` would not be scoped (see the IDOR section in
+    // AGENTS.md), and a second read inside the same predicate could see a different row.
+    //
+    // `mockClear()` first, and it is load-bearing: `mockFindFirst` is module-level and shared by every test in this
+    // file, so the first version of this assertion compared against 20 calls accumulated by earlier tests. That
+    // failure was a fact about the harness, not about the code — a count assertion has to say "since when".
+    mockFindFirst.mockClear()
+    mockFindFirst.mockImplementationOnce(async () => null)
+    await getKnowledgeStorageChoice()
+    expect(mockFindFirst).toHaveBeenCalledTimes(1)
   })
 })
 

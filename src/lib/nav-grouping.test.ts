@@ -55,6 +55,13 @@ const knowledgeSrc = readFileSync(
   join(root, 'src', 'components', 'views', 'knowledge-base-view.tsx'),
   'utf-8',
 )
+// The Storage tab's panel. Split out of the view file so the memory status card could sit beside the
+// knowledge-storage choice instead of above every tab; the assertions that used to read the view now
+// read this file for the card they actually mean.
+const storagePanelSrc = readFileSync(
+  join(root, 'src', 'components', 'views', 'knowledge-base', 'knowledge-storage-panel.tsx'),
+  'utf-8',
+)
 
 describe('sidebar: grouped, and every view appears exactly once', () => {
   test('NAV_GROUPS is defined and every item key is a real view', () => {
@@ -94,8 +101,18 @@ describe('AI Memory is reachable without guessing its parent menu', () => {
     // INCIDENT: the full AI Memory card rendered in BOTH Knowledge and AI Configuration, so the same
     // settings existed in two menus with no way to tell which was authoritative. Knowledge now shows a
     // status card that LINKS to the editor; the editor exists in exactly one place.
-    expect(knowledgeSrc).toContain('<MemoryStatusCard />')
+    //
+    // WHERE the status card lives moved out of the view file and into the Storage panel, because the
+    // storage tab needs it and a panel is where tab-local content belongs. The assertion therefore
+    // names the file that must contain the card rather than the view that must render it — the same
+    // question ("is the status shown, and is the editor NOT shown") asked of the current layout. Left
+    // pointing at the view file it fails while the invariant still holds, and "update the test" then
+    // reads as busywork rather than as a signal.
+    expect(storagePanelSrc).toContain('<MemoryStatusCard />')
+    // The EDITOR must appear in neither surface: this is the half that caught the original defect, so
+    // it is checked against both the view and the panel rather than just the file that changed.
     expect(knowledgeSrc).not.toContain('<CogneeCard')
+    expect(storagePanelSrc).not.toContain('<CogneeCard')
     // The tab is gone too — a tab with no editable content would be a dead end.
     expect(knowledgeSrc).not.toContain('TabsTrigger value="cognee"')
   })
@@ -138,9 +155,17 @@ describe('AI Memory is reachable without guessing its parent menu', () => {
     // An unvalidated `setTab(detail.tab)` would accept any string and leave the view on a tab with
     // no content — a blank panel that reads as a broken page.
     expect(aiConfigSrc).toMatch(/raw === 'llm' \|\| raw === 'embedding' \|\| raw === 'memory'/)
-    // Knowledge validates its OWN two tabs. 'cognee' is handled separately as a FORWARD, asserted
+    // Knowledge validates its OWN tabs. 'cognee' is handled separately as a FORWARD, asserted
     // above — accepting it here would select a tab that does not exist.
-    expect(knowledgeSrc).toMatch(/raw === 'documents' \|\| raw === 'vector'\) setTab/)
+    //
+    // Updated deliberately to THREE tabs when Storage was added. The assertion is written as the
+    // full run of `===` comparisons rather than as a shorter pattern on purpose: the failure mode
+    // this catches is a tab name that is RENDERED as a `<TabsTrigger>` but never accepted by
+    // `applyTab`, which produces a tab that cannot be deep-linked and looks like a broken link. A
+    // looser pattern would pass with that mismatch in place.
+    expect(knowledgeSrc).toMatch(
+      /raw === 'documents' \|\| raw === 'storage' \|\| raw === 'vector'\) setTab\(raw\)/,
+    )
   })
 })
 

@@ -185,6 +185,38 @@ export async function getVectorStoreRuntimeConfig(
   }
 }
 
+export interface KnowledgeStorageChoice {
+  /** True only after an admin SAVED a choice (Internal or an external store). */
+  chosen: boolean
+  chosenAt: Date | null
+  /**
+   * Only meaningful together with `chosen`: the row's provider column DEFAULTS to INTERNAL, so before any choice
+   * this reads INTERNAL for a reason that has nothing to do with anybody choosing it. Always branch on `chosen`.
+   */
+  provider: VectorStoreProvider
+}
+
+/**
+ * Has this org explicitly chosen where its knowledge base lives?
+ *
+ * The upload route asks this before accepting a document. The decision used to be implicit: a fresh install silently
+ * accepted documents into the bundled pgvector store, `VectorStoreConfig` was created only if an admin wandered into
+ * the vector panel, and "is semantic search configured, and against what?" had no answer that did not involve reading
+ * the data. It is now a first-run step (setup wizard) plus a Knowledge → Storage control. The single reader lives
+ * here so the route, the API and the UI cannot drift apart on what "chosen" means.
+ *
+ * Reads the org's single row; scoping comes from the tenant extension, so callers must have entered an org context
+ * themselves (`AsyncLocalStorage.enterWith` does not propagate back to a caller's frame).
+ */
+export async function getKnowledgeStorageChoice(): Promise<KnowledgeStorageChoice> {
+  const row = await db.vectorStoreConfig.findFirst()
+  return {
+    chosen: Boolean(row?.storageChosenAt),
+    chosenAt: row?.storageChosenAt ?? null,
+    provider: row ? normalizeVectorStoreProvider(row.provider) : 'INTERNAL',
+  }
+}
+
 // ponytail: memoize "collection ensured" per backend+collection so we don't fire an
 // HTTP round-trip on every document embed batch after the first one in this process.
 const ensuredCollections = new Set<string>()

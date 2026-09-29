@@ -6,25 +6,35 @@ import { toast } from 'sonner'
 
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
-import { VECTOR_STORE_PRESETS, getVectorStorePreset } from '@/lib/db-provider-presets'
+import { getVectorStorePreset } from '@/lib/db-provider-presets'
 import { extractError } from '@/lib/extract-error'
 import { EMBEDDING_DIMENSIONS } from '@/lib/constants'
+import {
+  ExternalVectorStoreFields,
+  type ExternalVectorFieldsValue,
+} from './external-vector-fields'
 
-export function VectorStorePanel() {
-  const [provider, setProvider] = useState('INTERNAL')
-  const [baseUrl, setBaseUrl] = useState('')
-  const [apiKey, setApiKey] = useState('')
-  const [collectionName, setCollectionName] = useState('ryasai_chunks')
-  const [vectorSize, setVectorSize] = useState(String(EMBEDDING_DIMENSIONS))
+/**
+ * Knowledge → External Vector DB: the connection details for a store OUTSIDE this install.
+ *
+ * WHAT CHANGED AND WHY. This panel used to be called "Vector DB" and listed the bundled PostgreSQL as one of the
+ * "providers", so the question "which store does our knowledge base live in?" and "how do I connect a Qdrant?"
+ * were the same dropdown. They are different decisions with different consequences, and mixing them is what left
+ * installs embedding into a store nobody had deliberately picked. The bundled PostgreSQL is now chosen (and
+ * recorded) on the Storage tab; this tab only ever configures an EXTERNAL store, and saving here is what records
+ * that the external store is the choice.
+ */
+export function VectorStorePanel({ onSaved }: { onSaved?: () => void | Promise<void> } = {}) {
+  const [fields, setFields] = useState<ExternalVectorFieldsValue>({
+    // Empty on purpose: nothing external has been chosen until the operator picks one, and pre-selecting Qdrant
+    // would put a live-looking URL in front of someone who may only be here to look.
+    provider: '',
+    baseUrl: '',
+    collectionName: 'ryasai_chunks',
+    vectorSize: String(EMBEDDING_DIMENSIONS),
+    distance: 'Cosine',
+    apiKey: '',
+  })
   /*
    * The dimension the CHUNKS actually hold, and the model they were embedded with.
    *
@@ -36,28 +46,14 @@ export function VectorStorePanel() {
    */
   const [storedVectorSize, setStoredVectorSize] = useState<number | null>(null)
   const [storedModel, setStoredModel] = useState<string | null>(null)
-  const [distance, setDistance] = useState('Cosine')
+  const [configuredInternal, setConfiguredInternal] = useState(false)
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
   const [loadError, setLoadError] = useState(false)
 
-  const vsPreset = getVectorStorePreset(provider)
-  const vsBackend = vsPreset?.backend ?? provider
-  const isInternal = vsBackend === 'INTERNAL'
-  const needsApiKey = vsPreset?.needsApiKey ?? false
-
-  const handleProviderChange = (id: string) => {
-    const p = getVectorStorePreset(id)
-    setProvider(id)
-    if (p) {
-      setVectorSize(String(p.defaultVectorSize))
-      // A base URL belongs to exactly one provider — a Qdrant URL can never
-      // serve a Milvus config. Always swap it to the new provider's default;
-      // leaving the old provider's URL behind produced configs that saved and
-      // then failed at test/search time with a confusing cross-provider error.
-      setBaseUrl(p.baseUrlPlaceholder)
-    }
-  }
+  const patch = (p: Partial<ExternalVectorFieldsValue>) => setFields((f) => ({ ...f, ...p }))
+  const preset = getVectorStorePreset(fields.provider)
+  const needsApiKey = preset?.needsApiKey ?? false
 
   useEffect(() => {
     let cancelled = false
@@ -70,23 +66,36 @@ export function VectorStorePanel() {
          *
          * This used to `return` silently when `json.ok` was false, and `handleApiError` reports every
          * server-side failure as exactly that (a 500 with `{ error }`). The component then rendered its
-         * DEFAULTS — INTERNAL, `ryasai_chunks`, 1536, Cosine — as though they were the org's saved
-         * configuration, with no banner and the Save button ENABLED. Pressing Save would write those
-         * placeholder values over a real Qdrant/Milvus/Pinecone/Chroma config, silently. The loadError
-         * banner exists precisely to stop this ("Saving may overwrite existing configuration"), and the
-         * one path that most needed it was the one path that skipped it.
+         * DEFAULTS as though they were the org's saved configuration, with no banner and the Save button
+         * ENABLED. Pressing Save would write those placeholder values over a real Qdrant/Milvus/Pinecone/Chroma
+         * config, silently. The loadError banner exists precisely to stop this ("Saving may overwrite existing
+         * configuration"), and the one path that most needed it was the one path that skipped it.
          */
         if (!json?.ok || !json.data) {
           setLoadError(true)
           return
         }
-        setProvider(json.data.provider ?? 'INTERNAL')
-        setBaseUrl(json.data.baseUrl ?? '')
-        setCollectionName(json.data.collectionName ?? 'ryasai_chunks')
-        setVectorSize(String(json.data.vectorSize ?? EMBEDDING_DIMENSIONS))
+        const stored = String(json.data.provider ?? 'INTERNAL')
+        const storedBackend = getVectorStorePreset(stored)?.backend ?? stored
+        /*
+         * The stored provider SEEDS the form only when it is external. When the install is on the bundled
+         * PostgreSQL there is nothing external to show, and seeding "INTERNAL" (which is no longer one of the
+         * options) would leave the select claiming a provider the operator cannot see. The banner above the form
+         * says which case this is, so an empty form reads as "not configured", not as "we forgot".
+         */
+        setConfiguredInternal(storedBackend === 'INTERNAL')
+        if (storedBackend !== 'INTERNAL') {
+          setFields((f) => ({
+            ...f,
+            provider: stored,
+            baseUrl: json.data.baseUrl ?? '',
+            collectionName: json.data.collectionName ?? 'ryasai_chunks',
+            vectorSize: String(json.data.vectorSize ?? EMBEDDING_DIMENSIONS),
+            distance: json.data.distance ?? 'Cosine',
+          }))
+        }
         setStoredVectorSize(typeof json.data.storedVectorSize === 'number' ? json.data.storedVectorSize : null)
         setStoredModel(typeof json.data.storedEmbeddingModel === 'string' ? json.data.storedEmbeddingModel : null)
-        setDistance(json.data.distance ?? 'Cosine')
       })
       .catch(() => {
         if (!cancelled) setLoadError(true)
@@ -97,7 +106,11 @@ export function VectorStorePanel() {
   }, [])
 
   const save = async () => {
-    if (needsApiKey && !apiKey.trim()) {
+    if (!preset || preset.backend === 'INTERNAL') {
+      toast.error('Select a vector database provider first.')
+      return
+    }
+    if (needsApiKey && !fields.apiKey.trim()) {
       toast.error('API key required for this provider.')
       return
     }
@@ -107,18 +120,22 @@ export function VectorStorePanel() {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          provider,
-          baseUrl,
-          apiKey: apiKey || undefined,
-          collectionName,
-          vectorSize: Number(vectorSize) || EMBEDDING_DIMENSIONS,
-          distance,
+          provider: fields.provider,
+          baseUrl: fields.baseUrl,
+          apiKey: fields.apiKey || undefined,
+          collectionName: fields.collectionName,
+          vectorSize: Number(fields.vectorSize) || EMBEDDING_DIMENSIONS,
+          distance: fields.distance,
         }),
       })
       const json = await res.json()
       if (!res.ok || !json.ok) throw new Error(extractError(json.error, 'Failed to save.'))
-      setApiKey('')
-      toast.success('Vector DB configuration saved.')
+      patch({ apiKey: '' })
+      setConfiguredInternal(false)
+      toast.success('External vector database saved.', {
+        description: 'Knowledge uploads are now embedded into it.',
+      })
+      await onSaved?.()
     } catch (e) {
       toast.error('Failed to save vector DB', {
         description: e instanceof Error ? e.message : undefined,
@@ -154,9 +171,10 @@ export function VectorStorePanel() {
             <Layers className="h-4.5 w-4.5" />
           </div>
           <div>
-            <CardTitle className="text-xs">Vector DB</CardTitle>
+            <CardTitle className="text-xs">External Vector DB</CardTitle>
             <p className="text-xs text-muted-foreground">
-              Qdrant / Milvus / Pinecone / Chroma for external semantic retrieval. Internal pgvector remains as fallback.
+              Qdrant / Milvus / Pinecone / Chroma, self-hosted or cloud. Saving here makes it this install&apos;s
+              knowledge store.
             </p>
           </div>
         </div>
@@ -170,96 +188,25 @@ export function VectorStorePanel() {
             </div>
           </div>
         )}
-        <div className="space-y-1.5">
-          <Label>Provider</Label>
-          <Select value={provider} onValueChange={handleProviderChange}>
-            <SelectTrigger>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {VECTOR_STORE_PRESETS.map(p => (
-                <SelectItem key={p.id} value={p.id}>{p.label}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          {vsPreset?.hint && (
-            <p className="text-xs text-warning">{vsPreset.hint}</p>
-          )}
-        </div>
-        <div className="space-y-1.5">
-          <Label>Base URL</Label>
-          <Input
-            value={baseUrl}
-            onChange={(e) => setBaseUrl(e.target.value)}
-            placeholder={vsPreset?.baseUrlPlaceholder ?? ''}
-            className="font-mono text-sm"
-            disabled={isInternal}
-          />
-        </div>
-        <div className="space-y-1.5">
-          <Label>Collection</Label>
-          <Input
-            value={collectionName}
-            onChange={(e) => setCollectionName(e.target.value)}
-            className="font-mono text-sm"
-          />
-        </div>
-        <div className="grid grid-cols-2 gap-2">
-          <div className="space-y-1.5">
-            <Label>Dimension</Label>
-            <Input
-              value={vectorSize}
-              onChange={(e) => setVectorSize(e.target.value)}
-              inputMode="numeric"
-            />
-            {/*
-              * THE DIVERGENCE, SHOWN WHERE IT CAN BE FIXED. MEASURED IN UAT: this field read 1536 while the stored
-              * vectors were 384-dimensional, so semantic scoring was silently inert — every score 0, search quietly
-              * lexical-only — and this panel was the one place an admin would notice. It advertised a single
-              * consistent-looking number instead. The text below states the measured truth whenever it disagrees with
-              * the configured value, including WHAT the chunks were embedded with, because that is what the operator
-              * needs in order to re-embed them.
-              */}
-            {storedVectorSize !== null && storedVectorSize !== Number(vectorSize) ? (
-              <p className="text-[11px] leading-snug text-amber-600">
-                Stored vectors are <strong>{storedVectorSize}-dimensional</strong>
-                {storedModel ? ` (${storedModel})` : ''} — not {vectorSize}. Semantic scoring is inert until the
-                documents are re-embedded: retrieval only compares a chunk whose embedding model matches the query&apos;s,
-                so every similarity is currently 0 and search is lexical-only.
-              </p>
-            ) : storedVectorSize !== null ? (
-              <p className="text-[11px] leading-snug text-muted-foreground">
-                Stored vectors: {storedVectorSize}-dimensional{storedModel ? ` (${storedModel})` : ''}.
-              </p>
-            ) : (
-              <p className="text-[11px] leading-snug text-muted-foreground">
-                No chunks embedded yet, so the stored dimension is unknown.
-              </p>
-            )}
+        {!loadError && configuredInternal && (
+          <div className="md:col-span-2 rounded-md border bg-muted/40 p-3 text-xs text-muted-foreground">
+            Knowledge is currently stored in the bundled PostgreSQL. Choose an external provider below and save to
+            move it — the bundled pgvector index stays in place as a keyword-search fallback.
           </div>
-          <div className="space-y-1.5">
-            <Label>Distance</Label>
-            <Input value={distance} onChange={(e) => setDistance(e.target.value)} />
-          </div>
-        </div>
-        <div className="space-y-1.5 md:col-span-2">
-          <Label>
-            API Key{needsApiKey && <span className="text-destructive"> *</span>}
-          </Label>
-          <Input
-            value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
-            placeholder={needsApiKey ? 'required' : 'optional'}
-            className="font-mono text-sm"
-            autoComplete="new-password"
-          />
-        </div>
+        )}
+        <ExternalVectorStoreFields
+          value={fields}
+          onChange={patch}
+          storedVectorSize={storedVectorSize}
+          storedModel={storedModel}
+          apiKeyPlaceholder={configuredInternal ? 'required' : undefined}
+        />
         <div className="flex justify-end gap-2 md:col-span-2">
           <Button
             variant="outline"
             size="sm"
             onClick={test}
-            disabled={testing || isInternal}
+            disabled={testing || configuredInternal}
             icon={testing ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
           >
             Test

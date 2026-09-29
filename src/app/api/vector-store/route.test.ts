@@ -270,8 +270,57 @@ describe('GET', () => {
       storedVectorSize: null,
       storedEmbeddingModel: null,
       distance: 'Cosine',
+      /*
+       * The gating flag, and why it is not derivable from `updatedAt`.
+       *
+       * A fresh install has NO row, so it cannot have made a choice — this is not "unset, might have been
+       * chosen", it is "the choice is impossible". `false` + `null` is the honest pair, and the Knowledge
+       * view keys the whole "choose storage before uploading" state off `storageChosen` alone.
+       */
+      storageChosen: false,
+      storageChosenAt: null,
       updatedAt: null,
     })
+  })
+
+  test('a row that never recorded a choice reports storageChosen false, NOT the INTERNAL default', async () => {
+    // The inversion that matters: `provider` DEFAULTS to 'INTERNAL' in the schema, so every pre-upgrade row
+    // looks internal while nobody ever chose anything. Reporting `storageChosen: true` because the provider
+    // happens to equal INTERNAL is exactly the bug the timestamp column exists to prevent — the upload gate
+    // would open for an install where the admin never made a decision.
+    row = {
+      id: 'v1',
+      provider: 'INTERNAL',
+      baseUrl: null,
+      encryptedApiKey: null,
+      collectionName: 'ryasai_chunks',
+      vectorSize: 384,
+      distance: 'Cosine',
+      updatedAt: new Date('2026-02-01'),
+      storageChosenAt: null,
+    }
+    const body = (await (await GET()).json()) as { data: Record<string, unknown> }
+    expect(body.data.storageChosen).toBe(false)
+    expect(body.data.storageChosenAt).toBeNull()
+  })
+
+  test('a recorded choice is reported as an ISO timestamp, so the UI can say WHEN', async () => {
+    row = {
+      id: 'v1',
+      provider: 'INTERNAL',
+      baseUrl: null,
+      encryptedApiKey: null,
+      collectionName: 'ryasai_chunks',
+      vectorSize: 384,
+      distance: 'Cosine',
+      updatedAt: new Date('2026-02-01'),
+      storageChosenAt: new Date('2026-02-01T03:04:05.000Z'),
+    }
+    const body = (await (await GET()).json()) as { data: Record<string, unknown> }
+    expect(body.data.storageChosen).toBe(true)
+    // Serialised rather than passed through: a raw Date reaches the browser as an object and `new Date(undefined)`
+    // on the other side renders "Invalid Date", which reads as a data problem rather than a formatting one.
+    expect(body.data.storageChosenAt).toBe('2026-02-01T03:04:05.000Z')
   })
 
   test('GET enters the session org (so the extension can scope the singleton read)', async () => {
@@ -377,6 +426,8 @@ describe('GET', () => {
       'collectionName',
       'distance',
       'provider',
+      'storageChosen',
+      'storageChosenAt',
       'storedEmbeddingModel',
       'storedVectorSize',
       'updatedAt',
@@ -679,11 +730,18 @@ describe('the PUT response is the GET response', () => {
       'collectionName',
       'distance',
       'provider',
+      'storageChosen',
+      'storageChosenAt',
       'storedEmbeddingModel',
       'storedVectorSize',
       'updatedAt',
       'vectorSize',
     ])
+    // The write is a choice by definition, so the row it writes must record WHEN — asserted on the payload
+    // rather than on the response, because this fixture's mock `create` does not feed the row back into the
+    // `findFirst` that GET performs. A PUT that saved the settings without recording the choice would leave the
+    // install permanently gated while its own response said `ok: true`, which is the failure this pins.
+    expect(creates()[0]!.args.data).toMatchObject({ storageChosenAt: expect.any(Date) })
   })
 
   test('the PUT response never echoes the plaintext key that was just submitted', async () => {

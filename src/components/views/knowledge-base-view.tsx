@@ -17,7 +17,7 @@ import {
   CheckCircle2,
   AlertCircle,
   Database,
-  Brain,
+  HardDrive,
   Loader2,
 } from 'lucide-react'
 import { toast } from 'sonner'
@@ -39,7 +39,6 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import type { DocumentItem } from '@/lib/types'
-import { MemoryStatusCard } from '@/components/views/memory-status-card'
 import { extractError } from '@/lib/extract-error'
 import { StatCard } from './knowledge-base/stat-card'
 import { CatTab } from './knowledge-base/cat-tab'
@@ -47,6 +46,10 @@ import { DocCard, isCognifySettled } from './knowledge-base/doc-card'
 import { UploadDialog } from './knowledge-base/upload-dialog'
 import { DocDetailDialog } from './knowledge-base/doc-detail-dialog'
 import { VectorStorePanel } from './knowledge-base/vector-store-panel'
+import {
+  KnowledgeStoragePanel,
+  type StorageChoiceView,
+} from './knowledge-base/knowledge-storage-panel'
 
 /* ============================================================ main view */
 
@@ -65,10 +68,46 @@ export function KnowledgeBaseView() {
   // Controlled so another view can open a specific tab directly — the dashboard's AI Memory card
   // sends people here, and an uncontrolled `defaultValue` would ignore that target.
   const [tab, setTab] = useState('documents')
+  /*
+   * Where knowledge is stored, as the API reports it. `chosen` false means nobody has ever saved a storage choice,
+   * and the upload route REFUSES documents in that state — so this view must know it too, or the Upload button
+   * offers an action that comes back 503. Read from the same endpoint the Storage panel writes to, so the two can
+   * never disagree about whether the install is configured.
+   */
+  const [storage, setStorage] = useState<StorageChoiceView | null>(null)
+  const [storageLoading, setStorageLoading] = useState(true)
+  const [storageLoadError, setStorageLoadError] = useState(false)
+
+  const fetchStorage = useCallback(async () => {
+    setStorageLoading(true)
+    try {
+      const res = await fetch('/api/vector-store', { cache: 'no-store' })
+      const json = await res.json()
+      if (!res.ok || !json?.ok || !json.data) {
+        setStorageLoadError(true)
+        return
+      }
+      setStorageLoadError(false)
+      setStorage({
+        chosen: json.data.storageChosen === true,
+        provider: String(json.data.provider ?? 'INTERNAL'),
+        baseUrl: String(json.data.baseUrl ?? ''),
+        collectionName: String(json.data.collectionName ?? 'ryasai_chunks'),
+      })
+    } catch {
+      setStorageLoadError(true)
+    } finally {
+      setStorageLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    void fetchStorage()
+  }, [fetchStorage])
 
   useEffect(() => {
     const applyTab = (raw: string | null | undefined) => {
-      if (raw === 'documents' || raw === 'vector') setTab(raw)
+      if (raw === 'documents' || raw === 'storage' || raw === 'vector') setTab(raw)
       /*
        * `cognee` is a RETIRED target — the tab moved to AI Configuration to end the duplicate card.
        *
@@ -344,27 +383,55 @@ export function KnowledgeBaseView() {
                 <FileText className="h-3.5 w-3.5" />
                 Documents
               </TabsTrigger>
+              <TabsTrigger value="storage" className="gap-1.5 text-xs">
+                <HardDrive className="h-3.5 w-3.5" />
+                Storage
+              </TabsTrigger>
               <TabsTrigger value="vector" className="gap-1.5 text-xs">
                 <Database className="h-3.5 w-3.5" />
-                Vector Store
+                External Vector DB
               </TabsTrigger>
             </TabsList>
           </div>
           <div className="flex gap-1.5 shrink-0">
-            <Button size="sm" icon={<UploadCloud className="h-3.5 w-3.5" />} onClick={() => setUploadOpen(true)}>
-              Upload
-            </Button>
+            {/*
+              The Upload button is DISABLED while no storage choice exists, because the route refuses the upload
+              with 503 in exactly that state. Offering an armed button that can only fail — and fails with a
+              server-side setup error after the operator has picked a file — is the shape this repo catalogs as a
+              lie in the UI. It becomes a link to the decision instead.
+            */}
+            {storage && !storage.chosen ? (
+              <Button
+                size="sm"
+                variant="outline"
+                icon={<HardDrive className="h-3.5 w-3.5" />}
+                onClick={() => setTab('storage')}
+              >
+                Choose storage first
+              </Button>
+            ) : (
+              <Button size="sm" icon={<UploadCloud className="h-3.5 w-3.5" />} onClick={() => setUploadOpen(true)}>
+                Upload
+              </Button>
+            )}
           </div>
         </div>
 
-        {/*
-          Status and a link, NOT the full settings card. The complete editor lives only in
-          AI Configuration — a second editable copy here is how two menus drift apart, which is
-          exactly what happened when this card appeared in both places.
-        */}
-        <MemoryStatusCard />
-
         <TabsContent value="documents" className="mt-2 space-y-3">
+          {storage && !storage.chosen && (
+            <div className="rounded-md border border-warning/40 bg-warning/10 p-3 text-xs">
+              <span className="font-medium">No knowledge storage chosen yet.</span> Uploads are blocked until you
+              pick where documents are stored.{' '}
+              <button
+                type="button"
+                className="underline font-medium"
+                onClick={() => setTab('storage')}
+              >
+                Choose storage →
+              </button>
+            </div>
+          )}
+
           {/* Category filter */}
           <div className="flex flex-wrap items-center gap-1.5">
         <CatTab
@@ -435,8 +502,24 @@ export function KnowledgeBaseView() {
 
         </TabsContent>
 
+        {/*
+          Storage = AI Memory (a FACT, not a setting: the bundled PostgreSQL) plus the knowledge-storage choice.
+          The status-only memory card MOVED here from above the tabs, because "where does this install keep
+          things" is one question and it now has one answer in one place — the card above the tabs was visible on
+          every tab, which is how a reader concludes the storage dropdown governs memory too.
+        */}
+        <TabsContent value="storage" className="mt-2">
+          <KnowledgeStoragePanel
+            choice={storage}
+            loading={storageLoading}
+            loadError={storageLoadError}
+            onChanged={fetchStorage}
+            onConfigureExternal={() => setTab('vector')}
+          />
+        </TabsContent>
+
         <TabsContent value="vector" className="mt-2">
-          <VectorStorePanel />
+          <VectorStorePanel onSaved={fetchStorage} />
         </TabsContent>
 
         </Tabs>

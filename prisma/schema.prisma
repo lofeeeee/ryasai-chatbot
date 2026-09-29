@@ -342,6 +342,13 @@ model VectorStoreConfig {
   /// the `vector(384)` column above and with the embedder, and `src/lib/embedding-dimension.test.ts` now checks it.
   vectorSize      Int      @default(384)
   distance        String   @default("Cosine")
+  /// The admin's EXPLICIT choice of where the knowledge base is stored — NULL until somebody picks, and only ever
+  /// written by a save from the Knowledge → Storage control or the setup wizard's storage step. Knowledge upload is
+  /// gated on it (`src/app/api/documents/route.ts`), so a DEFAULT must never grant it: a boolean `@default(false)`
+  /// looks identical but invites a later `@default(true)`, a backfill or a copy-paste to mark every install as
+  /// "chosen" and the gate then disappears with nothing to see. A timestamp can only come from an explicit write,
+  /// and it answers "when did this install decide its knowledge store" without a second column.
+  storageChosenAt DateTime?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 

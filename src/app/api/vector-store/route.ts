@@ -47,6 +47,12 @@ export async function GET() {
             storedVectorSize: stored.size,
             storedEmbeddingModel: stored.model,
             distance: row.distance,
+            // Whether an admin ever SAVED a storage choice. The provider column above defaults to INTERNAL, so
+            // before this flag is true that value means "nobody has chosen", not "internal was chosen" — the
+            // Knowledge view renders the two cases differently and the upload route refuses documents until this
+            // is true.
+            storageChosen: Boolean(row.storageChosenAt),
+            storageChosenAt: row.storageChosenAt?.toISOString() ?? null,
             updatedAt: row.updatedAt.toISOString(),
           }
         : {
@@ -63,16 +69,20 @@ export async function GET() {
              * `chunk.embeddingModel === queryEmbedding.model` — so EVERY semantic score was 0 and retrieval
              * silently fell back to lexical only. The API reporting a configured number instead of the actual one
              * is what made that invisible: the operator sees "1536", the data is 384, and nothing says so.
-             */
-            /*
-             * `vectorSize` is the CONFIGURED dimension — the form seeds from it, so it must keep the historical 1536
-             * default rather than becoming null. The MEASURED values live in the two fields below, which is what makes
-             * a mismatch visible instead of silent.
+             *
+             * So the CONFIGURED dimension below is seeded from `EMBEDDING_DIMENSIONS` (the one fact about the
+             * bundled embedder) rather than from a literal, and the two MEASURED fields beside it are what make a
+             * mismatch visible instead of silent. An earlier version of this comment claimed the value had to stay
+             * at the historical `1536`; that literal WAS the bug it was describing.
              */
             vectorSize: EMBEDDING_DIMENSIONS,
             storedVectorSize: stored.size,
             storedEmbeddingModel: stored.model,
             distance: 'Cosine',
+            /* No row at all: nothing has ever been saved for this org, so the choice is not merely unset — it
+             * cannot have been made. Reported explicitly so the UI never has to infer it from `updatedAt`. */
+            storageChosen: false,
+            storageChosenAt: null,
             updatedAt: null,
           },
     })
@@ -122,6 +132,17 @@ export async function PUT(req: NextRequest) {
       collectionName,
       vectorSize,
       distance,
+      /*
+       * A successful save of this row IS the choice of where the knowledge base is stored — there is no separate
+       * "confirm" step to forget, and no way to reach this route without having decided between Internal and an
+       * external store (`INTERNAL` with an empty base URL is a valid, deliberate answer). Recording it here rather
+       * than in the UI keeps the API honest for the wizard and for any script.
+       *
+       * The timestamp is STICKY: `existing.storageChosenAt` wins, so re-saving settings answers "has a choice been
+       * made", not "when was the form last touched". `updatedAt` already carries the latter, and overwriting this
+       * one would quietly rewrite the answer to "when did this install decide" on every unrelated edit.
+       */
+      storageChosenAt: existing?.storageChosenAt ?? new Date(),
       ...(apiKey ? { encryptedApiKey: encryptConfig({ apiKey }) } : {}),
     }
 
@@ -141,7 +162,17 @@ export async function PUT(req: NextRequest) {
       userId: user.userId,
       action: 'VECTOR_STORE_CONFIG_UPDATE',
       severity: 'warning',
-      detail: { provider, baseUrl, collectionName, vectorSize, distance, keyRotated: !!apiKey },
+      detail: {
+        provider,
+        baseUrl,
+        collectionName,
+        vectorSize,
+        distance,
+        keyRotated: !!apiKey,
+        // Whether this save is the one that UNBLOCKED knowledge upload. An operator reading the audit trail later
+        // needs to tell "first choice" from "settings tweak", and before this the trail could not say.
+        storageChoiceMade: !existing?.storageChosenAt,
+      },
     })
     return GET()
   } catch (e) {
