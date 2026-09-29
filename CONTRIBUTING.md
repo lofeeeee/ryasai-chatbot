@@ -69,8 +69,11 @@ with a version that is not the one being shipped, which is precisely what `relea
 catch, and it will catch it only if you run it after resolving:
 
 ```bash
-grep -rl '<<<<<<<' . --exclude-dir=node_modules --exclude-dir=.git   # MUST be empty
-bun test src/lib/release-version.test.ts                             # all locations agree
+# ANCHOR THE PATTERN TO THE START OF A LINE, as git writes it. A bare `grep '<<<<<<<'` matches this very line —
+# the literal appears in the documentation that tells you to look for it — so it reports a conflict on a clean tree
+# and trains you to ignore the check. Measured: unanchored = 1 hit on a clean repo, anchored = 0.
+grep -rlE '^<<<<<<< ' . --exclude-dir=node_modules --exclude-dir=.git   # MUST be empty
+bun test src/lib/release-version.test.ts                               # all locations agree
 ```
 
 TWO ALTERNATIVES, if the merge-back becomes annoying enough to justify them: merge `dev` into `main` with a merge

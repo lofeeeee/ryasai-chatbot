@@ -6,7 +6,13 @@ updates:
     schedule:
       interval: weekly
       day: monday
-    open-pull-requests-limit: 10
+    # MEASURED REASON for the low number: at limit 10 this queue filled COMPLETELY and stayed full for two
+    # months — all fifteen PRs were created 2026-07-27 and none was ever merged. A full queue is not a queue,
+    # it is a wall: it BLOCKS Dependabot from proposing anything new, including security updates. Four is a
+    # number a reviewer can actually clear in one sitting. The MAJOR bumps that were sitting there (eslint
+    # 9->10, typescript 5->7, prisma 6->7, recharts 2->3, c8 10->12) need their own migration work and should
+    # be opened deliberately when that work is scheduled, not left aging in a list.
+    open-pull-requests-limit: 4
     commit-message:
       prefix: "chore(deps):"
     cooldown:
@@ -22,7 +28,8 @@ updates:
     schedule:
       interval: weekly
       day: monday
-    open-pull-requests-limit: 5
+    # Same reasoning as the npm block above: five action bumps had been open since July at limit 5.
+    open-pull-requests-limit: 2
     commit-message:
       prefix: "ci(deps):"
     cooldown:
