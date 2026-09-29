@@ -137,3 +137,32 @@ trial/live/.llmconfig.json
 
 # local Windows launcher
 start.bat
+
+# ---------------------------------------------------------------------------
+# UAT / audit scratch output at the repo ROOT.
+#
+# MEASURED: 61 files (6.2 MB) of screenshots, DOM dumps and probe JSON sat untracked-ish at the root and then landed
+# in ONE commit (`c3592be`, whose message is about a guardrail fix) because nothing ignored them. They were the
+# evidence for a UAT round — genuinely useful at the time — but a repo root is not where evidence lives.
+#
+# The ruled-out alternative was a blanket `*.png` / `*.txt`: the repo legitimately tracks a few text assets, and a
+# broad ignore silently swallows a real fixture the first time someone adds one. These patterns name the SHAPES the
+# scratch output actually takes, so a deliberate asset at the root still needs an explicit `!`.
+#
+# Evidence belongs in docs/ (prose + linked artefacts) or a report file, where a reader can find it later. If you
+# need to keep a screenshot, put it under docs/ and commit it on purpose.
+# Scoped to the ROOT ONLY (`/`), because these folders legitimately hold the same extensions and a global pattern
+# would hide the next real asset added there: docs/screenshots/ (7 tracked PNGs), test-data/wikipedia/ (15 tracked
+# .txt fixtures), public/robots.txt, helm/templates/NOTES.txt. Already-tracked files keep working either way — the
+# damage a global pattern does is SILENT, to the next file someone adds on purpose.
+/*.png
+/*.txt
+# Probe/scan dumps written by ad-hoc Playwright and DOM inspection: a bare single-word filename ending in .json.
+# Deliberately NOT `*.json` — package.json, tsconfig.json, components.json and the tracked coverage summary all live
+# at the root, and a broad ignore would have hidden the coverage artifact the release gate reads.
+/nav.json
+/views.json
+/dom_probe.json
+/settings_tabs.json
+/stage1.json
+/a11y_monitoring.json

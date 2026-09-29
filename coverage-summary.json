@@ -1,12 +1,12 @@
 {
-  "linePct": 75.61,
-  "linesHit": 25221,
-  "linesFound": 33358,
+  "linePct": 75.6,
+  "linesHit": 25212,
+  "linesFound": 33349,
   "reachableLinePct": 86.41,
-  "reachableLinesHit": 21919,
-  "reachableLinesFound": 25366,
-  "fnPct": 89.21,
-  "fnsHit": 2256,
+  "reachableLinesHit": 21912,
+  "reachableLinesFound": 25359,
+  "fnPct": 89.17,
+  "fnsHit": 2255,
   "fnsFound": 2529,
   "filesMeasured": 241,
   "failedTestFiles": [],
@@ -247,18 +247,18 @@
     },
     {
       "file": "src/lib/cognee-knowledge-graph.ts",
-      "hit": 286,
-      "found": 473,
-      "pct": 60.46511627906976,
-      "fHit": 32,
-      "fFound": 37,
-      "fPct": 86.48648648648648
+      "hit": 275,
+      "found": 462,
+      "pct": 59.523809523809526,
+      "fHit": 31,
+      "fFound": 36,
+      "fPct": 86.11111111111111
     },
     {
       "file": "src/lib/cognee-memory.ts",
-      "hit": 243,
-      "found": 390,
-      "pct": 62.30769230769231,
+      "hit": 234,
+      "found": 381,
+      "pct": 61.417322834645674,
       "fHit": 27,
       "fFound": 28,
       "fPct": 96.42857142857143
@@ -309,15 +309,6 @@
       "fPct": 86.66666666666667
     },
     {
-      "file": "src/lib/cognee-core.ts",
-      "hit": 187,
-      "found": 278,
-      "pct": 67.26618705035972,
-      "fHit": 25,
-      "fFound": 33,
-      "fPct": 75.75757575757575
-    },
-    {
       "file": "src/components/ui/button.tsx",
       "hit": 89,
       "found": 132,
@@ -352,6 +343,15 @@
       "fHit": 3,
       "fFound": 3,
       "fPct": 100
+    },
+    {
+      "file": "src/lib/cognee-core.ts",
+      "hit": 198,
+      "found": 289,
+      "pct": 68.5121107266436,
+      "fHit": 25,
+      "fFound": 34,
+      "fPct": 73.52941176470588
     },
     {
       "file": "src/hooks/use-delayed-loading.ts",

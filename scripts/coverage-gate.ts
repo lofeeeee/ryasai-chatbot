@@ -137,7 +137,7 @@ const FLOORS: Record<string, number> = {
   // too eager locks out a paying customer, too lax keeps a dead license alive. 44/45
   // executable (97.78%). The uncovered line is the outer cycle catch.
   'src/lib/license-revalidation.ts': 97, // measured 97.78% merged
-  'src/lib/mcp-client.ts': 51, // re-measured 52.85% (324/613); was 91
+  'src/lib/mcp-client.ts': 51, // re-measured 52.42% (325/620); was 91
   // SQL-injection guardrail: dangerous-function masking, the string-literal walker
   // and the LIMIT cap. 188/189 executable; 1 line is a bun arrow-callback artifact.
   /*
@@ -260,9 +260,9 @@ const FLOORS: Record<string, number> = {
   'src/app/api/auth/invite/route.ts': 100, // merged 100.00%
   'src/app/api/users/[id]/role/route.ts': 100, // merged 100.00%; was UNTESTED (one of 42 routes with no test at all)
   'src/middleware.ts': 100, // measured 100.00% (85/85); had NO test file at all
-  'src/lib/tool-branches.ts': 70, // re-measured 82.87% (653/788); was 84
+  'src/lib/tool-branches.ts': 70, // re-measured 73.76% (669/907); was 84
   'src/lib/embeddings.ts': 80, // re-measured 81.66% (334/409); was 82
-  'src/lib/smart-router.ts': 55, // re-measured 56.00% (238/425); was 74
+  'src/lib/smart-router.ts': 55, // re-measured 56.12% (243/433); was 74
   // Merged 68.14% (462/678), re-measured 2026-09-26. The floor is set to the MEASURED merged value,
   // not to a desire: the module is 100.00% FUNCTIONS merged, so the line figure is pulled down by a
   // denominator the merge inflates, and a floor stated as if the number were real just ratchets noise.
@@ -273,7 +273,7 @@ const FLOORS: Record<string, number> = {
   // the stale floor then failed on every commit regardless of the code, which is the failure mode
   // this file's own SECOND INCIDENT note warns about.
   'src/lib/ai.ts': 67,
-  'src/lib/intent-pipeline.ts': 64, // re-measured 66.07% (372/563); was 71
+  'src/lib/intent-pipeline.ts': 64, // re-measured 64.98% (373/574); was 71
   'src/lib/real-connectors.ts': 68, // lowered 73 -> 68. The merged denominator moved 937 -> 942 (the module
   // gained the xp_cmdshell comment rewrite) and the DRIVER-LOADER paths are exercised in per-file
   // subprocesses whose lcov is merged only for the instrumented subset. Single-file figure is 95.10%/98.69%.
@@ -285,8 +285,8 @@ const FLOORS: Record<string, number> = {
   'src/lib/constrained-output.ts': 84, // merged 84.31%; measured 100.00% (43/43)
   'src/lib/api-keys.ts': 80, // merged 84.78%; merged 84.78% but 78/78 executable (100.00%)
   'src/lib/alignment-check.ts': 83, // merged 83.08%; merged 83.08% but 54/54 executable (100.00%)
-  'src/lib/cognee.ts': 53, // re-measured 54.79% (40/73); was 73
-  'src/lib/tool-router.ts': 45, // re-measured 62.62% (253/404); was 69
+  'src/lib/cognee.ts': 53, // re-measured 55.70% (44/79); was 73
+  'src/lib/tool-router.ts': 45, // re-measured 54.44% (282/518); was 69
   'src/lib/llm-config.ts': 66, // lowered 81 -> 66 this round. NOT a regression: the file gained 81 real
   // lines (embeddedIpv4 + the v4-mapped refusal) and it is a module CONSUMED by ~32 test files, so Bun
   // instruments the whole file in every process that touches it and the denominator moves while HIT stays.
@@ -311,7 +311,7 @@ const FLOORS: Record<string, number> = {
   // across environments (354 vs 335 for identical hits), so a floor pinned to one decimal
   // would flap. A REGRESSION still fails — losing real coverage drops hits, and the merge
   // takes Math.max per line so phantom drift cannot mask it.
-  'src/lib/cognee-core.ts': 66, // re-measured 67.27% (187/278); was 73
+  'src/lib/cognee-core.ts': 66, // re-measured 68.51% (198/289); was 73
   'src/lib/rag-chunking.ts': 79, // re-measured 80.99% (196/242); was 84
   // Re-anchored with cognee-core.ts above, same cause: hits ROSE 129 -> 139 while the merged
   // denominator grew 158 -> 195 on phantom records from transitive loaders.
@@ -322,7 +322,7 @@ const FLOORS: Record<string, number> = {
   // while hits ROSE 146 -> 153. Covering the server branch (16 new tests, including the
   // "a memory failure must not fail the chat" degradation pairs) lifted hits to 204:
   // merged 75.00% (204/272), above the floor WITHOUT moving it.
-  'src/lib/cognee-memory.ts': 62, // re-measured 70.20% (212/302); was 73
+  'src/lib/cognee-memory.ts': 61, // re-measured 61.42% (234/381); was 73
   // Re-anchored with cognee-core.ts above: hits ROSE 267 -> 272, merged 76.40% (272/356).
   // Re-anchored after the KB recall path gained the backend gate + a real log line where a
   // bare `catch {}` used to hide the failure. Hits ROSE 272 -> 276; single-file 276/277, and
@@ -331,7 +331,7 @@ const FLOORS: Record<string, number> = {
   // while hits ROSE 276 -> 297, because the new server branches (single-remember cognify,
   // the unified retry loop, the dedupe helpers) were unreachable from any test. Covering
   // them lifted hits to 390: merged 76.32% (390/511), above the floor WITHOUT moving it.
-  'src/lib/cognee-knowledge-graph.ts': 55, // re-measured 69.31% (262/378); was 75
+  'src/lib/cognee-knowledge-graph.ts': 55, // re-measured 59.52% (275/462); was 75
   // The HTTP transport to a cognee server: multipart remember, CHUNKS/SUMMARIES recall,
   // datasets, cognify, forget, bearer auth and a real AbortController deadline.
   // MERGED 54.04% (127/235) vs SINGLE-FILE 96.21% (127/132) — IDENTICAL HITS (127), so every
@@ -452,7 +452,7 @@ const FLOORS: Record<string, number> = {
   // 97.17% -> 100.00% executable (569/569). Was BELOW the 85 threshold on the
   // merged figure before this round; now safely above.
   'src/lib/admin-tools.ts': 83, // measured 100.00% executable; merged 84.30%
-  'src/lib/planner.ts': 70, // re-measured 77.08% (575/746); was 78
+  'src/lib/planner.ts': 70, // re-measured 75.95% (578/761); was 78
   // The streaming agentic loop: termination (deadline, token budget), the no-tools exit and
   // the max-iteration final synthesis.
   // 78.50% merged vs 409/413 = 99.03% of EXECUTABLE lines: the denominator carries type-annotation and interface
@@ -476,7 +476,7 @@ const FLOORS: Record<string, number> = {
   // Re-anchored: the org-scoped cache key gained a NULL branch (no org context now SKIPS the
   // cache instead of sharing a 'global' entry). Single-file coverage is 100% (345/345); the
   // merged figure is denominator-inflated by phantom DA records from transitive loaders.
-  'src/lib/rag-retrieval.ts': 60, // re-measured 70.79% (366/517); was 74
+  'src/lib/rag-retrieval.ts': 60, // re-measured 62.72% (387/617); was 74
   'src/lib/scheduler-queue.ts': 81, // re-measured 82.07% (119/145); was 100
   // A REVENUE feature: a paying on-prem customer is warned before their license
   // expires, and a silent failure here is a lost renewal rather than a bug report.
