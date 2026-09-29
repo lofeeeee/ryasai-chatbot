@@ -5,6 +5,28 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] - 2026-09-29
+
+### Fixed
+- **The embedding dimension defaulted to a value the data does not use.** The application assumed 1536 while the
+  database column is `vector(384)`, the bundled embedding model returns 384, and both the development and production
+  databases hold 384-dimensional rows. Retrieval only compares a chunk whose embedding model matches the query's, so
+  that disagreement turned every similarity score into zero and silently reduced document search to keyword matching —
+  with no error anywhere, and with the settings screen showing the wrong dimension next to the right data.
+  The dimension is now declared once and everything reads it, and a test fails if the schema, the code and the
+  packaged model ever disagree again.
+- **The memory sidecar defaulted to the same wrong dimension**, which made a write fail with an error naming a
+  different cause than the one that occurred.
+
+### Documentation
+- **README rewritten for the people who actually read it** — someone deciding whether to install this, and someone
+  reviewing it. It now describes what the product does, where it runs, what hardware it needs and where to look next,
+  rather than carrying internal engineering notes that already live in the architecture and release documents.
+  Two factual errors were corrected in the process: the version badge was two releases out of date, and the capability
+  table gave the bundled embedding model a dimension it does not have — the same wrong number this release removes
+  from the source. Counts are stated as round numbers with the command to reproduce them, and answer quality is
+  deliberately not claimed as a figure, because it depends on the customer's data and their model provider.
+
 ## [1.2.0] - 2026-09-29
 
 ### Added
