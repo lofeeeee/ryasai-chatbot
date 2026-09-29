@@ -222,7 +222,14 @@ services:
       # MEASURED GOTCHA: the embedding dimension must MATCH what the endpoint
       # really returns, or every write fails with a pydantic LanceDataPoint
       # "List should have at least 3072 items" error that names the wrong cause.
-      - EMBEDDING_DIMENSIONS=${COGNEE_EMBEDDING_DIMENSIONS:-1536}
+      #
+      # 384 is the default because it is what the BUNDLED endpoint returns: the
+      # `local-embeddings` service above serves a 384-dim model and the app's own
+      # column is `vector(384)`. The previous default here was 1536 — the OpenAI
+      # figure, a dimension nothing in this stack produces — so an operator who left
+      # it unset while pointing memory at the bundled embedder hit the pydantic error
+      # above for a mismatch they had not made.
+      - EMBEDDING_DIMENSIONS=${COGNEE_EMBEDDING_DIMENSIONS:-384}
       # Skips a 30s startup probe that fails the whole request when the embedding
       # endpoint is slow to warm up (it usually is).
       - COGNEE_SKIP_CONNECTION_TEST=true

@@ -7,6 +7,7 @@ import { maskSecret, normalizeBaseUrl } from '@/lib/llm-config'
 import { enterWithOrg } from '@/lib/prisma-tenant'
 import { getVectorStorePreset } from '@/lib/db-provider-presets'
 import { AppError } from '@/lib/errors'
+import { EMBEDDING_DIMENSIONS } from '@/lib/constants'
 
 /**
  * The ACTUAL embedding dimension and model present in the store.
@@ -68,7 +69,7 @@ export async function GET() {
              * default rather than becoming null. The MEASURED values live in the two fields below, which is what makes
              * a mismatch visible instead of silent.
              */
-            vectorSize: 1536,
+            vectorSize: EMBEDDING_DIMENSIONS,
             storedVectorSize: stored.size,
             storedEmbeddingModel: stored.model,
             distance: 'Cosine',
@@ -96,7 +97,7 @@ export async function PUT(req: NextRequest) {
     const provider = (body.provider ?? 'INTERNAL').trim().toUpperCase()
     const baseUrl = body.baseUrl?.trim() ? normalizeBaseUrl(body.baseUrl) : null
     const collectionName = (body.collectionName ?? 'ryasai_chunks').trim() || 'ryasai_chunks'
-    const vectorSize = Math.max(1, Number(body.vectorSize ?? 1536) || 1536)
+    const vectorSize = Math.max(1, Number(body.vectorSize ?? EMBEDDING_DIMENSIONS) || EMBEDDING_DIMENSIONS)
     const distance = (body.distance ?? 'Cosine').trim() || 'Cosine'
     const apiKey = typeof body.apiKey === 'string' ? body.apiKey.trim() : ''
     const existing = await db.vectorStoreConfig.findFirst()

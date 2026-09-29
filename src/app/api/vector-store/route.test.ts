@@ -252,8 +252,15 @@ describe('GET', () => {
       baseUrl: '',
       apiKeyMasked: null,
       collectionName: 'ryasai_chunks',
-      // The CONFIGURED value the form seeds from.
-      vectorSize: 1536,
+      /*
+       * The CONFIGURED value the form seeds from — 384, from `EMBEDDING_DIMENSIONS`.
+       *
+       * WAS 1536, and that number was itself the defect: this product's column is `vector(384)` and its bundled
+       * embedder returns 384, so a form seeding 1536 offered an operator a dimension nothing in the stack produces.
+       * It also made the panel display "1536" beside 384-dimensional data, which is how a silent mismatch stayed
+       * invisible while retrieval quietly fell back to lexical-only.
+       */
+      vectorSize: 384,
       /*
        * The MEASURED values — null because no chunk has an embedding in this fixture. `vectorSize` was a hardcoded
        * 1536 while the stored vectors were 384-dimensional, which hid a silent mismatch: retrieval requires
@@ -603,16 +610,17 @@ describe('normalisation and clamps', () => {
     expect(creates()[0]!.args.data).toMatchObject({ collectionName: 'ryasai_chunks' })
   })
 
-  test('vectorSize=0 falls back to 1536 because 0 is FALSY, not because of the floor', async () => {
-    // `Math.max(1, Number(body.vectorSize ?? 1536) || 1536)` -- two different mechanisms, and my first version
-    // of this test conflated them. 0 is falsy so `|| 1536` applies FIRST.
+  test('vectorSize=0 falls back to the DECLARED dimension because 0 is FALSY, not because of the floor', async () => {
+    // `Math.max(1, Number(body.vectorSize ?? EMBEDDING_DIMENSIONS) || EMBEDDING_DIMENSIONS)` -- two different
+    // mechanisms, and an earlier version of this test conflated them. 0 is falsy so `|| ...` applies FIRST.
     // `row` stays null, so BOTH calls take the CREATE branch -- there is no update to index into.
     await put({ provider: 'INTERNAL', vectorSize: 0 })
-    expect(creates()[0]!.args.data).toMatchObject({ vectorSize: 1536 })
+    // 384, the declared dimension — see `EMBEDDING_DIMENSIONS`. Was 1536 while this product stored 384.
+    expect(creates()[0]!.args.data).toMatchObject({ vectorSize: 384 })
   })
 
-  test('a NEGATIVE vectorSize is floored to 1, NOT to 1536', async () => {
-    // Found by running the control rather than by reading: -10 is TRUTHY, so `|| 1536` does NOT apply and the
+  test('a NEGATIVE vectorSize is floored to 1, NOT to the declared dimension', async () => {
+    // Found by running the control rather than by reading: -10 is TRUTHY, so `|| ...` does NOT apply and the
     // `Math.max(1, ...)` floor is what clamps it -- to 1, a dimension no embedding model produces.
     //
     // Recorded as the current behaviour, and flagged: a 1-dimension collection is accepted here and will only
@@ -627,9 +635,10 @@ describe('normalisation and clamps', () => {
     expect(creates()[0]!.args.data).toMatchObject({ vectorSize: 3072 })
   })
 
-  test('a non-numeric vectorSize falls back to 1536', async () => {
+  test('a non-numeric vectorSize falls back to the declared dimension', async () => {
     await put({ provider: 'INTERNAL', vectorSize: 'abc' as unknown as number })
-    expect(creates()[0]!.args.data).toMatchObject({ vectorSize: 1536 })
+    // `Number('abc')` is NaN, which is FALSY, so the `||` branch applies — same path as 0 above.
+    expect(creates()[0]!.args.data).toMatchObject({ vectorSize: 384 })
   })
 
   test('a whitespace-only distance falls back to Cosine', async () => {
@@ -761,15 +770,30 @@ describe('the MEASURED stored embedding is reported, so a silent mismatch cannot
    * lexical only — while this endpoint reported a hardcoded 1536, a number describing the configured INTENT rather
    * than the stored reality. Nothing anywhere said the two disagreed.
    */
-  test('a 384-dimensional store reports 384, even when the config says 1536', async () => {
-    storedEmbeddingRows = [{ dims: 384, model: 'paraphrase-multilingual-MiniLM-L12-v2' }]
-    row = null as never
-    const body = (await (await GET()).json()) as { data: Record<string, unknown> }
-    expect(body.data.vectorSize).toBe(1536) // the configured value the form seeds from, unchanged
-    expect(body.data.storedVectorSize).toBe(384) // the TRUTH, which the old response could not express
-    expect(body.data.storedEmbeddingModel).toBe('paraphrase-multilingual-MiniLM-L12-v2')
-    storedEmbeddingRows = []
-  })
+    test('a configured value the data DISAGREES with is reported as stored, not as configured', async () => {
+      /*
+       * Set up EXPLICITLY rather than leaning on the default, because the default changed: it was 1536 and is now
+       * 384, matching the data. The defect this pins did NOT go away with that change — an operator can still
+       * configure a 1536-dimension endpoint against a 384-dimension column, and the response must still say so
+       * rather than repeating the configured number back.
+       */
+      storedEmbeddingRows = [{ dims: 384, model: 'paraphrase-multilingual-MiniLM-L12-v2' }]
+      row = {
+        id: 'v1',
+        provider: 'INTERNAL',
+        baseUrl: null,
+        encryptedApiKey: null,
+        collectionName: 'chunks',
+        vectorSize: 1536, // configured, and WRONG for this store
+        distance: 'Cosine',
+        updatedAt: new Date('2026-02-01'),
+      } as never
+      const body = (await (await GET()).json()) as { data: Record<string, unknown> }
+      expect(body.data.vectorSize).toBe(1536) // the configured value the form seeds from, unchanged
+      expect(body.data.storedVectorSize).toBe(384) // the TRUTH, which the old response could not express
+      expect(body.data.storedEmbeddingModel).toBe('paraphrase-multilingual-MiniLM-L12-v2')
+      storedEmbeddingRows = []
+    })
 
   test('no stored embedding yet reports null, not a made-up dimension', async () => {
     // A fresh install has no chunks; inventing a number there would recreate the same defect one level down.

@@ -2,6 +2,7 @@ import crypto from 'crypto'
 import { db } from '@/lib/db'
 import { decryptConfig } from '@/lib/crypto'
 import { normalizeBaseUrl } from '@/lib/llm-config'
+import { EMBEDDING_DIMENSIONS } from '@/lib/constants'
 
 export type VectorStoreProvider = 'INTERNAL' | 'QDRANT' | 'MILVUS' | 'PINECONE' | 'CHROMA'
 
@@ -382,8 +383,13 @@ export async function searchVectorStore(args: {
   throw new UnsupportedVectorProviderError(args.config.provider)
 }
 
-/** Default embedding dimension. Matches the OpenAI-compatible 1536 used elsewhere in the RAG path. */
-const DEFAULT_VECTOR_SIZE = 1536
+/**
+ * Default embedding dimension, taken from the single source of truth.
+ *
+ * It was a local literal `1536` here — the OpenAI default — while this product's schema stores `vector(384)` and the
+ * packaged embedder returns 384. That literal was one of the places the disagreement lived.
+ */
+const DEFAULT_VECTOR_SIZE = EMBEDDING_DIMENSIONS
 
 /**
  * Coerce a stored dimension to a usable one. `Number.isFinite` rejects `NaN`/`Infinity` (a malformed row), and

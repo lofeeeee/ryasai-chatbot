@@ -165,3 +165,31 @@ export const SESSION_INACTIVITY_TIMEOUT_MS = 30 * 60 * 1000
 export const NOTIFICATION_MAX_RETRIES = 3
 export const NOTIFICATION_BACKOFF_BASE_MS = 2000
 export const NOTIFICATION_TIMEOUT_MS = 15_000
+
+/**
+ * THE embedding dimension for this product, in one place.
+ *
+ * WHY 384 AND NOT A CONFIGURED CHOICE: it is what the shipped stack actually produces and stores. `pgvector`'s
+ * column is `vector(384)` in `prisma/schema.prisma`, the packaged embedding model
+ * (`sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`, served by the `local-embeddings` sidecar) returns
+ * 384 values, and both the development and production databases hold 384-dimensional rows. A different number in the
+ * APPLICATION was therefore never a setting — it was a disagreement with the data.
+ *
+ * MEASURED CONSEQUENCE of that disagreement: retrieval only compares a chunk whose `embeddingModel` matches the
+ * query's, so the default 1536 produced `semanticSimilarity: 0` on every result while search silently fell back to
+ * lexical-only. The failure was invisible because nothing errored; the vector store panel even displayed "1536"
+ * beside 384-dimensional data.
+ *
+ * So this is the source of truth for the dimension, and a deployment that genuinely runs a different embedder must
+ * change BOTH this and the schema's `vector(N)` — they are one fact, not two settings. `DEFAULT_VECTOR_SIZE` in
+ * `vector-stores.ts` and the provider presets both read from here rather than repeating a literal.
+ */
+export const EMBEDDING_DIMENSIONS = 384
+
+/**
+ * The packaged embedding model's identifier.
+ *
+ * Kept beside the dimension because the two are a pair: retrieval refuses to compare vectors produced by different
+ * models, so a deployment that changes one must change the other, and `local-embeddings` is what serves both.
+ */
+export const DEFAULT_EMBEDDING_MODEL = 'sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2'
