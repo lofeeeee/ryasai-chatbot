@@ -268,9 +268,11 @@ describe('sidebar layout: every menu stays REACHABLE, which a clip used to preve
   })
 
   test('the nav is the scroll container, so a short viewport scrolls instead of clipping', () => {
-    // MEASURED after the fix: nav bottom == shell bottom at every height tested (876 down to 500), and Settings is
-    // reachable at all of them (visible above ~660, scrollable below).
-    expect(src).toMatch(/<nav className="flex-1 min-h-0 p-2 overflow-y-auto">/)
+    // MEASURED after the fix: nav bottom == shell bottom at every height tested (876 down to 480), and Settings is
+    // reachable at all of them. Its own overflow is the SECOND line of defence: the first is that the content now
+    // fits (see the row-height test below). The static assertion only pins that this element remains the scroll
+    // container; the geometry itself is asserted behaviourally in e2e/08-sidebar-visibility.spec.ts.
+    expect(src).toMatch(/<nav className="flex-1 min-h-0 px-2 py-1 overflow-y-auto">/)
   })
 
   test('Settings is still in the navigation, so a layout fix cannot have dropped it', () => {
@@ -281,11 +283,21 @@ describe('sidebar layout: every menu stays REACHABLE, which a clip used to preve
 
   test('the compact row height is a measured value, not a preference', () => {
     /*
-     * py-2 (36px/row) instead of py-2.5 (40px): MEASURED, twelve rows so 48px reclaimed, which is what moved the
-     * sidebar's requirement from 640px of content down to 564px and put Settings back inside a laptop's fold without
-     * shrinking the icon or the label.
+     * py-1.5 (32px/row) instead of py-2.5 (40px) and then py-2 (36px). Each step was MEASURED in a browser logged
+     * in as a real admin, because the earlier two attempts were both insufficient:
+     *
+     *   py-2.5 -> nav content 640px, cut off below ~700px of viewport height
+     *   py-2   -> nav content 564px, STILL below the fold at the user's effective 584-626 CSS px
+     *             (that is 1907x876 at 140-150% browser zoom, which is what the screenshot showed)
+     *   py-1.5 -> nav content 470px, Settings bottom at y=567, overflow 0 at every height from 700 down to 584px,
+     *             and visible at ALL SEVEN viewports swept. Below 584 the nav scrolls (its own overflow-y-auto),
+     *             which is the fallback, not the fix.
+     *
+     * The row is full-width, and the icon stays h-5 with text-sm labels — the height came out of padding, not out of
+     * anything a pointer or an eye needs. 32px is still above the 24px minimum touch target.
      */
-    expect(src).toMatch(/rounded-md px-3 py-2 text-left transition-colors/)
+    expect(src).toMatch(/rounded-md px-3 py-1\.5 text-left transition-colors/)
     expect(src).not.toMatch(/rounded-md px-3 py-2\.5 text-left transition-colors/)
+    expect(src).not.toMatch(/rounded-md px-3 py-2 text-left transition-colors/)
   })
 })
