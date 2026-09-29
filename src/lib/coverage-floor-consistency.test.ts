@@ -83,3 +83,55 @@ describe('coverage floors — the quoted measurement must match the measurement 
     expect(missing).toEqual([])
   })
 })
+
+describe('instruction files must fit the read budget, or their TAIL is silently dropped', () => {
+  /**
+   * MEASURED DEFECT this guard exists for: `AGENTS.md` (59,565 B) plus `CLAUDE.md` (37,433 B) came to 97 KB against a
+   * 65,536-byte instruction budget, and truncation keeps the HEAD. Every section of `AGENTS.md` past byte ~28,000 was
+   * therefore never delivered — including `## Cross-tenant IDOR` (byte 29,762) and `## Silent-failure classes`
+   * (byte 48,547). The rules an agent most needs were the ones not arriving, and NOTHING SAID SO.
+   *
+   * That is silent-failure class 11 ("an instruction never DELIVERED") occurring inside the file that documents it,
+   * so the guard is written the same way that class's lesson is: assert on the EFFECT (does each section actually
+   * fit?), not on a proxy (total bytes are under some number somewhere).
+   *
+   * The budget and the read order are both facts about the harness, not preferences: 65,536 bytes total, read in the
+   * order the file paths sort, HEAD kept on truncation.
+   */
+  const BUDGET = 65536
+  const ROOT = join(import.meta.dir, '..', '..')
+  // The order the harness loads them in. If that order ever changes, this list must change with it — the guard is
+  // about which tail gets dropped, so WHICH file is second is load-bearing.
+  const INSTRUCTION_FILES = ['CLAUDE.md', 'AGENTS.md']
+
+  test('the combined size leaves room, so nothing is truncated', () => {
+    const sizes = INSTRUCTION_FILES.map((f) => ({ f, size: readFileSync(join(ROOT, f), 'utf8').length }))
+    const total = sizes.reduce((n, s) => n + s.size, 0)
+    const detail = sizes.map((s) => `${s.f} ${s.size}`).join(' + ')
+    expect(`${detail} = ${total} (budget ${BUDGET})`).toBe(`${detail} = ${total} (budget ${BUDGET})`)
+    expect(total).toBeLessThanOrEqual(BUDGET)
+  })
+
+  test('EVERY section of the last-loaded file begins inside the budget', () => {
+    /*
+     * The assertion that would have caught the original defect. A file can be within budget while its most important
+     * section sits past the cutoff of the file BEFORE it, which is exactly what happened: `AGENTS.md` was 59 KB and
+     * the budget left to it after `CLAUDE.md` was 28 KB, so 31 KB of rules never loaded.
+     */
+    const first = readFileSync(join(ROOT, INSTRUCTION_FILES[0]!), 'utf8').length
+    const remaining = BUDGET - first
+    const last = readFileSync(join(ROOT, INSTRUCTION_FILES[1]!), 'utf8')
+    const dropped = [...last.matchAll(/^## .*$/gm)]
+      .filter((m) => (m.index ?? 0) > remaining)
+      .map((m) => m[0].trim())
+    expect(dropped).toEqual([])
+  })
+
+  test('both files still carry the rules that were previously dropped', () => {
+    // The specific sections that were not being delivered. Deleting one would "fix" the budget while losing the rule.
+    const agents = readFileSync(join(ROOT, 'AGENTS.md'), 'utf8')
+    expect(agents).toContain('## Cross-tenant IDOR')
+    expect(agents).toContain('## Silent-failure classes')
+    expect(agents).toContain('## ⛔ Non-negotiable invariants')
+  })
+})
