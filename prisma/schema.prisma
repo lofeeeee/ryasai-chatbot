@@ -301,6 +301,7 @@ model DocumentChunk {
 
   @@index([organizationId])
   @@index([documentId])
+  @@index([tsv], type: Gin)
   @@index([embeddingModel])
 }
 
@@ -335,7 +336,11 @@ model VectorStoreConfig {
   baseUrl         String?
   encryptedApiKey String?
   collectionName  String   @default("ryasai_chunks")
-  vectorSize      Int      @default(1536)
+  /// 384, matching `EMBEDDING_DIMENSIONS` in `src/lib/constants.ts`. These are ONE fact stated twice, not two
+  /// settings: the vectors this dimension describes are always produced by the configured embedder, and the bundled
+  /// one returns 384. A schema default of 1536 was the sixth place the old, wrong number lived - it disagreed with
+  /// the `vector(384)` column above and with the embedder, and `src/lib/embedding-dimension.test.ts` now checks it.
+  vectorSize      Int      @default(384)
   distance        String   @default("Cosine")
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt

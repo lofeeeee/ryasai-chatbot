@@ -54,6 +54,35 @@ describe('embedding dimension — the schema, the code and the packaged model mu
     expect(compose).toContain(`COGNEE_EMBEDDING_DIMENSIONS:-${EMBEDDING_DIMENSIONS}`)
   })
 
+  test('the VectorStoreConfig default matches too, not only the chunk column', () => {
+    /*
+     * A SIXTH place the number lived, missed by the first pass through this work: `VectorStoreConfig.vectorSize` had
+     * `@default(1536)`, so a config row created without an explicit size disagreed with both the `vector(384)` column
+     * it describes and the embedder that fills it. Two numbers, one fact — so both are asserted against the constant
+     * rather than only the one that happened to be found first.
+     */
+    const schema = read('prisma/schema.prisma')
+    const m = schema.match(/vectorSize\s+Int\s+@default\((\d+)\)/)
+    expect(m).not.toBeNull()
+    expect(Number(m![1])).toBe(EMBEDDING_DIMENSIONS)
+  })
+
+  test('the runtime-created FTS index is ALSO declared, or db push tries to drop it', () => {
+    /*
+     * MEASURED DEFECT, found while changing the dimension and unrelated to it: `ensureRagFtsTable()` creates
+     * `DocumentChunk_tsv_idx` with raw DDL at runtime, so Prisma could not see it — every `db push` treated the index
+     * as drift and emitted `DROP INDEX "DocumentChunk_tsv_idx"`. On a live install that silently removes BM25
+     * ranking. It was caught on production only because `db push` ALSO refuses to drop a COLUMN holding data (the
+     * `tsv` one) and exited 1 before reaching the index.
+     *
+     * The `tsv` column is declared as `Unsupported("tsvector")` for the same reason. The INDEX was not, and the
+     * schema accepts `@@index([tsv], type: Gin)` — verified by `prisma migrate diff` returning no DROP once it is
+     * present. So the two creators no longer disagree, and this asserts it stays that way.
+     */
+    const schema = read('prisma/schema.prisma')
+    expect(schema).toMatch(/@@index\(\[tsv\],\s*type:\s*Gin\)/)
+  })
+
   test('no source file carries a stale numeric default', () => {
     /*
      * Comments are allowed to mention 1536 — several explain this incident, and deleting them would delete the
