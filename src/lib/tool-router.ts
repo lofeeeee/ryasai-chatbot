@@ -528,6 +528,11 @@ async function resolveRouting(
      * when a scoped key is most likely to be sent somewhere it may not read.
      */
     integrationIds?: string[] | null
+    /**
+     * The key's allowed documents. Needed HERE because this function builds the router prompt's source list, and
+     * that list was previously unscoped — see the note on `RoutingContext.documentIds`.
+     */
+    documentIds?: string[] | null
   },
   effectiveQuestion: string,
   dbData: DbData,
@@ -536,6 +541,10 @@ async function resolveRouting(
   const [docCount, intCount, , , , restEndpoints] = dbData
   const restEndpointCount = restEndpoints.length
   const hasHistory = args.chatHistory && args.chatHistory.length > 0
+  // Required by the pin lookup below, and named for it: `core` guards that EVERY integration query in the chat path
+  // carries a scope filter. Spread conditionally, exactly as `loadDbData` does — an empty `in: []` matches nothing
+  // and would lock out every key created before this axis existed.
+  const intScope = args.integrationIds && args.integrationIds.length > 0 ? { id: { in: args.integrationIds } } : {}
   let decision: RouteDecision
   let resolvedIntegrationId = args.integrationId
   // Arguments the SELECTOR supplied, so the branch does not re-derive them.
@@ -565,7 +574,40 @@ async function resolveRouting(
     // No LLM (unconfigured, or the provider failed). `routeQuery` is the
     // documented fail-closed fallback; a hard failure here would take chat down
     // for a deployment whose only problem is a transient provider error.
-    const routed = await routeQuery({ question: effectiveQuestion, hasIntegrations: intCount > 0, hasDocuments: docCount > 0, hasRestApis: restEndpointCount > 0, memoryContext, chatHistory: args.chatHistory })
+    const routed = await routeQuery({
+      question: effectiveQuestion,
+      hasIntegrations: intCount > 0,
+      hasDocuments: docCount > 0,
+      hasRestApis: restEndpointCount > 0,
+      memoryContext,
+      chatHistory: args.chatHistory,
+      // The scope REACHES THE PROMPT here, not just the branch. MEASURED: this call omitted it, so `routeQuery`
+      // listed every table, document and table-description in the install to a key that could not read them.
+      // `loadDbData` above already scoped the counts; the prompt needed the same axes.
+      integrationIds: args.integrationIds,
+      documentIds: args.documentIds,
+      /*
+       * The user's PIN, so the router can honour the composer's promise ("other sources are excluded for this turn").
+       *
+       * MEASURED GAP: the pin used to bind only AFTER the route was chosen — as `resolvedIntegrationId`, which the SQL
+       * branch reads — so a user who pinned a database could still be answered from documents, and the UI said
+       * otherwise. The lookup is one scoped `findFirst` on an id the route already validated, and only when a pin
+       * exists, so an auto-routed turn costs nothing.
+       */
+      pinnedSourceName: args.integrationId
+        ? ((
+            await db.integration.findFirst({
+              // BOTH axes, and this is not belt-and-braces: `core` guards that every integration query in the chat
+              // path carries a scope filter, and the first version of this lookup omitted it. Without `...intScope`
+              // a key restricted away from a database could still have it NAMED back through the pin — the same
+              // "told about a source it cannot read" leak the scope work above exists to close. The pin comes from
+              // the client, so it is also an input the caller controls.
+              where: { id: args.integrationId, status: 'active', ...intScope },
+              select: { name: true },
+            })
+          )?.name ?? undefined)
+        : undefined,
+    })
     decision = routed.decision
     selectionReason = `fallback router: ${routed.reason}`
   }

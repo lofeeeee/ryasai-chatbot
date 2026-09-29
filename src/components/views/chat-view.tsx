@@ -302,10 +302,20 @@ export function ChatView() {
                   ))}
                 </select>
                 {pinnedSource && (
-                  // States plainly that this pins the SOURCE, not just the wording. Without it a user
-                  // cannot tell why a question stopped reaching the document they expected.
+                  /*
+                   * THE OLD WORDING WAS A PROMISE THE CODE DID NOT KEEP: "other sources are excluded for this turn",
+                   * when nothing excluded them. `integrationId` only ever bound AFTER the route was chosen (the SQL
+                   * branch reads `resolvedIntegrationId`), so a pinned-database question could still be answered from
+                   * documents while the interface said otherwise.
+                   *
+                   * Two things changed. The pin now REACHES the router prompt, so the model is told which source the
+                   * user chose and prefers the route that reads it — and this sentence describes what actually
+                   * happens. "Prefer" is the honest verb: a router instruction is a bias, not a lock, and a pin whose
+                   * source cannot answer is better redirected (the clarification path and `applyToolGating` still
+                   * apply) than answered wrongly from a source the user did not choose.
+                   */
                   <span className="text-muted-foreground">
-                    — other sources are excluded for this turn
+                    — answers prefer this source for this turn
                   </span>
                 )}
               </div>

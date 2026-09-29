@@ -72,6 +72,34 @@ export interface RoutingContext {
   hasRestApis?: boolean
   memoryContext?: string
   chatHistory?: Array<{ role: 'user' | 'assistant'; content: string }>
+  /**
+   * The caller's allowed sources, for the SOURCE LIST this function puts in the router prompt.
+   *
+   * MEASURED DEFECT this exists for: `routeQuery` queried documents, tables and REST paths with NO scope at all —
+   * `db.document.findMany({ where: { status: 'ready', isEnabled: true } })` and its two siblings — and then
+   * interpolated the results into the prompt as `Documents: …`, `Database tables: …`,
+   * `Table descriptions: …` and `REST APIs: …`.
+   *
+   * The CALLER was already scoped: `loadDbData` in `tool-router.ts` builds `intScope`/`docScope` deliberately, and
+   * says so in a comment. So the same org could be told about every table and document in the install while the
+   * branch that would read them refused — the key could not USE them but was told they exist, including their names
+   * and per-table DESCRIPTIONS. Naming is the leak: a table description is business content, and a document name is
+   * often the most sensitive string in the deployment ("Resignation-2026-Q3.xlsx").
+   *
+   * `null`/absent keeps the previous behaviour (unrestricted), matching `loadDbData`'s own contract: an empty `in: []`
+   * would match nothing and lock out every key created before these axes existed.
+   */
+  integrationIds?: string[] | null
+  documentIds?: string[] | null
+  /**
+   * The source the USER pinned for this turn, when the composer's picker was used.
+   *
+   * MEASURED GAP: the picker tells the user "other sources are excluded for this turn", but the id never reached the
+   * router — `routeQuery` was called without it, so the LLM chose a route from the full source list. A user who
+   * pinned a database could still get a RAG answer. The pin only ever bound AFTER the route was decided (as
+   * `resolvedIntegrationId`, used only when the route is SQL), which is not what the UI promises.
+   */
+  pinnedSourceName?: string
 }
 
 /**
@@ -170,12 +198,21 @@ export async function routeQuery(ctx: RoutingContext): Promise<{
         .join('\n')
     : ''
 
+  // The scope is spread CONDITIONALLY, exactly as `loadDbData` does and for the same reason: an empty `in: []`
+  // matches nothing, which would lock out every key created before these axes existed.
+  const intScope = ctx.integrationIds && ctx.integrationIds.length > 0 ? { id: { in: ctx.integrationIds } } : {}
+  const docScope = ctx.documentIds && ctx.documentIds.length > 0 ? { id: { in: ctx.documentIds } } : {}
   const [tableSchemas, documents, restEndpoints] = await Promise.all([
     db.integrationSchema.findMany({
-      where: { integration: { status: 'active' } },
+      where: { integration: { status: 'active', ...intScope } },
       select: { tableName: true, description: true, integration: { select: { name: true } } },
     }),
-    db.document.findMany({ where: { status: 'ready', isEnabled: true }, select: { name: true, category: true } }),
+    db.document.findMany({
+      where: { status: 'ready', isEnabled: true, ...docScope },
+      select: { name: true, category: true },
+    }),
+    // A REST endpoint has no scope axis of its own; it belongs to the org, and the key's tool allowlist is what
+    // bounds it (see `allowedTools`). Scoping it to integrations would hide endpoints that are not integration-backed.
     db.restApiEndpoint.findMany({ where: { isEnabled: true }, select: { path: true, description: true } }),
   ])
   const tableNames = tableSchemas.map((t) => t.tableName)
@@ -226,6 +263,18 @@ export async function routeQuery(ctx: RoutingContext): Promise<{
           `Context: database integrations available=${ctx.hasIntegrations}, knowledge base documents available=${ctx.hasDocuments}, REST APIs available=${ctx.hasRestApis ?? false}.\n` +
           (tableNames.length > 0 ? `Database tables: ${tableNames.slice(0, 30).join(', ')}\n` : '') +
           (tableDescriptions.length > 0 ? `Table descriptions:\n${tableDescriptions.slice(0, 30).join('\n')}\n` : '') +
+          /*
+           * THE PIN, stated before the lists so it frames them. The picker promises the user that other sources
+           * are excluded for this turn, but the id never reached this function — so the router chose from the full
+           * list and a pinned-database question could still be answered from documents. MEASURED gap.
+           *
+           * Phrased as "prefer", not "you must": a pin that cannot answer is better redirected than answered
+           * wrongly, and `applyToolGating` still refuses a route whose source is absent.
+           */
+          (ctx.pinnedSourceName
+            ? `THE USER EXPLICITLY CHOSE THIS SOURCE FOR THIS QUESTION: "${ctx.pinnedSourceName}". ` +
+              'Prefer the route that reads it. Route to SQL when it is a database, to RAG when it is a document set.\n'
+            : '') +
           (docNames.length > 0 ? `Documents: ${docNames.slice(0, 30).join(', ')}\n` : '') +
           (apiPaths.length > 0 ? `REST APIs: ${apiPaths.slice(0, 20).join(', ')}\n` : '') +
           // FRAMED, for the same reason as tool-selector.ts: this is a ROUTING prompt, and a
