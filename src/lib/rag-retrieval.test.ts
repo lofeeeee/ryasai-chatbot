@@ -518,6 +518,27 @@ describe('retrieveRelevantChunks — sub-query decomposition', () => {
     expect((mergedInput as unknown[]).length).toBe(2)
   })
 
+  test('the decomposition path stamps ranks too, though it returns before the normal stamp', async () => {
+    // This branch RETURNS EARLY (`return merged`), so it never reached the `stampRetrievedRanks`
+    // call at the end of the function — a compound question came back with chunks carrying NO
+    // rank. The search API returns `rank ?? null` and the UI falls back to the array index, so the
+    // symptom was invisible for that path; it is still wrong for any consumer that reads the rank.
+    decomposeQueryImpl = () => ['part one', 'part two']
+    mergeRetrievedResultsImpl = () => ({
+      // Deliberately carrying STALE per-query ranks from the sub-retrievals, in an order that
+      // contradicts them.
+      chunks: [
+        { ...chunk('m1'), rank: 9 },
+        { ...chunk('m2'), rank: 4 },
+      ],
+      queryTokens: [],
+      candidatesScanned: 0,
+      graphContext: '',
+    })
+    const r = await retrieveRelevantChunks({ query: 'a and b', topK: 5 })
+    expect(r.chunks.map((c) => (c as { rank?: number }).rank)).toEqual([1, 2])
+  })
+
   test('a single-part question does NOT take the decomposition path', async () => {
     decomposeQueryImpl = (q) => [q]
     await retrieveRelevantChunks({ query: 'invoices', topK: 5 })
@@ -1974,10 +1995,36 @@ describe('the returned ORDER is explainable — rerankScore and rank', () => {
    * The fix records the reranker's own number beside the retrieval one and stamps the final position, so a consumer
    * can label and explain the order it was actually given.
    */
-  test('rank is stamped 1..N in the order returned', async () => {
+  test('every chunk the PIPELINE returns carries its position in the returned order', async () => {
+    // This drives the real `retrieveRelevantChunks`, because the stamp lives INSIDE it. The test below
+    // calls the helper directly, which pins the helper's contract but not that the pipeline calls it —
+    // MEASURED by negative control: deleting `stampRetrievedRanks(finalChunks)` from `rag-retrieval.ts`
+    // left the whole file green.
+    //
+    // The reranker returns c2 BEFORE c1, against the lexical order (c1 first, the order dbChunkRows
+    // lists them). So a rank stamped BEFORE the rerank, or taken from the retrievers' own array, reads
+    // [2, 1] here. Only a stamp taken after the rerank reads [1, 2].
+    //
+    // Asserted through `content`: the cross-encoder mock returns the fixtures themselves, and the
+    // `chunk()` fixture carries `id`, not the `chunkId` the hydrated candidates use.
+    ftsIds = ['c1', 'c2', 'c3']
+    dbChunkRows = [dbChunkRow('c1'), dbChunkRow('c2'), dbChunkRow('c3')]
+    toRankingImpl = (entries: unknown) => (entries as Array<{ id: string }>).map((e) => e.id)
+    rerankValue = [chunk('c2', 'SECOND'), chunk('c1', 'FIRST')]
+    const r = await retrieveRelevantChunks({ query: 'invoices', topK: 2 })
+    expect(r.chunks.map((c) => c.content)).toEqual(['SECOND', 'FIRST'])
+    expect(r.chunks.map((c) => c.rank)).toEqual([1, 2])
+  })
+
+  test('the STAMPING helper numbers the array it is given', async () => {
     // Any retrieval result must carry positions, because the UI's "Match #N" label is derived from this.
+    // HONEST SCOPE: this calls the helper directly, so it pins the helper in isolation (number in the
+    // order given, overwriting whatever was there). The PIPELINE's own call is covered by the test
+    // above — an earlier comment here claimed this test covered it, and the negative control disproved
+    // that: the stamp could be deleted from `rag-retrieval.ts` and this file stayed green.
     const { sortRetrievedChunks } = await import('./rag')
-    const rows = [
+    const { stampRetrievedRanks } = await import('./retrieval-rank')
+    const rows: Array<{ score: number; chunkIndex: number; rank?: number }> = [
       { score: 0.5, chunkIndex: 2 },
       { score: 1, chunkIndex: 0 },
       { score: 0.25, chunkIndex: 1 },
@@ -1986,10 +2033,8 @@ describe('the returned ORDER is explainable — rerankScore and rank', () => {
     // The sort itself is by score DESC (this predates the fix and is correct) — the bug was that the RERANK path
     // reordered without the score following, which `rank` now makes explicit.
     expect(sorted.map((r) => r.score)).toEqual([1, 0.5, 0.25])
-    sorted.forEach((r, i) => {
-      ;(r as { rank?: number }).rank = i + 1
-    })
-    expect(sorted.map((r) => (r as { rank?: number }).rank)).toEqual([1, 2, 3])
+    stampRetrievedRanks(sorted)
+    expect(sorted.map((r) => r.rank)).toEqual([1, 2, 3])
   })
 
   test('rerankScore is optional, so a non-reranked result keeps its retrieval score alone', async () => {

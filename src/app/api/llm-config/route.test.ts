@@ -17,6 +17,10 @@
  */
 import { describe, expect, test, beforeEach, mock } from 'bun:test'
 
+// The REAL constant. The fallback this route applies on a blank model is the value under test, so pinning
+// it to a copied string would let the test and the production default diverge silently.
+import { DEFAULT_EMBEDDING_MODEL } from '@/lib/constants'
+
 const adminUser = {
   userId: 'admin-1',
   name: 'Admin',
@@ -450,11 +454,16 @@ describe('PUT /api/llm-config — validation and the provider whitelist', () => 
     )
   })
 
-  test('a blank embedding model falls back to the documented default', async () => {
+  test('a blank embedding model falls back to the packaged 384-dim model, not an OpenAI id', async () => {
+    // The literal asserted here used to be `text-embedding-3-small`. That was the defect: this install's
+    // storage is `vector(384)` and the bundled sidecar is 384-dimensional, so a blank box resolving to a
+    // 1536-dim model meant every stored stamp disagreed with every query embedding and retrieval silently
+    // fell back to lexical-only (measured in UAT: `semanticSimilarity: 0` on every result). Asserted
+    // against the constant rather than a string so this test cannot drift away from the source of truth.
     existingRow = null
     await put({ ...validBody, embeddingModel: '' })
     expect((createArgs[0]!.data as { embeddingModel: string }).embeddingModel).toBe(
-      'text-embedding-3-small',
+      DEFAULT_EMBEDDING_MODEL,
     )
   })
 

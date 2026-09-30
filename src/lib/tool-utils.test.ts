@@ -125,6 +125,46 @@ describe('tool-utils — buildDocumentCitation', () => {
     expect(cit.snippet!.length).toBeLessThan(250)
     expect(cit.snippet!.endsWith('...')).toBe(true)
   })
+
+  test('carries the retrieval rank through to the citation', () => {
+    // This is the hop that was missing: the badge in `citation-list.tsx` was derived from the array
+    // index, so a citation had no way to say which position retrieval actually returned it at.
+    const cit = buildDocumentCitation({
+      documentName: 'report.pdf',
+      chunkIndex: 3,
+      content: 'This is the content.',
+      score: 0.92,
+      rank: 2,
+    })
+    expect(cit.rank).toBe(2)
+  })
+
+  test('omits the rank entirely when there is none, rather than carrying undefined', () => {
+    // `{ rank: undefined }` and "no rank" behave the same for the badge, but the citation is
+    // JSON-serialised into the session message, and an explicit null-ish key is a field a later
+    // reader will assume was measured.
+    const cit = buildDocumentCitation({
+      documentName: 'report.pdf',
+      chunkIndex: 3,
+      content: 'This is the content.',
+      score: 0.92,
+    })
+    expect('rank' in cit).toBe(false)
+  })
+
+  test('a zero or negative rank is treated as absent', () => {
+    // "Match #0" is a fabrication; the badge falls back to the position instead.
+    for (const bad of [0, -1]) {
+      const cit = buildDocumentCitation({
+        documentName: 'report.pdf',
+        chunkIndex: 3,
+        content: 'content',
+        score: 0.5,
+        rank: bad,
+      })
+      expect('rank' in cit).toBe(false)
+    }
+  })
 })
 
 describe('tool-utils — sanitizeSqlError', () => {

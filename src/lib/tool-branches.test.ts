@@ -72,10 +72,27 @@ mock.module('@/lib/connectors', () => ({
 }))
 mock.module('@/lib/guardrails', () => ({ validateAndSanitizeLlmSql: mockValidateSql }))
 mock.module('@/lib/crypto', () => ({ decryptConfig: mock(() => ({})) }))
+/**
+ * Shaped like the REAL helper, and its arguments are observable.
+ *
+ * The previous version was a one-argument arrow returning a fixed shape, so it DROPPED `rank`. A
+ * citation built through it could never carry a retrieval position, which made every assertion
+ * about "which match this was" unfalsifiable here — the transport's own `rank: item.rank` could
+ * be deleted and this file would still pass. Declaring the parameter and spreading `rank` through
+ * is what makes the transport-level tests below able to fail.
+ */
+const mockBuildDocumentCitation = mock(
+  (a: { documentName: string; chunkIndex?: number; content?: string; score?: number; rank?: number }) => ({
+    type: 'RAG',
+    source: a.documentName,
+    query_used: '',
+    ...(typeof a.rank === 'number' && a.rank > 0 ? { rank: a.rank } : {}),
+  }),
+)
 mock.module('@/lib/tool-utils', () => ({
   withSqlConcurrency: async (_id: string, fn: () => Promise<unknown>) => fn(),
   buildChartDataFromRows: () => null,
-  buildDocumentCitation: (a: { documentName: string }) => ({ type: 'RAG', source: a.documentName, query_used: '' }),
+  buildDocumentCitation: mockBuildDocumentCitation,
   sanitizeSqlError: (s: string) => s,
   summarize: (s: string) => s.slice(0, 50),
   // Shaped like the real helper: a BLOCKED tool run, not an empty array. Returning
@@ -164,6 +181,7 @@ beforeEach(() => {
   mockDocumentFindMany.mockReset()
   mockIntegrationFindFirst.mockReset()
   mockValidateSql.mockReset()
+  mockBuildDocumentCitation.mockClear()
   mockConnectorExecuteQuery.mockReset()
   mockAuditLogCreate.mockReset()
   mockQueryHistoryCreate.mockReset()
@@ -301,6 +319,57 @@ describe('runRagBranch — source guidance injection', () => {
 
     const ctxArg = (mockGenerateAnswer.mock.calls[0] as unknown as [{ context: string }])[0]
     expect(ctxArg.context).not.toContain('[Source guidance]')
+  })
+})
+
+describe('runRagBranch — the citation carries the retrieval rank, not an array position', () => {
+  /**
+   * The transport used to let the UI derive "Match #N" from the citation's INDEX in the array it
+   * rendered. That array is not the retrieval list: the agentic loops concatenate the citations of
+   * several tool runs, so the index describes the concatenation, not the search. UAT measured the
+   * best chunk of a four-document result rendered as "Match #3". The rank is now stamped where the
+   * order is final and CARRIED through — this test is what makes the carrying falsifiable.
+   */
+  test('forwards the rank stamped by the retriever onto the citation', async () => {
+    mockRetrieveWithReflection.mockImplementation(async () => ({
+      chunks: [makeChunk({ chunkId: 'c1', documentId: 'doc-a', documentName: 'doc-a.txt', score: 0.9, rank: 3 })],
+      queryTokens: [],
+      candidatesScanned: 1,
+      graphContext: '',
+      retrievalPasses: 1,
+      reflection: { sufficient: true, reason: '', confidence: 1 },
+      citationTrail: undefined,
+    }))
+    mockGenerateAnswer.mockImplementation(async () => 'ans')
+
+    const r = await runRagBranch({ question: 'q' })
+
+    // Both surfaces: what the producer was ASKED to build, and what came back.
+    const args = (mockBuildDocumentCitation.mock.calls[0] as unknown as [{ rank?: number }])[0]
+    expect(args?.rank).toBe(3)
+    expect(r.citations[0]?.rank).toBe(3)
+  })
+
+  test('passes no rank through when the retriever stamped none', async () => {
+    mockRetrieveWithReflection.mockImplementation(async () => ({
+      chunks: [makeChunk({ chunkId: 'c1', documentId: 'doc-a', documentName: 'doc-a.txt', score: 0.9 })],
+      queryTokens: [],
+      candidatesScanned: 1,
+      graphContext: '',
+      retrievalPasses: 1,
+      reflection: { sufficient: true, reason: '', confidence: 1 },
+      citationTrail: undefined,
+    }))
+    mockGenerateAnswer.mockImplementation(async () => 'ans')
+
+    const r = await runRagBranch({ question: 'q' })
+
+    const args = (mockBuildDocumentCitation.mock.calls[0] as unknown as [{ rank?: number }])[0]
+    expect(args?.rank).toBeUndefined()
+    // Omitted entirely rather than set to `undefined`: the citation is JSON-serialised
+    // into the session message, and a present-but-null key would let a consumer read
+    // "rank 0" from a value that means "unknown" (silent-failure class #13).
+    expect('rank' in (r.citations[0] as object)).toBe(false)
   })
 })
 

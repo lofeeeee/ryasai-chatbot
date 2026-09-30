@@ -41,6 +41,7 @@
 import { chatOnce } from '@/lib/llm-client'
 import { getRoleLlmConfig } from '@/lib/llm-config'
 import { retrieveRelevantChunks, selectTopRetrievedChunks, type RetrievedChunk } from '@/lib/rag'
+import { stampRetrievedRanks } from '@/lib/retrieval-rank'
 import { isPlaceholderChunk } from '@/lib/rag-chunking'
 import type { ChatHistoryEntry } from '@/lib/tool-utils'
 import { wrapUntrusted } from './evidence-boundary'
@@ -805,7 +806,10 @@ export async function retrieveWithReflection(args: {
     })
     const merged2 = mergeRetrievalResults([merged, secondPass])
     return {
-      chunks: selectTopRetrievedChunks(merged2.chunks, args.topK * 2),
+      // Re-stamped: the per-query ranks carried by `merged`/`secondPass` describe the orders the individual
+      // retrievals produced, and this is a NEW order after the merge and the select. The UI labels these
+      // "Match #N", so the label has to come from the list the caller receives.
+      chunks: stampRetrievedRanks(selectTopRetrievedChunks(merged2.chunks, args.topK * 2)),
       queryTokens: merged2.queryTokens,
       candidatesScanned: merged2.candidatesScanned,
       graphContext: merged2.graphContext,
@@ -815,7 +819,8 @@ export async function retrieveWithReflection(args: {
   }
 
   return {
-    chunks: selectTopRetrievedChunks(merged.chunks, args.topK),
+    // Same reason as the second-pass return above: the merged order is new, so the ranks are re-stamped.
+    chunks: stampRetrievedRanks(selectTopRetrievedChunks(merged.chunks, args.topK)),
     queryTokens: merged.queryTokens,
     candidatesScanned: merged.candidatesScanned,
     graphContext: merged.graphContext,

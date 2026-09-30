@@ -487,6 +487,10 @@ const FLOORS: Record<string, number> = {
   // cache instead of sharing a 'global' entry). Single-file coverage is 100% (345/345); the
   // merged figure is denominator-inflated by phantom DA records from transitive loaders.
   'src/lib/rag-retrieval.ts': 60, // re-measured 62.72% (387/617); was 74
+  // The rank stamp is what makes a citation position meaningful when several tool runs' citations are
+  // concatenated; all 5 lines are reached by its own test file, so the floor guards the file against
+  // being reached ONLY through a consumer's `mock.module` (which inflates the denominator).
+  'src/lib/retrieval-rank.ts': 95, // re-measured 100.00% (5/5)
   'src/lib/scheduler-queue.ts': 81, // re-measured 82.07% (119/145); was 100
   // A REVENUE feature: a paying on-prem customer is warned before their license
   // expires, and a silent failure here is a lost renewal rather than a bug report.

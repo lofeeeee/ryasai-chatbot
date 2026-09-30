@@ -41,6 +41,9 @@ let row: Record<string, unknown> | null = null
 let runtimeConfig: Record<string, unknown> | null = null
 let ensureThrows: Error | null = null
 let createThrows: Error | null = null
+// What `resolveConfiguredEmbeddingModel()` returns. Left null by default: a fixture with no LlmConfig row must
+// report "nothing was compared", not "the stamps agree".
+let configuredModel: string | null = null
 
 const events: string[] = []
 const calls: Array<{ model: string; op: string; args: Record<string, unknown> }> = []
@@ -105,6 +108,17 @@ mock.module('@/lib/llm-config', () => ({
     if (!/^https?:\/\//.test(t)) throw new Error('Base URL must start with http:// or https://')
     return t
   },
+  /*
+   * The route resolves the CONFIGURED embedding model to compare it against the model stamped on the stored
+   * chunks. A module mock is all-or-nothing, so an export the route calls but the mock omits resolves to
+   * `undefined` and the call throws -- every GET in this file would then be a 500 for a reason that has nothing
+   * to do with the route. Driven by `configuredModel` so the tests can choose the verdict.
+   *
+   * `null` is the DEFAULT because it is the honest reading of "the fixture has no LLM config row": the response
+   * then reports 'unknown' (nothing was compared), which is the distinction the third test in the mismatch
+   * describe exists to pin.
+   */
+  resolveConfiguredEmbeddingModel: async () => configuredModel,
 }))
 
 // Mirrors the REAL preset table (read from db-provider-presets.ts before writing this). Two corrections my
@@ -233,6 +247,7 @@ beforeEach(() => {
   runtimeConfig = null
   ensureThrows = null
   createThrows = null
+  configuredModel = null
   events.length = 0
   calls.length = 0
   auditWrites.length = 0
@@ -269,6 +284,17 @@ describe('GET', () => {
        */
       storedVectorSize: null,
       storedEmbeddingModel: null,
+      /*
+       * The OTHER end of the comparison the dimension fields cannot make. `storedEmbeddingModel` above says what
+       * the chunks carry; this is the model a QUERY would be embedded with, and the verdict on the two.
+       *
+       * Both are null/'unknown' here for a reason worth keeping: no chunk is stored AND this fixture's LLM config
+       * resolves no model. 'unknown' means NOTHING WAS COMPARED — a fresh install must never be reported as
+       * 'match', because "we did not look" and "we looked and they agree" are different answers and only one of
+       * them is safe to show in green.
+       */
+      configuredEmbeddingModel: null,
+      embeddingStampVerdict: 'unknown',
       distance: 'Cosine',
       /*
        * The gating flag, and why it is not derivable from `updatedAt`.
@@ -424,7 +450,9 @@ describe('GET', () => {
       'apiKeyMasked',
       'baseUrl',
       'collectionName',
+      'configuredEmbeddingModel',
       'distance',
+      'embeddingStampVerdict',
       'provider',
       'storageChosen',
       'storageChosenAt',
@@ -728,7 +756,9 @@ describe('the PUT response is the GET response', () => {
       'apiKeyMasked',
       'baseUrl',
       'collectionName',
+      'configuredEmbeddingModel',
       'distance',
+      'embeddingStampVerdict',
       'provider',
       'storageChosen',
       'storageChosenAt',
@@ -860,5 +890,87 @@ describe('the MEASURED stored embedding is reported, so a silent mismatch cannot
     const body = (await (await GET()).json()) as { data: Record<string, unknown> }
     expect(body.data.storedVectorSize).toBeNull()
     expect(body.data.storedEmbeddingModel).toBeNull()
+  })
+
+  test('two models of the SAME width are compared by name, not by dimension', async () => {
+    /*
+     * The half the dimension fields structurally CANNOT catch. Both sides are 384 here, so the width warning stays
+     * silent while the retriever still refuses every chunk: `chunk.embeddingModel === queryEmbedding.model` is an
+     * exact string comparison, not a width comparison. This is the shape measured on the dev install — 55 chunks
+     * stamped `paraphrase-multilingual-MiniLM-L12-v2` beside a config holding `text-embedding-3-small`.
+     */
+    storedEmbeddingRows = [{ dims: 384, model: 'paraphrase-multilingual-MiniLM-L12-v2' }]
+    configuredModel = 'text-embedding-3-small'
+    const body = (await (await GET()).json()) as { data: Record<string, unknown> }
+    expect(body.data.embeddingStampVerdict).toBe('mismatch')
+    expect(body.data.configuredEmbeddingModel).toBe('text-embedding-3-small')
+    expect(body.data.storedEmbeddingModel).toBe('paraphrase-multilingual-MiniLM-L12-v2')
+    // The widths AGREE, which is precisely why this verdict could not be derived from them.
+    expect(body.data.storedVectorSize).toBe(384)
+    storedEmbeddingRows = []
+  })
+
+  test('a CONFIGURED install carries the verdict too — the row arm is a separate payload', async () => {
+    /*
+     * FOUND BY NEGATIVE CONTROL, and it is the arm that matters most: these two branches build their payloads
+     * SEPARATELY, and every test above runs with `row = null` (the fresh-install shape). Deleting
+     * `embeddingStampVerdict` from the row arm therefore left the whole verdict describe green — the shape a real
+     * install is actually in was the one nothing measured. A fix applied to one arm says nothing about the other.
+     */
+    storedEmbeddingRows = [{ dims: 384, model: 'paraphrase-multilingual-MiniLM-L12-v2' }]
+    configuredModel = 'text-embedding-3-small'
+    row = {
+      id: 'v1',
+      provider: 'INTERNAL',
+      baseUrl: null,
+      encryptedApiKey: null,
+      collectionName: 'chunks',
+      vectorSize: 384,
+      distance: 'Cosine',
+      updatedAt: new Date('2026-02-01'),
+    } as never
+    const body = (await (await GET()).json()) as { data: Record<string, unknown> }
+    // Sanity: this IS the row arm. The no-row arm answers null here, so without this line a future refactor that
+    // silently routed this test through the fallback would keep the verdict assertions below passing.
+    expect(body.data.updatedAt).toBe('2026-02-01T00:00:00.000Z')
+    expect(body.data.embeddingStampVerdict).toBe('mismatch')
+    expect(body.data.configuredEmbeddingModel).toBe('text-embedding-3-small')
+    expect(body.data.storedEmbeddingModel).toBe('paraphrase-multilingual-MiniLM-L12-v2')
+    storedEmbeddingRows = []
+  })
+
+  test('identical stamps are reported as a match', async () => {
+    // The healthy path must be reachable, or the mismatch test above could pass on a broken comparison that
+    // answered 'mismatch' unconditionally.
+    storedEmbeddingRows = [{ dims: 384, model: 'paraphrase-multilingual-MiniLM-L12-v2' }]
+    configuredModel = 'paraphrase-multilingual-MiniLM-L12-v2'
+    const body = (await (await GET()).json()) as { data: Record<string, unknown> }
+    expect(body.data.embeddingStampVerdict).toBe('match')
+    storedEmbeddingRows = []
+  })
+
+  test('a stored stamp with nothing configured reports unknown, not match', async () => {
+    /*
+     * "We did not compare" and "we compared and they agree" are different answers, and only one of them is safe to
+     * render as healthy. A null resolver value — no LlmConfig row, or no org context — must land on the first.
+     * Defaulting this arm to 'match' would show a green embedding to an install that had never been checked.
+     */
+    storedEmbeddingRows = [{ dims: 384, model: 'paraphrase-multilingual-MiniLM-L12-v2' }]
+    configuredModel = null
+    const body = (await (await GET()).json()) as { data: Record<string, unknown> }
+    expect(body.data.embeddingStampVerdict).toBe('unknown')
+    expect(body.data.configuredEmbeddingModel).toBeNull()
+    storedEmbeddingRows = []
+  })
+
+  test('a blank stored stamp reports unknown, not mismatch', async () => {
+    // The other one-sided case, and the reason it matters: a blank stamp compared naively would read as a
+    // MISMATCH and send an operator to re-embed documents whose state we cannot actually describe. "Cannot tell"
+    // is the honest answer, and it renders neutrally rather than as an alarm.
+    storedEmbeddingRows = [{ dims: 384, model: '' }]
+    configuredModel = 'paraphrase-multilingual-MiniLM-L12-v2'
+    const body = (await (await GET()).json()) as { data: Record<string, unknown> }
+    expect(body.data.embeddingStampVerdict).toBe('unknown')
+    storedEmbeddingRows = []
   })
 })

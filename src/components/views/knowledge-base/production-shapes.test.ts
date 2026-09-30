@@ -389,6 +389,105 @@ describe('VectorStorePanel — a failed load must not look like a saved config',
   })
 })
 
+describe('VectorStorePanel — a same-width MODEL mismatch must not render as healthy', () => {
+  /**
+   * The half a dimension check structurally cannot reach.
+   *
+   * `retrieveRelevantChunks` gates a chunk's vector on `chunk.embeddingModel === queryEmbedding.model` — an
+   * exact string comparison, not a width comparison. So two different 384-dimensional models fail exactly as
+   * hard as 384-vs-1536, while every number on this form agrees and the panel looks healthy. MEASURED on the
+   * dev install: 55 chunks stamped `paraphrase-multilingual-MiniLM-L12-v2` beside a config whose
+   * `embeddingModel` was another provider's name; semantic similarity 0 on every result, lexical-only search,
+   * and nothing anywhere said so.
+   *
+   * The fixture below is deliberately "healthy-looking": configured width == stored width == 384, a real
+   * provider, a real model name on both sides. Only the two model STRINGS disagree.
+   */
+  const stubVerdict = (data: Record<string, unknown>) =>
+    ({ fetch: async () => json({ ok: true, data: { provider: 'QDRANT', baseUrl: 'https://qdrant.internal:6333', collectionName: 'ryasai_chunks', distance: 'Cosine', ...data } }) })
+
+  test('a mismatch at the same width warns and names BOTH models', async () => {
+    /*
+     * OBSERVED, defect present (the mismatch branch removed, panel falls through to the neutral stored line):
+     * the warning text is absent and the panel reports the stored vectors as ordinary — 1 fail. Fixed: passes.
+     *
+     * Both model names are asserted because the operator's action depends on WHICH one is stale: the stored
+     * stamp says what the existing vectors were built with, the configured model says what a re-embed would
+     * produce. A warning naming only one of them is a warning they cannot act on.
+     */
+    g.fetch = stubVerdict({
+      vectorSize: 384,
+      storedVectorSize: 384,
+      storedEmbeddingModel: 'paraphrase-multilingual-MiniLM-L12-v2',
+      configuredEmbeddingModel: 'text-embedding-3-small',
+      embeddingStampVerdict: 'mismatch',
+    }).fetch
+    const html = await renderComponent(React.createElement(VectorStorePanel))
+    expect(html).toContain('The stored vectors carry a different model stamp')
+    expect(html).toContain('paraphrase-multilingual-MiniLM-L12-v2')
+    expect(html).toContain('text-embedding-3-small')
+    // The action, not just the diagnosis.
+    expect(html).toContain('Rebuild Embeddings')
+    // Same width on both sides, so the dimension warning must NOT be the one that fired.
+    expect(html).not.toContain('Stored vectors are')
+  })
+
+  test('matching stamps are reported as agreeing, not merely left unmentioned', async () => {
+    /*
+     * The healthy path has to be REACHABLE, or the test above would pass on a warning that rendered
+     * unconditionally. Asserted positively — the panel states the agreement — because silence is exactly what
+     * the defect looked like.
+     */
+    g.fetch = stubVerdict({
+      vectorSize: 384,
+      storedVectorSize: 384,
+      storedEmbeddingModel: 'paraphrase-multilingual-MiniLM-L12-v2',
+      configuredEmbeddingModel: 'paraphrase-multilingual-MiniLM-L12-v2',
+      embeddingStampVerdict: 'match',
+    }).fetch
+    const html = await renderComponent(React.createElement(VectorStorePanel))
+    expect(html).toContain('matches the configured embedding model')
+    expect(html).not.toContain('The stored vectors carry a different model stamp')
+  })
+
+  test('an ABSENT verdict renders as unknown, never as a mismatch warning', async () => {
+    /*
+     * 'unknown' means NOTHING WAS COMPARED. It must not read as a pass (the defect) and must not read as a
+     * failure either — telling an operator to re-embed on the strength of an unmeasured comparison is its own
+     * bug. This is also the shape an older server build returns, since the two new fields simply are not there.
+     */
+    g.fetch = stubVerdict({
+      vectorSize: 384,
+      storedVectorSize: 384,
+      storedEmbeddingModel: 'paraphrase-multilingual-MiniLM-L12-v2',
+    }).fetch
+    const html = await renderComponent(React.createElement(VectorStorePanel))
+    expect(html).toContain('Stored vectors')
+    expect(html).not.toContain('The stored vectors carry a different model stamp')
+    expect(html).not.toContain('matches the configured embedding model')
+  })
+
+  test('a BOGUS verdict from the server is discarded rather than rendered', async () => {
+    /*
+     * The loader validates the three known literals instead of casting. Without that, any string the endpoint (or
+     * a proxy, or a downgraded server) put in this field would be handed to a branch that keys off it — the
+     * panel would act on a verdict no comparison produced. The assertion is on the CONSUMER-visible outcome:
+     * an unrecognised value must behave exactly like 'unknown'.
+     */
+    g.fetch = stubVerdict({
+      vectorSize: 384,
+      storedVectorSize: 384,
+      storedEmbeddingModel: 'paraphrase-multilingual-MiniLM-L12-v2',
+      configuredEmbeddingModel: 'paraphrase-multilingual-MiniLM-L12-v2',
+      embeddingStampVerdict: 'MATCH',
+    }).fetch
+    const html = await renderComponent(React.createElement(VectorStorePanel))
+    // 'MATCH' is not one of the literals, so it resolves to 'unknown' — which does NOT print the match line.
+    expect(html).not.toContain('matches the configured embedding model')
+    expect(html).not.toContain('The stored vectors carry a different model stamp')
+  })
+})
+
 /* ---------------------------------------------------------------- cognee card */
 
 describe('CogneeCard renders every live stats shape', () => {

@@ -59,7 +59,15 @@ import {
   getPublicLlmConfig,
   fetchProviderModels,
   maskSecret,
+  resolveConfiguredEmbeddingModel,
 } from './llm-config'
+// The fallback asserted below is a PRODUCTION value, not a test fixture. Pinning
+// a copied string lets the assertion and the code drift apart silently: this test
+// used to spell `text-embedding-3-small`, which was exactly the 1536-dim default
+// that made every stored 384-dim chunk incomparable (retrieval compares
+// `chunk.embeddingModel === queryEmbedding.model`, so similarity was always 0).
+// Importing the constant means the assertion cannot outlive the fix.
+import { DEFAULT_EMBEDDING_MODEL } from '@/lib/constants'
 
 const row = (o: Record<string, unknown> = {}) => ({
   id: 'c1', provider: 'OPENAI_COMPATIBLE', baseUrl: 'https://api.own/v1',
@@ -294,11 +302,15 @@ describe('getPublicLlmConfig — what reaches the browser', () => {
     expect((await getPublicLlmConfig()).embeddingApiKeyMasked).toBeNull()
   })
 
-  test('embedding settings fall back to the chat ones', async () => {
+  test('embedding settings fall back to the chat endpoint and the packaged model', async () => {
     const pub = await getPublicLlmConfig()
     // Most orgs run one endpoint for both; empty boxes would look unconfigured.
+    // The MODEL half is different: it must fall back to the model this build
+    // actually ships and stamps onto chunks, not to an OpenAI id, because the
+    // stored vectors are 384-dimensional and retrieval refuses to compare a
+    // chunk whose stamp differs from the query embedding's model.
     expect(pub.embeddingBaseUrl).toBe('https://api.own/v1')
-    expect(pub.embeddingModel).toBe('text-embedding-3-small')
+    expect(pub.embeddingModel).toBe(DEFAULT_EMBEDDING_MODEL)
   })
 
   test('an explicitly set embedding endpoint overrides the chat one', async () => {
@@ -321,6 +333,77 @@ describe('getPublicLlmConfig — what reaches the browser', () => {
     expect(typeof pub.lastModelSyncAt).toBe('string')
     expect(pub.lastModelSyncAt).toBe('2026-02-02T00:00:00.000Z')
     expect(typeof pub.updatedAt).toBe('string')
+  })
+})
+
+describe('resolveConfiguredEmbeddingModel — the model a query would be embedded with', () => {
+  /*
+   * The other half of the Knowledge → External Vector DB warning. `DocumentChunk.embeddingModel` records what the
+   * STORED vectors were built with; this resolver is what the CURRENT config would send as the request's `model`.
+   * `retrieveRelevantChunks` gates every chunk on those two strings being EQUAL, so a wrong answer here is not a
+   * cosmetic bug: it either hides a real mismatch (reporting a healthy embedding on an install where every
+   * semantic score is 0) or invents one (sending an operator to re-embed data that was fine).
+   */
+
+  test('an explicitly configured model is returned verbatim', async () => {
+    state.rows = [row({ embeddingModel: 'bge-m3' })]
+    expect(await resolveConfiguredEmbeddingModel()).toBe('bge-m3')
+  })
+
+  test('a BLANK stored model resolves to the packaged model, not to a provider default', async () => {
+    /*
+     * This is the fix-#4 expression, asserted through its new caller. A blank box used to resolve to an OpenAI
+     * model of a different width, which the embedder sent as the request `model` AND stamped onto every new chunk
+     * — beside a `vector(384)` column. The exact same fallback must apply here, or the panel would compare the
+     * stored stamp against a string the write path would never produce.
+     */
+    state.rows = [row({ embeddingModel: '' })]
+    expect(await resolveConfiguredEmbeddingModel()).toBe(DEFAULT_EMBEDDING_MODEL)
+  })
+
+  test('a WHITESPACE-ONLY stored model is treated as unset', async () => {
+    // `??` alone would leave '   ' here: a truthy string that is not a model name, which the panel would then
+    // compare against a real stamp and report as a mismatch for a config that has nothing in it.
+    state.rows = [row({ embeddingModel: '   ' })]
+    expect(await resolveConfiguredEmbeddingModel()).toBe(DEFAULT_EMBEDDING_MODEL)
+  })
+
+  test('a NULL stored model is treated as unset', async () => {
+    state.rows = [row({ embeddingModel: null })]
+    expect(await resolveConfiguredEmbeddingModel()).toBe(DEFAULT_EMBEDDING_MODEL)
+  })
+
+  test('NO config row returns null — "cannot tell", never the packaged default', async () => {
+    /*
+     * The distinction the UI keys off. With no row there is nothing configured, so answering with the packaged
+     * model would be an INVENTED fact: the panel would compare the stored stamp against a model this install does
+     * not actually use and render the result as a verdict. Null instead makes the server report 'unknown', which
+     * renders as "cannot tell".
+     */
+    state.rows = []
+    expect(await resolveConfiguredEmbeddingModel()).toBeNull()
+  })
+
+  test('NO ORG CONTEXT returns null instead of reading another tenant row', async () => {
+    // Same guard the credential path holds: without it `findFirst()` scans the whole table and the model of
+    // whichever tenant sorts first becomes this panel's comparison basis.
+    state.orgContext = undefined
+    state.rows = [row({ embeddingModel: 'another-orgs-model' })]
+    expect(await resolveConfiguredEmbeddingModel()).toBeNull()
+  })
+
+  test('it reads the PURPOSE-scoped row, so it cannot disagree with what a save writes', async () => {
+    /*
+     * This install has two rows. The screen WRITES through `findFirst({ where: { purpose: 'chat' } })`; a bare
+     * `findFirst()` here could read the other row and compare the chunks against a model that is never used for
+     * embedding — a mismatch reported against a config the operator cannot even edit there.
+     */
+    state.rows = [
+      row({ purpose: 'agent', embeddingModel: 'agent-row-model' }),
+      row({ purpose: 'chat', embeddingModel: 'chat-row-model' }),
+    ]
+    expect(await resolveConfiguredEmbeddingModel()).toBe('chat-row-model')
+    expect(state.findFirstCalls[0]).toMatchObject({ where: { purpose: 'chat' } })
   })
 })
 

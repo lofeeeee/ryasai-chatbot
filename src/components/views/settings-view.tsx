@@ -663,8 +663,16 @@ function TeamTab() {
                   {isAdmin && (
                     <TableCell>
                       <div className="flex items-center justify-end gap-2">
-                        <Select value={m.role} onValueChange={(role) => void handleRoleChange(m.id, role)}>
-                          <SelectTrigger size="sm" className="h-7 w-28 text-xs"><SelectValue /></SelectTrigger>
+                        {/* Your own row is read-only, for the same reason the deactivate button below is:
+                            the API refuses a self role change (otherwise the last admin locks the org out
+                            of user management), so leaving the control live would offer an action that can
+                            only fail. `title` says why instead of leaving the user to guess. */}
+                        <Select value={m.role} onValueChange={(role) => void handleRoleChange(m.id, role)}
+                          disabled={m.id === me?.userId}>
+                          <SelectTrigger size="sm" className="h-7 w-28 text-xs"
+                            title={m.id === me?.userId ? 'You cannot change your own role. Ask another admin.' : undefined}>
+                            <SelectValue />
+                          </SelectTrigger>
                           <SelectContent>
                             <SelectItem value="viewer">Viewer</SelectItem>
                             <SelectItem value="analyst">Analyst</SelectItem>

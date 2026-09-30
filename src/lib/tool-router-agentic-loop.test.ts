@@ -8,18 +8,15 @@
  * decide whether the user gets an answer, a partial answer with a disclosure, or
  * an honest "it timed out" — and none had ever run.
  *
- * Separate file: the loop reads AGENTIC_DEADLINE_MS and REFLEXION_ENABLED at module
- * load, and this file sets them at the top of the process. The existing
- * tool-router-agentic.test.ts must keep its own environment.
+ * Separate file: this file sets AGENTIC_DEADLINE_MS and REFLEXION_ENABLED for its own process,
+ * and the existing tool-router-agentic.test.ts must keep its own environment.
  */
-// The module reads AGENTIC_DEADLINE_MS into a module-level const at import time,
-// and bun hoists imports above this file's top-level statements, so setting
-// process.env here would be too late (measured: the deadline test saw 3 model
-// calls instead of 0). A NEGATIVE deadline is used instead of 0 — `Date.now() > 0`
-// is `Date.now() > Date.now() - 1000`, which is what makes the very first loop
-// iteration already over the deadline. The hook below runs before each test and
-// before any import is evaluated for the loop, because the value is read lazily
-// per call via the override seam.
+// A NEGATIVE deadline is used instead of 0 — `Date.now() > 0` is
+// `Date.now() > Date.now() - 1000`, which is what makes the very first loop
+// iteration already over the deadline. The value is read lazily per call (see
+// agenticDeadlineMs), so the hook below takes effect for every test in the file.
+// This comment used to say the value was captured into a module-level const at import
+// time — true of an older revision, and the reason the read was moved into the function.
 process.env.REFLEXION_ENABLED = 'false'
 
 import { describe, expect, test, mock, beforeEach } from 'bun:test'
@@ -91,7 +88,7 @@ describe('runAgenticLoop — deadline is checked at the TOP of every iteration',
   test('a deadline already past stops immediately and never calls the model', async () => {
     let calls = 0
     const r = await runAgenticLoop({ question: 'q', userId: 'u1' }, async () => { calls++; return completion() })
-    // AGENTIC_DEADLINE_MS=0 in this file, so the very first iteration is over.
+    // AGENTIC_DEADLINE_MS=-1000 from THIS describe's beforeEach, so the very first iteration is over.
     expect(calls).toBe(0)
     expect(r.iterations).toBe(0)
     expect(r.confidenceHistory[0].reason).toBe('deadline exceeded')

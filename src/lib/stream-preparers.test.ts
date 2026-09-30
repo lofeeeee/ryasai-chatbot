@@ -50,6 +50,25 @@ let matchEndpointResult: any = { id: 'ep-1', method: 'GET', path: '/x', enabled:
 const STREAM_TEXT = 'streamed answer'
 
 /**
+ * Rows returned by `db.document.findMany` for the RAG source-guidance block.
+ *
+ * Empty by default, so every pre-existing assertion sees the context EXACTLY as
+ * it was before the parity fix — no guidance block, no reflection note. A test
+ * that wants the block opts in by setting this.
+ */
+let documentRows: Array<{ id: string; name: string; contextPrompt: string | null }> = []
+
+/**
+ * What `streamAnswer` received, so the RAG context can be asserted at all.
+ *
+ * The RAG branch's whole behaviour is "what text did we put in front of the model",
+ * and until this existed the tests only asserted the toolRun type and that the
+ * stream drained — which is how the missing reflection note survived a UAT round.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let streamAnswerArgs: any = null
+
+/**
  * Stubbed `AppConfig` row for prompt settings.
  *
  * `prepareSqlStream` reads the org's Text-to-SQL rules before generating SQL, so an admin's edit
@@ -98,6 +117,11 @@ mock.module('@/lib/db', () => ({
     restApiConnector: { findMany: async () => restConnectors },
     // Read by prepareSqlStream for the org's editable Text-to-SQL rules (see promptSettingsRow).
     appConfig: { findFirst: async () => promptSettingsRow },
+    // Read by prepareRagStream to fetch the per-document contextPrompts that
+    // contributed evidence. Absent from this mock until the source-guidance
+    // parity fix, which is why the missing injection went unnoticed: the call
+    // was never made at all, so no fixture gap could have surfaced it.
+    document: { findMany: async () => documentRows },
   },
 }))
 
@@ -142,7 +166,10 @@ mock.module('@/lib/ai', () => ({
     if (next instanceof Error) throw next
     return next
   },
-  streamAnswer: () => gen(STREAM_TEXT),
+  streamAnswer: (args: Record<string, unknown>) => {
+    streamAnswerArgs = args
+    return gen(STREAM_TEXT)
+  },
   streamChat: () => gen(STREAM_TEXT),
   generateRestCall: async () => {
     if (restCallThrows) throw new Error('provider unreachable')
@@ -153,17 +180,50 @@ mock.module('@/lib/ai', () => ({
 // Swappable, because the interesting case is the retriever FAILING: RAG is
 // best-effort and must degrade to plain chat rather than kill the stream.
 let retrievalError: Error | null = null
+/**
+ * What the sufficiency judge reported, and how many passes it took.
+ *
+ * The REAL `retrieveWithReflection` always returns both; the mock omitted them
+ * until the transport-parity fix, which is precisely why the fix was needed and
+ * why its absence was invisible: `prepareRagStream` never read them, so no test
+ * could fail. Defaults describe the SUFFICIENT, single-pass case — the gate for
+ * the note is `!sufficient && passes >= 2`, so nothing is injected by default.
+ */
+let reflectionSufficient = true
+let retrievalPasses = 1
+/**
+ * The chunks the retriever hands back. Swappable so a test can supply the ranks the REAL
+ * `retrieveWithReflection` stamps after merging its expansions — the defaults carry NO rank,
+ * which is the shape every earlier assertion was written against.
+ */
+let retrievalChunks: Array<{
+  chunkId: string
+  documentId: string
+  content: string
+  score: number
+  documentName: string
+  rank?: number
+}> = defaultRetrievalChunks()
+function defaultRetrievalChunks() {
+  return [
+    { chunkId: 'c1', documentId: 'd1', content: 'evidence text', score: 0.9, documentName: 'doc.pdf' },
+    { chunkId: 'c2', documentId: 'd1', content: 'more evidence', score: 0.8, documentName: 'doc.pdf' },
+  ]
+}
 mock.module('@/lib/intent-pipeline', () => ({
   retrieveWithReflection: async () => {
     if (retrievalError) throw retrievalError
     return {
-      chunks: [
-        { chunkId: 'c1', documentId: 'd1', content: 'evidence text', score: 0.9, documentName: 'doc.pdf' },
-        { chunkId: 'c2', documentId: 'd1', content: 'more evidence', score: 0.8, documentName: 'doc.pdf' },
-      ],
+      chunks: retrievalChunks,
       confidence: 0.9,
       citations: [],
       sufficient: true,
+      reflection: {
+        sufficient: reflectionSufficient,
+        reason: reflectionSufficient ? 'mock: evidence addresses the question' : 'mock: evidence may not address the question',
+        confidence: reflectionSufficient ? 1 : 0.2,
+      },
+      retrievalPasses,
     }
   },
 }))
@@ -241,6 +301,12 @@ beforeEach(() => {
   connectorErrors = []
   connectorAttempts = 0
   retrievalError = null
+  reflectionSufficient = true
+  retrievalPasses = 1
+  retrievalChunks = defaultRetrievalChunks()
+  documentRows = []
+  streamAnswerArgs = null
+  promptSettingsRow = null
   resolveChoice = null
   restCallThrows = false
   restConnectors = []
@@ -296,6 +362,169 @@ describe('prepareRagStream', () => {
     const r = await prepareRagStream({ question: 'q' })
     expect(r.toolRuns).toHaveLength(1)
     expect(await drain(r.stream)).toBe(STREAM_TEXT)
+  })
+})
+
+/**
+ * TRANSPORT PARITY — the streaming RAG branch must send what its non-streaming twin sends.
+ *
+ * WHY THIS BLOCK EXISTS. In UAT the customer asked "Bagaimana prosedur mengembalikan uang ke
+ * pelanggan yang komplain?" and was told there is NO refund procedure — while chunk #2 of
+ * `02-sop-layanan-pelanggan.md` contains that procedure verbatim. The fix (a reflection note that
+ * forbids turning a retrieval miss into a claim of absence, plus per-document and org source
+ * guidance) was applied to `runRagBranch` only. The web chat streams through `prepareRagStream`,
+ * so the fix shipped to a transport the customer's question never travelled on, and the assertion
+ * that would have caught it could not exist: the tests here checked the toolRun TYPE and that the
+ * stream drained, never the context string.
+ *
+ * Each test below fails if the corresponding block is removed from `prepareRagStream` — verified by
+ * negative control (delete the block, watch this file fail, restore byte-identical).
+ */
+describe('prepareRagStream — parity with the non-streaming RAG branch', () => {
+  /**
+   * The context handed to `streamAnswer`, and a HARD FAILURE if it was never called.
+   *
+   * This indirection is load-bearing: most assertions below are `not.toContain`, which an
+   * empty string satisfies. If the RAG branch ever degrades to plain chat (retriever error,
+   * no chunks, no graph context) then `streamAnswerArgs` stays `null`, every `not.toContain`
+   * passes, and the suite reports safety for a prompt nobody sent — silent-failure class #17,
+   * "a guard that cannot fail". Throwing here makes that failure mode impossible to miss.
+   */
+  function sentContext(): string {
+    if (!streamAnswerArgs) {
+      throw new Error(
+        'streamAnswer was never called — prepareRagStream degraded to chat, so this assertion proves nothing',
+      )
+    }
+    return String(streamAnswerArgs.context ?? '')
+  }
+
+  test('sends the retrieved evidence to the model as the context', async () => {
+    const r = await prepareRagStream({ question: 'what is the refund policy' })
+    expect(await drain(r.stream)).toBe(STREAM_TEXT)
+    const sent = sentContext()
+    expect(sent).toContain('evidence text')
+    expect(sent).toContain('more evidence')
+    expect(sent).toContain('[CONTEXT (DOCUMENTS):]')
+    expect(streamAnswerArgs?.source).toBe('RAG')
+  })
+
+  test('injects NO guidance and NO note when every prompt is empty', async () => {
+    await prepareRagStream({ question: 'q' })
+    const sent = sentContext()
+    expect(sent).toContain('evidence text')
+    expect(sent).not.toContain('[Source guidance]')
+    expect(sent).not.toContain('saya tidak menemukan ini dalam dokumen yang terambil')
+  })
+
+  test('injects the contributing documents per-document contextPrompt', async () => {
+    documentRows = [{ id: 'd1', name: 'doc.pdf', contextPrompt: 'Always answer in formal Indonesian.' }]
+    await prepareRagStream({ question: 'q' })
+    const sent = sentContext()
+    expect(sent).toContain('[Source guidance]')
+    expect(sent).toContain('Always answer in formal Indonesian.')
+    // The guidance must come BEFORE the evidence, not after it — the model reads
+    // the instructions first and the untrusted text last.
+    expect(sent.indexOf('[Source guidance]')).toBeLessThan(sent.indexOf('evidence text'))
+  })
+
+  test('injects the org-wide ragContextPrompt', async () => {
+    promptSettingsRow = { promptSettings: JSON.stringify({ ragContextPrompt: 'Cite the document name.' }) }
+    documentRows = [{ id: 'd1', name: 'doc.pdf', contextPrompt: null }]
+    await prepareRagStream({ question: 'q' })
+    expect(sentContext()).toContain('Cite the document name.')
+  })
+
+  test('a document with no contextPrompt contributes nothing', async () => {
+    documentRows = [
+      { id: 'd1', name: 'doc.pdf', contextPrompt: null },
+      { id: 'd9', name: 'unused.pdf', contextPrompt: 'SHOULD NOT APPEAR' },
+    ]
+    await prepareRagStream({ question: 'q' })
+    const sent = sentContext()
+    expect(sent).toContain('evidence text')
+    expect(sent).not.toContain('SHOULD NOT APPEAR')
+    expect(sent).not.toContain('[Source guidance]')
+  })
+
+  test('adds the reflection note when evidence stayed insufficient after a second pass', async () => {
+    reflectionSufficient = false
+    retrievalPasses = 2
+    await prepareRagStream({ question: 'prosedur refund' })
+    const sent = sentContext()
+    // The whole point of the note: name the LIMIT OF THE SEARCH, never the
+    // absence of a policy. A knowledge officer acting on "there is no refund
+    // procedure" would tell a customer so.
+    expect(sent).toContain('saya tidak menemukan ini dalam dokumen yang terambil')
+    expect(sent).toContain('do NOT claim the document or policy does not exist')
+    expect(sent).toContain('state only what you did not find')
+    // Still answers, and still refuses to invent.
+    expect(sent).toContain('Answer based only on the evidence above.')
+  })
+
+  test('does NOT add the note when the judge was satisfied', async () => {
+    reflectionSufficient = true
+    retrievalPasses = 2
+    await prepareRagStream({ question: 'q' })
+    const sent = sentContext()
+    expect(sent).toContain('evidence text')
+    expect(sent).not.toContain('saya tidak menemukan ini')
+  })
+
+  test('does NOT add the note when the retriever found it on the first pass', async () => {
+    // The gate is `!sufficient && passes >= 2`. A single pass that came back
+    // insufficient is the ordinary "weak evidence" case, not the multi-pass
+    // miss the note was written for.
+    reflectionSufficient = false
+    retrievalPasses = 1
+    await prepareRagStream({ question: 'q' })
+    const sent = sentContext()
+    expect(sent).toContain('evidence text')
+    expect(sent).not.toContain('saya tidak menemukan ini')
+  })
+
+  test('the note travels ALONGSIDE guidance, and both are absent from the audit summary', async () => {
+    reflectionSufficient = false
+    retrievalPasses = 2
+    documentRows = [{ id: 'd1', name: 'doc.pdf', contextPrompt: 'Formal Indonesian only.' }]
+    const r = await prepareRagStream({ question: 'q' })
+    const sent = sentContext()
+    expect(sent).toContain('Formal Indonesian only.')
+    expect(sent).toContain('saya tidak menemukan ini')
+    // `outputSummary` is what the UI and the audit row show; it carries the
+    // EVIDENCE, matching runRagBranch, so the two transports agree on both the
+    // prompt and the summary they report.
+    expect(r.toolRuns[0].outputSummary).not.toContain('saya tidak menemukan ini')
+    expect(r.toolRuns[0].outputSummary).not.toContain('Formal Indonesian only.')
+  })
+})
+
+describe('prepareRagStream — the citation rank travels on the streaming transport too', () => {
+  /**
+   * `prepareRagStream` and `runRagBranch` build citations from the same retriever, so the rank must
+   * reach the model the same way through both. This file deliberately does NOT mock `@/lib/tool-utils`
+   * (only `@/lib/tool-branches`, and only for `executeRestRequest`), so the REAL `buildDocumentCitation`
+   * runs here — the assertions below exercise the shipped helper, not a stand-in that could accept a
+   * field the helper would drop.
+   */
+  test('carries the retriever rank onto each citation', async () => {
+    retrievalChunks = [
+      { chunkId: 'c1', documentId: 'd1', content: 'evidence text', score: 0.9, documentName: 'doc.pdf', rank: 2 },
+      { chunkId: 'c2', documentId: 'd1', content: 'more evidence', score: 0.8, documentName: 'doc.pdf', rank: 1 },
+    ]
+    const r = await prepareRagStream({ question: 'q' })
+
+    expect(r.citations.map((c) => c.rank)).toEqual([2, 1])
+  })
+
+  test('omits the key entirely when the retriever stamped no rank', async () => {
+    const r = await prepareRagStream({ question: 'q' })
+
+    expect(r.citations).toHaveLength(2)
+    // `in`, not `toBeUndefined()`: the citation is JSON-serialised into the session
+    // message, and a present-but-undefined key serialises away while a present-but-null
+    // one would let a consumer read "no match position" as position 0.
+    for (const c of r.citations) expect('rank' in (c as object)).toBe(false)
   })
 })
 

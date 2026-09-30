@@ -11,15 +11,17 @@ import {
 } from '@/components/ui/select'
 import { VECTOR_STORE_PRESETS, getVectorStorePreset } from '@/lib/db-provider-presets'
 import { EMBEDDING_DIMENSIONS } from '@/lib/constants'
+import type { EmbeddingStampVerdict } from '@/lib/embedding-stamp'
 
 /**
  * The EXTERNAL vector-database fields, in one place.
  *
- * WHY SHARED. Two surfaces collect these values — the setup wizard's Knowledge Storage step (so a first run can
- * answer "where does knowledge live" without leaving the wizard) and Knowledge → External Vector DB (where it is
- * maintained afterwards). Written twice, they drift: one gains a provider, one forgets to reset the base URL on a
- * provider switch, and the two disagree about a store that only has one definition. This repo already paid for that
- * pattern once, when the same AI Memory card was rendered by two menus.
+ * WHY SHARED. This component was written so the collection form could be rendered by more than one surface — the
+ * setup wizard's Knowledge Storage step and Knowledge → External Vector DB — so the two could not drift into
+ * disagreeing about what a provider switch does to the base URL. It has ONE consumer today
+ * (`vector-store-panel.tsx`); the reason it stays extracted is that the alternative is re-deriving "a base URL
+ * belongs to exactly one provider" at each future call site, which is the drift this was extracted to prevent.
+ * An earlier revision of this comment stated both surfaces were live; that was already stale when it was written.
  *
  * `INTERNAL` is deliberately NOT offered here. The bundled PostgreSQL is not an external store, and the decision to
  * use it belongs to the Storage surface, which records it explicitly. Listing it here as one of "the providers" is
@@ -39,6 +41,8 @@ export function ExternalVectorStoreFields({
   onChange,
   storedVectorSize,
   storedModel,
+  configuredModel,
+  stampVerdict,
   apiKeyPlaceholder,
   idPrefix = 'vs',
 }: {
@@ -47,6 +51,17 @@ export function ExternalVectorStoreFields({
   /** The dimension the CHUNKS actually hold, and the model they were embedded with — measured, not configured. */
   storedVectorSize: number | null
   storedModel: string | null
+  /**
+   * The model a QUERY would be embedded with right now, resolved server-side from the same config the write path
+   * uses. Null when nothing is configured (or no org context) — "cannot tell", never a guess.
+   */
+  configuredModel: string | null
+  /**
+   * The server's verdict on `storedModel` vs `configuredModel`. Passed in rather than recomputed here so the
+   * comparison is made in exactly one place, with the retriever's own strictness (`compareEmbeddingStamps`
+   * compares exact strings — no prefix normalisation, because the retriever does not normalise either).
+   */
+  stampVerdict: EmbeddingStampVerdict
   apiKeyPlaceholder?: string
   /** Distinct input ids when two copies can be mounted at once (wizard + tab). */
   idPrefix?: string
@@ -124,6 +139,15 @@ export function ExternalVectorStoreFields({
             consistent-looking number instead. The text below states the measured truth whenever it disagrees with
             the configured value, including WHAT the chunks were embedded with, because that is what the operator
             needs in order to re-embed them.
+
+            THE SECOND BRANCH IS THE QUIET HALF OF THE SAME DEFECT. A width mismatch is loud and arithmetic; a
+            MODEL mismatch at the SAME width is invisible on this form, because every number on it agrees. The
+            retriever does not compare widths — it compares `chunk.embeddingModel === queryEmbedding.model` — so
+            two different 384-dimensional models fail exactly as hard as 384-vs-1536, and the operator previously
+            had no way to learn that here. The stored model WAS printed in the neutral line below, but printed is
+            not compared: on a same-width install the panel looked healthy while every semantic score was 0.
+            `stampVerdict` is the server's own comparison of those two strings (see `embedding-stamp.ts`), so this
+            renders the same equality the retriever will apply rather than a friendlier one.
           */}
           {storedVectorSize !== null && storedVectorSize !== Number(value.vectorSize) ? (
             <p className="text-[11px] leading-snug text-amber-600">
@@ -132,9 +156,18 @@ export function ExternalVectorStoreFields({
               documents are re-embedded: retrieval only compares a chunk whose embedding model matches the
               query&apos;s, so every similarity is currently 0 and search is lexical-only.
             </p>
+          ) : stampVerdict === 'mismatch' ? (
+            <p className="text-[11px] leading-snug text-amber-600">
+              The stored vectors carry a different model stamp — <strong>{storedModel}</strong> stored,{' '}
+              <strong>{configuredModel}</strong> configured. Same width, so everything above agrees, but retrieval
+              only scores a chunk whose embedding model matches the query&apos;s: semantic similarity is currently 0
+              on every result and search is lexical-only. Re-embed the documents (Rebuild Embeddings in the header)
+              to score them with the configured model.
+            </p>
           ) : storedVectorSize !== null ? (
             <p className="text-[11px] leading-snug text-muted-foreground">
-              Stored vectors: {storedVectorSize}-dimensional{storedModel ? ` (${storedModel})` : ''}.
+              Stored vectors: {storedVectorSize}-dimensional{storedModel ? ` (${storedModel})` : ''}
+              {stampVerdict === 'match' ? ' — matches the configured embedding model.' : ''}
             </p>
           ) : (
             <p className="text-[11px] leading-snug text-muted-foreground">

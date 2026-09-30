@@ -1,4 +1,6 @@
 import { describe, expect, test, mock, beforeEach, afterEach } from 'bun:test'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 // The alignment gate is mocked at MODULE level, before the module under test is
 // imported, and its behaviour is swapped per test through a mutable holder.
@@ -1314,5 +1316,53 @@ describe('runStreamingAgenticLoop — token usage is reported on the result', ()
     expect(text).toContain('token budget exhausted')
     expect(out.usage!.promptTokens).toBe(999999)
     lastUsage = undefined
+  })
+})
+
+describe('the agentic deadline must OUTLAST the LLM budget it wraps', () => {
+  /**
+   * MEASURED IN UAT (2026-09-28): one answer hit the deadline and the transcript ended in a half
+   * sentence plus "[Note: deadline exceeded — the answer may be incomplete.]". The cause was the
+   * default, not the model: it was 90_000 while LLM_STREAM_TIMEOUT_MS is 120_000, so the outer guard
+   * aborted a turn the LLM layer was still willing to finish (the measured turn took 98s — between
+   * the two numbers). The same defect made every scheduled run fail at 60_000 against the same 120s
+   * stream; see src/lib/scheduler-queue.test.ts.
+   *
+   * The relation is the invariant, not the numbers: an outer guard SHORTER than the inner budget is
+   * not a guard, it is a second, tighter copy of it. Both values are read from source, so a change to
+   * either one fails here rather than in a customer's chat transcript.
+   */
+  const agentic = readFileSync(join(import.meta.dir, 'tool-router-agentic.ts'), 'utf8')
+  const constants = readFileSync(join(import.meta.dir, 'constants.ts'), 'utf8')
+
+  function numericConst(src: string, name: string): number | null {
+    const m = src.match(new RegExp(`${name}\\s*=\\s*([0-9_]+)`))
+    return m ? Number(m[1].replace(/_/g, '')) : null
+  }
+
+  test('the default deadline exceeds the LLM stream timeout', () => {
+    const deadline = numericConst(agentic, 'DEFAULT_AGENTIC_DEADLINE_MS')
+    const llm = numericConst(constants, 'LLM_STREAM_TIMEOUT_MS')
+    expect(deadline).not.toBeNull()
+    expect(llm).not.toBeNull()
+    expect(deadline!).toBeGreaterThan(llm!)
+  })
+
+  test('BOTH arms of the fallback name the constant, so the default cannot split in two', () => {
+    // A restated literal in either arm would leave two numbers that drift apart — which is how the
+    // 90s default survived beside a 120s stream in the first place.
+    expect(agentic).toMatch(/process\.env\.AGENTIC_DEADLINE_MS \?\? DEFAULT_AGENTIC_DEADLINE_MS/)
+    expect(agentic).toMatch(/Number\.isFinite\(raw\) \? raw : DEFAULT_AGENTIC_DEADLINE_MS/)
+  })
+
+  test('.env.example documents the lever, with a value that does not undercut the stream', () => {
+    // Discoverability is the half of the fix an operator feels: the lever existed but was named
+    // nowhere an operator would look — install.sh's render_env() never wrote it, and .env is only
+    // written when absent, so an existing install never gains the key.
+    const example = readFileSync(join(import.meta.dir, '..', '..', '.env.example'), 'utf8')
+    const documented = example.match(/^#?\s*AGENTIC_DEADLINE_MS=([0-9_]+)$/m)
+    expect(documented).not.toBeNull()
+    const llm = numericConst(constants, 'LLM_STREAM_TIMEOUT_MS')!
+    expect(Number(documented![1].replace(/_/g, ''))).toBeGreaterThanOrEqual(llm)
   })
 })

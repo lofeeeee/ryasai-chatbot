@@ -32,7 +32,12 @@ export function CitationList({ citations }: { citations: Citation[] }) {
             const isDb = c.type === 'DATABASE'
             // A rank, not a percentage: `c.score` is the fused RRF value, whose best
             // possible reading is ~0.033 (see citationRankLabel).
-            const rankLabel = citationRankLabel(idx, c.score)
+            //
+            // `c.rank` first, `idx` only as a fallback. This array can hold the
+            // concatenated citations of several tool runs, so the loop index is the
+            // rank only when the array IS the retrieval result — the case that made
+            // the best chunk of a four-document result display as "Match #3".
+            const rankLabel = citationRankLabel(idx, c.score, c.rank)
             return (
               <div
                 key={idx}

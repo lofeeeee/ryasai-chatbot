@@ -9,6 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { getVectorStorePreset } from '@/lib/db-provider-presets'
 import { extractError } from '@/lib/extract-error'
 import { EMBEDDING_DIMENSIONS } from '@/lib/constants'
+import { parseEmbeddingStampVerdict, type EmbeddingStampVerdict } from '@/lib/embedding-stamp'
 import {
   ExternalVectorStoreFields,
   type ExternalVectorFieldsValue,
@@ -46,6 +47,17 @@ export function VectorStorePanel({ onSaved }: { onSaved?: () => void | Promise<v
    */
   const [storedVectorSize, setStoredVectorSize] = useState<number | null>(null)
   const [storedModel, setStoredModel] = useState<string | null>(null)
+  /*
+   * The other half of that comparison: the model a QUERY would be embedded with, and the server's verdict on the
+   * two. The panel already knew the stored model; it had nothing to compare it against, so a same-width model
+   * change stayed silent — the retriever compares model STRINGS, not widths.
+   *
+   * 'unknown' is the initial value and the fallback for any unreadable response, deliberately: before the load
+   * resolves, and on a fresh install, NOTHING WAS COMPARED. Defaulting to 'match' would let the panel report a
+   * healthy embedding before it had looked.
+   */
+  const [configuredModel, setConfiguredModel] = useState<string | null>(null)
+  const [stampVerdict, setStampVerdict] = useState<EmbeddingStampVerdict>('unknown')
   const [configuredInternal, setConfiguredInternal] = useState(false)
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
@@ -96,6 +108,12 @@ export function VectorStorePanel({ onSaved }: { onSaved?: () => void | Promise<v
         }
         setStoredVectorSize(typeof json.data.storedVectorSize === 'number' ? json.data.storedVectorSize : null)
         setStoredModel(typeof json.data.storedEmbeddingModel === 'string' ? json.data.storedEmbeddingModel : null)
+        setConfiguredModel(typeof json.data.configuredEmbeddingModel === 'string' ? json.data.configuredEmbeddingModel : null)
+        // Narrowed to the three known literals rather than cast: an older server build (or a truncated proxy
+        // response) must not be able to inject a verdict the warning branch would act on. The narrowing lives in
+        // the leaf module so it is testable on its own — inline in this effect it would be unobservable, since
+        // the JSX below already switches on exact literals and would reject any stray value anyway.
+        setStampVerdict(parseEmbeddingStampVerdict(json.data.embeddingStampVerdict))
       })
       .catch(() => {
         if (!cancelled) setLoadError(true)
@@ -199,6 +217,8 @@ export function VectorStorePanel({ onSaved }: { onSaved?: () => void | Promise<v
           onChange={patch}
           storedVectorSize={storedVectorSize}
           storedModel={storedModel}
+          configuredModel={configuredModel}
+          stampVerdict={stampVerdict}
           apiKeyPlaceholder={configuredInternal ? 'required' : undefined}
         />
         <div className="flex justify-end gap-2 md:col-span-2">

@@ -2,6 +2,7 @@ import { db } from '@/lib/db'
 import { getOrgContext } from '@/lib/prisma-tenant'
 import { decryptConfig } from '@/lib/crypto'
 import { LlmProviderError } from '@/lib/llm-client-utils'
+import { DEFAULT_EMBEDDING_MODEL } from '@/lib/constants'
 
 export interface LlmRuntimeConfig {
   id: string
@@ -372,6 +373,25 @@ export async function resolveChatConfigRow() {
   )
 }
 
+/**
+ * The model a retrieval query would ACTUALLY be embedded with, right now.
+ *
+ * This is deliberately the same expression the write path uses (`getEmbeddingRuntimeConfig`),
+ * so a screen comparing it against the stamp stored on the chunks is comparing like with like.
+ * Returns null when there is no org context or no config row — "cannot tell", never a guess.
+ *
+ * WHY IT EXISTS: a stored `embeddingModel` that disagrees with this value makes
+ * `retrieveRelevantChunks` skip every chunk (`chunk.embeddingModel === queryEmbedding.model`),
+ * so semantic scoring silently drops to 0 and search degrades to lexical-only. That condition
+ * is invisible in the UI today; this resolver is the missing half of the comparison.
+ */
+export async function resolveConfiguredEmbeddingModel(): Promise<string | null> {
+  if (!getOrgContext()) return null
+  const row = await resolveChatConfigRow()
+  if (!row) return null
+  return (row.embeddingModel ?? '').trim() || DEFAULT_EMBEDDING_MODEL
+}
+
 export async function getPublicLlmConfig(): Promise<PublicLlmConfig> {
   const row = await resolveChatConfigRow()
   if (!row) {
@@ -421,7 +441,16 @@ export async function getPublicLlmConfig(): Promise<PublicLlmConfig> {
     lastModelSyncAt: row.lastModelSyncAt?.toISOString() ?? null,
     embeddingProvider: row.embeddingProvider ?? 'OPENAI_COMPATIBLE',
     embeddingBaseUrl: row.embeddingBaseUrl ?? row.baseUrl,
-    embeddingModel: row.embeddingModel ?? 'text-embedding-3-small',
+    // Derived from the one fact in constants.ts, never a fresh literal. This
+    // value is what the Settings page DISPLAYS and what a save would persist
+    // into `LlmConfig.embeddingModel`; the embedder then sends it as the
+    // request's `model` and stamps it onto every new chunk. A blank box used to
+    // resolve to OpenAI's `text-embedding-3-small` (1536 dims) beside a
+    // `vector(384)` column and a 384-dim bundled sidecar, so the displayed
+    // setting, the stored stamp and the vectors already in the table could
+    // never agree — retrieval only compares a chunk whose stamp equals the
+    // query's, so every similarity was 0 and search silently went lexical-only.
+    embeddingModel: row.embeddingModel?.trim() || DEFAULT_EMBEDDING_MODEL,
     embeddingApiKeyMasked,
     embeddingAvailableModels: parseModels(row.embeddingAvailableModels),
     lastEmbeddingModelSyncAt: row.lastEmbeddingModelSyncAt?.toISOString() ?? null,

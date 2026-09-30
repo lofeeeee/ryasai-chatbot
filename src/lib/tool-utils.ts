@@ -121,6 +121,13 @@ export function buildDocumentCitation(args: {
   chunkIndex: number
   content: string
   score: number
+  /**
+   * 1-based position this chunk was returned at. Optional so a caller that has no
+   * ordering (tests, ad-hoc citations) is unaffected; both production callers pass
+   * the rank the retrieval result carries, so the UI badge can label the document by
+   * the position it actually held instead of its index in a later-concatenated array.
+   */
+  rank?: number
 }): Citation {
   const snippet = args.content.length > 240 ? `${args.content.slice(0, 240)}...` : args.content
   return {
@@ -130,6 +137,7 @@ export function buildDocumentCitation(args: {
     chunkIndex: args.chunkIndex,
     snippet,
     score: args.score,
+    ...(typeof args.rank === 'number' && args.rank > 0 ? { rank: args.rank } : {}),
   }
 }
 

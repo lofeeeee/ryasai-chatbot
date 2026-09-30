@@ -3,7 +3,8 @@ import { encryptConfig } from '@/lib/crypto'
 import { db } from '@/lib/db'
 import { ensureVectorCollection, getVectorStoreRuntimeConfig } from '@/lib/vector-stores'
 import { getActiveUser, requireRole, handleApiError, writeAudit } from '@/lib/session'
-import { maskSecret, normalizeBaseUrl } from '@/lib/llm-config'
+import { maskSecret, normalizeBaseUrl, resolveConfiguredEmbeddingModel } from '@/lib/llm-config'
+import { compareEmbeddingStamps } from '@/lib/embedding-stamp'
 import { enterWithOrg } from '@/lib/prisma-tenant'
 import { getVectorStorePreset } from '@/lib/db-provider-presets'
 import { AppError } from '@/lib/errors'
@@ -32,6 +33,25 @@ export async function GET() {
     const row = await db.vectorStoreConfig.findFirst()
     // The MEASURED facts, so the response distinguishes "configured" from "actually stored".
     const stored = await readStoredEmbeddingFacts()
+    /*
+     * The two halves of the comparison the UI needs and previously could not make.
+     *
+     * The response already carried the MODEL stored on the chunks (`storedEmbeddingModel`), but not the model the
+     * config would embed a QUERY with — so the panel could print the stored model as an aside and never notice it
+     * disagreed. `retrieveRelevantChunks` decides `embeddingUsable` with
+     * `chunk.embeddingModel === queryEmbedding.model`: WHEN THEY DIFFER, every chunk is skipped, every semantic
+     * score is 0, and search silently degrades to lexical-only. The dimension fields above catch the loudest form of
+     * that (384 vs 1536); this catches the quiet one — two models of the SAME width.
+     *
+     * The verdict is computed HERE, from the same two values the response carries, rather than left to each client:
+     * one authoritative comparison, and the strictness lives in one place (`compareEmbeddingStamps` compares exact
+     * strings, because that is what the retriever does — see that module for why no prefix normalisation is used).
+     *
+     * `configuredEmbeddingModel` is null when there is no config row or no org context, and the verdict is then
+     * 'unknown' rather than 'match': "nothing was compared" must never render as "verified fine".
+     */
+    const configuredEmbeddingModel = await resolveConfiguredEmbeddingModel()
+    const embeddingStampVerdict = compareEmbeddingStamps(stored.model, configuredEmbeddingModel)
     return NextResponse.json({
       ok: true,
       data: row
@@ -46,6 +66,8 @@ export async function GET() {
             // describes the configured intent rather than the stored reality.
             storedVectorSize: stored.size,
             storedEmbeddingModel: stored.model,
+            configuredEmbeddingModel,
+            embeddingStampVerdict,
             distance: row.distance,
             // Whether an admin ever SAVED a storage choice. The provider column above defaults to INTERNAL, so
             // before this flag is true that value means "nobody has chosen", not "internal was chosen" — the
@@ -78,6 +100,8 @@ export async function GET() {
             vectorSize: EMBEDDING_DIMENSIONS,
             storedVectorSize: stored.size,
             storedEmbeddingModel: stored.model,
+            configuredEmbeddingModel,
+            embeddingStampVerdict,
             distance: 'Cosine',
             /* No row at all: nothing has ever been saved for this org, so the choice is not merely unset — it
              * cannot have been made. Reported explicitly so the UI never has to infer it from `updatedAt`. */

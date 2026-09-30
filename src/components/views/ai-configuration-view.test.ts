@@ -219,3 +219,37 @@ describe('model picker — failures are never presented as success', () => {
     expect(fn.slice(0, 900)).not.toMatch(/\) setModel\(list\[0\]\)/)
   })
 })
+
+describe('the Embedding Model field — the placeholder is the value a blank box actually stores', () => {
+  /*
+   * The placeholder is not decoration: it is what a blank box SHOWS, and because the server's fallback is
+   * DEFAULT_EMBEDDING_MODEL it is also what a blank box STORES. It used to read "text-embedding-3-small"
+   * (1536 dims) beside this build's vector(384) column, so the screen taught operators to type the one
+   * model id that makes every semantic score 0.
+   *
+   * WHY THIS FILE NEEDS ITS OWN COMMENT STRIP. `code` above blanks lines starting with `//`, `*` or `/*`,
+   * but a JSX block comment's INTERIOR lines start with neither — and the rationale comment directly above
+   * this placeholder quotes the old literal. MEASURED: asserting on `code` that "text-embedding-3-small"
+   * is absent fails with the fix in place, because the fix's own note contains it. Block comments are
+   * removed first here, then `strip` runs as usual.
+   *
+   * The gap this closes: a placeholder naming some OTHER model (say "bge-m3") passes every other guard in
+   * the repo — the dimension test bans the `text-embedding-` family, not "a hardcoded id".
+   */
+  const noBlockComments = strip(viewSrc.replace(/\/\*[\s\S]*?\*\//g, ''))
+  const field = noBlockComments.slice(noBlockComments.indexOf('id="embedding-model"'))
+  const attrs = field.slice(0, field.indexOf('/>'))
+
+  test('it is bound to the packaged model, so what is shown is what is stored', () => {
+    expect(attrs).toContain('placeholder={DEFAULT_EMBEDDING_MODEL}')
+  })
+
+  test('it is not a hardcoded model string', () => {
+    expect(attrs).not.toMatch(/placeholder=["']/)
+    expect(attrs).not.toContain('text-embedding-3-small')
+  })
+
+  test('the view reads the constant from the single source of truth', () => {
+    expect(viewSrc).toMatch(/import \{[^}]*DEFAULT_EMBEDDING_MODEL[^}]*\} from '@\/lib\/constants'/)
+  })
+})

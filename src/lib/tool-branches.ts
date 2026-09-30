@@ -215,6 +215,9 @@ export async function runRagBranch(args: {
       chunkIndex: item.chunkIndex,
       content: item.content,
       score: item.score,
+      // Carried, not re-derived: `retrieveWithReflection` re-stamped this list after the merge, and the
+      // answer path concatenates several tool runs' citations, so the array index is not the rank.
+      rank: item.rank,
     }),
   )
 

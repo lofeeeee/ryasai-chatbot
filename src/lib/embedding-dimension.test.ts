@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { EMBEDDING_DIMENSIONS, DEFAULT_EMBEDDING_MODEL } from './constants'
@@ -104,4 +104,75 @@ describe('embedding dimension — the schema, the code and the packaged model mu
     }
     expect(offenders).toEqual([])
   })
+
+  test('no source file names an OpenAI embedding model in CODE', () => {
+    /*
+     * The second half of the same incident, and the one that survived the first fix. The product used to FALL BACK to
+     * `text-embedding-3-small` (1536 dims) wherever the operator had left the box blank — in the public config mapper,
+     * the embedder, the settings route and the settings PLACEHOLDER. The vector column is `vector(384)` and retrieval
+     * only compares a chunk whose stamp equals the query's, so that fallback made `semanticSimilarity` 0 on every
+     * result while every layer reported success. Deriving the fallback from DEFAULT_EMBEDDING_MODEL is the fix; this
+     * scan is what keeps a fresh literal from coming back.
+     *
+     * The scan covers EVERY non-test .ts/.tsx under src/ rather than the four known files, because the defect was
+     * "somewhere a model id was typed out" — a fifth copy is exactly how this returns. Comments are stripped (two
+     * stages: block comments including JSX `{/* ... *​/}`, then full-line `//`), so the history written above each fix
+     * may keep naming the old id; what may not exist is a CODE occurrence. `text-embedding-` is banned as a family:
+     * `-3-large` is 3072-dimensional and just as incomparable with this column.
+     */
+    const stripComments = (src: string) =>
+      src
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .split('\n')
+        .map((l) => (/^\s*\/\//.test(l) ? '' : l))
+        .join('\n')
+
+    const offenders: string[] = []
+    for (const rel of sourceFiles()) {
+      const code = stripComments(readFileSync(join(ROOT, rel), 'utf8'))
+      for (const [i, line] of code.split('\n').entries()) {
+        if (/text-embedding-/.test(line)) offenders.push(`${rel}:${i + 1}: ${line.trim().slice(0, 90)}`)
+      }
+    }
+    expect(offenders).toEqual([])
+  })
+
+  test('the fallback sites USE the constant instead of restating it', () => {
+    /*
+     * The literal scan above cannot see this failure: a blank box could resolve to `''`, to a copied string that
+     * happens not to match the pattern, or to a value assembled from somewhere else, and no literal would exist to
+     * find. What must hold is that each site that decides a DEFAULT MODEL actually consumes the one fact.
+     *
+     * Import statements are removed before matching, so an unused import cannot satisfy this — the same class of
+     * vacuity as the boot-file guard that matched an identifier surviving in a destructure one line above the call
+     * it was supposed to protect. What remains is any other use: an expression, a call, a JSX attribute.
+     *
+     * Behaviour is pinned separately and more strongly by the suites that call the real functions:
+     * `embeddings.test.ts` (blank and whitespace-only stored model → this constant, and the constant is what
+     * `embedTexts` SENDS), `llm-config-runtime.test.ts` (the public config's model fallback) and
+     * `src/app/api/llm-config/route.test.ts` (a blank box in PUT → this constant persisted).
+     */
+    const withoutImports = (src: string) => src.replace(/import\s[\s\S]*?from\s+['"][^'"]+['"]/g, '')
+    const FALLBACK_SITES = [
+      'src/lib/llm-config.ts',
+      'src/lib/embeddings.ts',
+      'src/app/api/llm-config/route.ts',
+      'src/components/views/ai-configuration-view.tsx',
+    ]
+    const missing = FALLBACK_SITES.filter((rel) => !withoutImports(read(rel)).includes('DEFAULT_EMBEDDING_MODEL'))
+    expect(missing).toEqual([])
+  })
 })
+
+/**
+ * Every non-test .ts/.tsx under src/, so the literal scan is not limited to the files this incident touched.
+ * `readdirSync(..., { recursive: true })` lists files relative to the directory it was given, so each entry is
+ * re-prefixed. Windows separators are normalised because this set is compared against repo-relative paths.
+ */
+function sourceFiles(): string[] {
+  return readdirSync(join(ROOT, 'src'), { recursive: true, encoding: 'utf8' })
+    .map((f) => f.replaceAll('\\', '/'))
+    .filter((f) => /\.tsx?$/.test(f) && !/\.test\.tsx?$/.test(f))
+    .map((f) => `src/${f}`)
+    .sort()
+}

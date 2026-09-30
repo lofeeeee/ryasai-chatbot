@@ -13,6 +13,7 @@ import { getActiveUser, requireRole, writeAudit, handleApiError } from '@/lib/se
 import { getPublicLlmConfig, normalizeBaseUrl, resolveChatConfigRow } from '@/lib/llm-config'
 import { encryptConfig } from '@/lib/crypto'
 import { db } from '@/lib/db'
+import { DEFAULT_EMBEDDING_MODEL } from '@/lib/constants'
 
 export async function GET() {
   try {
@@ -51,7 +52,12 @@ export async function PUT(req: NextRequest) {
     const embeddingProvider = VALID_PROVIDERS.has((body.embeddingProvider ?? '').trim().toUpperCase())
       ? (body.embeddingProvider as string).trim().toUpperCase()
       : 'OPENAI_COMPATIBLE'
-    const embeddingModel = (body.embeddingModel ?? '').trim() || 'text-embedding-3-small'
+    // A blank Embedding Model box must resolve to the packaged 384-dim model,
+    // not to a 1536-dim OpenAI id: this is the value persisted into
+    // `LlmConfig.embeddingModel`, and the embedder both sends it as the
+    // request's `model` and stamps it onto every chunk it writes. See
+    // constants.ts for the measurement behind the fallback.
+    const embeddingModel = (body.embeddingModel ?? '').trim() || DEFAULT_EMBEDDING_MODEL
     const embeddingApiKey =
       typeof body.embeddingApiKey === 'string' ? body.embeddingApiKey.trim() : ''
 

@@ -48,7 +48,8 @@ const MAX_TEXT_LENGTH = 100_000
  *
  * Both are overridable so the watchdog can be EXERCISED. Waiting out 120s in a unit test is not
  * feasible, and the alternative — asserting only on a mocked timer — would not prove the stream
- * is actually broken out of. Read at CALL time so a test can shrink them after import.
+ * is actually broken out of. They are module-level consts, so they are read at MODULE LOAD: a test
+ * must set the env BEFORE importing this module (see route.test.ts:363).
  */
 const OVERALL_DEADLINE_MS = Number(process.env.CHAT_OVERALL_DEADLINE_MS ?? 120_000)
 const IDLE_TIMEOUT_MS = Number(process.env.CHAT_IDLE_TIMEOUT_MS ?? 120_000)

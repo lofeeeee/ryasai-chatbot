@@ -2,6 +2,7 @@ import { db } from '@/lib/db'
 import { getOrgContext } from '@/lib/prisma-tenant'
 import { decryptConfig } from '@/lib/crypto'
 import { normalizeBaseUrl } from '@/lib/llm-config'
+import { DEFAULT_EMBEDDING_MODEL } from '@/lib/constants'
 import {
   buildVectorPoint,
   ensureVectorCollection,
@@ -108,7 +109,14 @@ export async function getEmbeddingRuntimeConfig(
 
   const provider = normalizeEmbeddingProvider(row.embeddingProvider ?? row.provider)
   const baseUrl = normalizeBaseUrl(row.embeddingBaseUrl ?? row.baseUrl)
-  const model = (row.embeddingModel ?? 'text-embedding-3-small').trim()
+  // The string resolved here is BOTH the request's `model` and the stamp
+  // written to `DocumentChunk.embeddingModel` (see the raw writes below), and
+  // retrieval only compares chunks whose stamp equals the query's. So a blank
+  // value must degrade to the model this install's storage can actually agree
+  // with: it used to become OpenAI's `text-embedding-3-small` (1536 dims)
+  // beside a vector(384) column, which made `semanticSimilarity` 0 on every
+  // UAT result while ingestion still reported success. See constants.ts.
+  const model = (row.embeddingModel ?? '').trim() || DEFAULT_EMBEDDING_MODEL
   if (!model) return null
 
   let apiKey = ''

@@ -214,6 +214,72 @@ describe('PATCH /api/users/[id]/role — the role whitelist', () => {
   })
 })
 
+describe('PATCH /api/users/[id]/role — an admin cannot change their OWN role', () => {
+  /**
+   * The lockout this pins. `requireRole(user, 'admin')` passes for an admin targeting themselves, so
+   * this route had NO guard against self-demotion, and the settings UI called THIS route rather than
+   * the guarded `PATCH /api/users/[id]`. Measured consequence: the last admin demotes themselves to
+   * viewer and the organisation loses user management permanently — nobody can promote anyone back,
+   * because that endpoint needs an admin.
+   */
+  test('an admin demoting THEMSELVES is refused with 400, and nothing is written', async () => {
+    const res = await call('admin-1', { role: 'viewer' })
+    expect(res.status).toBe(400)
+    const body = (await res.json()) as { ok: boolean; error: string }
+    expect(body.ok).toBe(false)
+    expect(body.error).toBe('You cannot change your own role. Ask another admin.')
+    // The self-check runs BEFORE the lookup, so the refusal cannot depend on whether the id resolves.
+    expect(findFirstArgs).toHaveLength(0)
+    expect(updateArgs).toHaveLength(0)
+    expect(auditWrites).toHaveLength(0)
+  })
+
+  test('the refusal covers every role, including a no-op self-change to the SAME role', async () => {
+    // `{ role: 'admin' }` on an admin looks harmless (a no-op) and is exactly how the lockout is
+    // performed by mistake; more importantly a route that allowed it would allow 'viewer' one request
+    // later. Uniform refusal is simpler to reason about than a "same role is fine" special case.
+    for (const role of ['admin', 'analyst', 'viewer']) {
+      findFirstArgs.length = 0
+      const res = await call('admin-1', { role })
+      expect(res.status).toBe(400)
+      expect(findFirstArgs).toHaveLength(0)
+    }
+    expect(updateArgs).toHaveLength(0)
+  })
+
+  test('a privilege-ESCALATION of yourself is refused too, not only demotion', async () => {
+    // The mirror case: a non-admin cannot reach this route at all (requireRole), so this only fires for
+    // an admin — but the guard must be role-agnostic, or a future change that relaxes requireRole would
+    // silently make self-promotion reachable.
+    const res = await call('admin-1', { role: 'admin' })
+    expect(res.status).toBe(400)
+    expect(updateArgs).toHaveLength(0)
+  })
+
+  test('an INVALID role on yourself still reports the whitelist error', async () => {
+    // Ordering pin: the whitelist is checked first, so the caller gets the real problem ('superuser' is
+    // not a role) rather than a misleading "you cannot change your own role".
+    const res = await call('admin-1', { role: 'superuser' })
+    expect(res.status).toBe(400)
+    const body = (await res.json()) as { error: string }
+    expect(body.error).toBe('Invalid role. Must be one of: admin, analyst, viewer.')
+  })
+
+  test('changing ANOTHER user still works (the guard is not a blanket refusal)', async () => {
+    const res = await call('target-1', { role: 'admin' })
+    expect(res.status).toBe(200)
+    expect(updateArgs[0]!.data).toEqual({ role: 'admin' })
+  })
+
+  test('the id comparison is EXACT — a prefix or suffix of your own id is another user', async () => {
+    // Guards against a `startsWith`/`includes` implementation, which would refuse legitimate ids that
+    // merely contain the admin's id (and, worse, could be persuaded to refuse the wrong person).
+    const res = await call('admin-1-extra', { role: 'viewer' })
+    expect(res.status).toBe(200)
+    expect(updateArgs[0]!.data).toEqual({ role: 'viewer' })
+  })
+})
+
 describe('PATCH /api/users/[id]/role — the target lookup is org-scoped', () => {
   test('the target is read with findFirst, which the tenant extension can scope', async () => {
     // NOT findUnique: a client-supplied id must go through a query the extension can add

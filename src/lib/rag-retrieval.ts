@@ -21,6 +21,7 @@ import {
   selectTopRetrievedChunks,
   type RetrievedChunk,
 } from './rag'
+import { stampRetrievedRanks } from '@/lib/retrieval-rank'
 // Namespace import for the one export added after `./rag` was already mocked with a
 // partial surface in several test files: a named import of a name a mock omits throws at
 // module-evaluation time ("Export named ... not found"), which surfaces as an unrelated
@@ -126,6 +127,12 @@ export async function retrieveRelevantChunks(args: {
       )
       const merged = mergeRetrievedResults(subResults)
       _cacheMisses += 1
+      /*
+       * This branch RETURNS EARLY, so it never reached the stamp at the end of this function — a decomposed
+       * (compound) question came back with no rank at all. Stamp the merged order here, which is the order
+       * this path actually returns.
+       */
+      stampRetrievedRanks(merged.chunks)
       if (cacheKey) await cacheSet(cacheKey, merged, Math.floor(RAG_CACHE_TTL_MS / 1000))
       // No timing sample here on purpose: this is a composite of the sub-retrievals,
       // each of which already recorded its own. Sampling both would count one user
@@ -182,9 +189,7 @@ export async function retrieveRelevantChunks(args: {
    * a reader could not tell which one the product used. Written here, where the order is final, the label and
    * the order cannot drift apart again.
    */
-  finalChunks.forEach((chunk, i) => {
-    chunk.rank = i + 1
-  })
+  stampRetrievedRanks(finalChunks)
 
   const citationTrail = buildCitationTrail(args.query, kgResult, finalChunks)
 

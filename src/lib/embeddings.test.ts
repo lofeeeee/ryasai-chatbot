@@ -74,6 +74,10 @@ import {
   resetEmbeddingColumnDimension,
   parseEmbeddingResponse,
 } from './embeddings'
+// The default two tests below assert is a PRODUCTION value. Spelling it out here
+// would let the assertion and the code drift apart — which is exactly how the
+// 1536-dim default survived: every fixture echoed the literal it was handed.
+import { DEFAULT_EMBEDDING_MODEL } from '@/lib/constants'
 
 // Reset mocks to defaults before each test
 beforeEach(() => {
@@ -409,6 +413,47 @@ describe('getEmbeddingRuntimeConfig', () => {
   test('no LLM config in DB → returns null', async () => {
     const result = await getEmbeddingRuntimeConfig()
     expect(result).toBeNull()
+  })
+
+  test('a blank stored model resolves to the packaged 384-dim model, not an OpenAI id', async () => {
+    // The UAT finding this closes: `semanticSimilarity` was 0 on EVERY result of
+    // EVERY query because the query was embedded with `text-embedding-3-small`
+    // (1536 dims) while every stored chunk carried a 384-dim model's stamp, and
+    // retrieval only compares `chunk.embeddingModel === queryEmbedding.model`.
+    // A DEFAULT that cannot be compared with the stored vectors disables semantic
+    // scoring for the whole install while retrieval still reports success.
+    mockLlmConfigFindFirst.mockImplementation(async () => ({
+      provider: 'OPENAI_COMPATIBLE',
+      baseUrl: 'http://local-embeddings:8081/v1',
+      embeddingProvider: 'OPENAI_COMPATIBLE',
+      embeddingBaseUrl: null,
+      embeddingModel: null,
+      encryptedEmbeddingApiKey: 'enc',
+    }))
+    const cfg = await getEmbeddingRuntimeConfig()
+    expect(cfg?.model).toBe(DEFAULT_EMBEDDING_MODEL)
+
+    // And the default is what actually TRAVELS: this string is both the request's
+    // `model` and the value written into `DocumentChunk.embeddingModel` by the raw
+    // writes below, so agreeing with the sidecar's echo is the whole point.
+    const fetchMock = mockFetchEmbeddings(1)
+    await embedTexts(cfg!, ['x'])
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(JSON.parse(String(init.body)).model).toBe(DEFAULT_EMBEDDING_MODEL)
+  })
+
+  test('a whitespace-only stored model is treated as unset', async () => {
+    // `??` alone would keep '   ', `.trim()` would make it '', and the guard one
+    // line later (`if (!model) return null`) would refuse to embed at all — the
+    // ingestion job still reports success and every chunk lands with no vector.
+    mockLlmConfigFindFirst.mockImplementation(async () => ({
+      provider: 'OPENAI_COMPATIBLE',
+      baseUrl: 'http://local-embeddings:8081/v1',
+      embeddingBaseUrl: null,
+      embeddingModel: '   ',
+      encryptedEmbeddingApiKey: 'enc',
+    }))
+    expect((await getEmbeddingRuntimeConfig())?.model).toBe(DEFAULT_EMBEDDING_MODEL)
   })
 })
 

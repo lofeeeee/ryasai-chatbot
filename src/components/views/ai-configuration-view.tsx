@@ -32,6 +32,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
+import { DEFAULT_EMBEDDING_MODEL } from '@/lib/constants'
 import type { PublicLlmConfig } from '@/lib/types'
 import { extractError } from '@/lib/extract-error'
 import { handleSessionFailure } from '@/lib/session-guard'
@@ -650,9 +651,13 @@ export function AIConfigurationView() {
 
                 <div className="space-y-1.5">
                   <Label htmlFor="embedding-model" className="text-xs">Embedding Model</Label>
+                  {/* The placeholder is the server's REAL fallback, so what a
+                      blank box shows is what a blank box stores. It used to
+                      read "text-embedding-3-small" (1536 dims) beside a
+                      vector(384) column — the value behind semanticSimilarity 0. */}
                   <Input
                     id="embedding-model"
-                    placeholder="text-embedding-3-small"
+                    placeholder={DEFAULT_EMBEDDING_MODEL}
                     value={embeddingModel}
                     onChange={(e) => setEmbeddingModel(e.target.value)}
                     className="font-mono text-xs"

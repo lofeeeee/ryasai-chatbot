@@ -791,6 +791,48 @@ describe('retrieveWithReflection', () => {
     expect(result.retrievalPasses).toBe(1)
   })
 
+  test('the returned chunks carry the FINAL order as rank, overwriting a stale one', async () => {
+    // The UI labels citations "Match #N" from the carried rank. `retrieveRelevantChunks` stamps a rank
+    // per QUERY, but this function merges up to three expansions and re-selects — so without a re-stamp
+    // the citations describe the per-query lists, which no longer exist. The mock hands back a
+    // deliberately wrong rank (9) so the assertion fails if the stamp is removed.
+    mockGetLlmRuntimeConfig.mockImplementation(async () => null)
+    mockRetrieveRelevantChunks.mockImplementation(async (args: { query: string }) => ({
+      chunks: [makeChunk({ chunkId: `chunk-${args.query}`, content: 'C'.repeat(100), rank: 9 })],
+      queryTokens: [args.query],
+      candidatesScanned: 1,
+      graphContext: '',
+    }))
+
+    const result = await retrieveWithReflection({ query: 'leave', topK: 5 })
+
+    expect(result.chunks.length).toBe(3)
+    expect(result.chunks.map((c) => c.rank)).toEqual([1, 2, 3])
+  })
+
+  test('the second-pass return is re-stamped after the merge as well', async () => {
+    // Same reason, one branch deeper: the reflection pass merges twice, so the ranks stamped by the
+    // first pass describe a list that the second merge replaced.
+    mockGetLlmRuntimeConfig.mockImplementation(async () => MOCK_CONFIG)
+    mockChatOnce.mockImplementation(async () =>
+      JSON.stringify({ sufficient: false, reason: 'insufficient evidence', confidence: 0.9 }),
+    )
+    mockRetrieveRelevantChunks.mockImplementation(async (args: { query: string; topK: number }) => ({
+      chunks: [makeChunk({ chunkId: `chunk-${args.query}-${args.topK}`, content: 'D'.repeat(100), rank: 9 })],
+      queryTokens: [args.query],
+      candidatesScanned: 1,
+      graphContext: '',
+    }))
+
+    const result = await retrieveWithReflection({ query: 'leave', topK: 5 })
+
+    expect(result.retrievalPasses).toBe(2)
+    const ranks = result.chunks.map((c) => c.rank)
+    // Positions, not the stale 9s: 1..N with no gaps and no duplicates.
+    expect(ranks).toEqual(ranks.map((_, i) => i + 1))
+    expect(ranks.length).toBeGreaterThan(0)
+  })
+
   test('does multi-turn retrieval (2 passes) when reflection says insufficient', async () => {
     mockGetLlmRuntimeConfig.mockImplementation(async () => MOCK_CONFIG)
     mockChatOnce.mockImplementation(async () =>

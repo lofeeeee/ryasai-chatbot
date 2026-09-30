@@ -35,6 +35,7 @@ import {
   type StreamingCompletionResult,
 } from '@/lib/tool-utils'
 import { executeRestRequest } from '@/lib/tool-branches'
+import { buildSourceGuidance } from '@/lib/source-guidance'
 
 // ---------------------------------------------------------------------------
 // Streaming branch preparers — one per RouteDecision.
@@ -133,10 +134,54 @@ export async function prepareRagStream(args: {
     ? `${wrapUntrusted('CONTEXT (DOCUMENTS):', chunkContext)}\n\n${wrapUntrusted('CONTEXT (KNOWLEDGE GRAPH):', retrieval.graphContext)}`
     : wrapUntrusted('CONTEXT (DOCUMENTS):', chunkContext)
 
+  /*
+   * THIS IS THE BRANCH THE WEB CHAT USES, so anything the non-streaming twin does
+   * to the context must be done here too — and it was not. `runRagBranch` gained
+   * the reflection note and the source-guidance injection in the UAT round-2 fix,
+   * but `prepareRagStream` kept sending the bare evidence: the fix was live only
+   * on the transport nothing calls (`/api/documents/search` and the agentic
+   * loop), while the answer the customer actually read was produced here.
+   * MEASURED: asked to refund a complaining customer, the UI answered "there is
+   * no refund procedure in the available sources" while chunk #2 of
+   * `02-sop-layanan-pelanggan.md` contained that procedure verbatim.
+   * Both blocks below are intentional duplicates of src/lib/tool-branches.ts —
+   * see the comment there for why the note is worded the way it is.
+   */
+  const reflectionNote = !retrieval.reflection.sufficient && retrieval.retrievalPasses >= 2
+    ? `\n\n[Note: The retrieved evidence may not fully address the question. Answer based only on the evidence above.` +
+      ` If the answer is not in the evidence, say that YOUR SEARCH did not find it — phrase it as "saya tidak` +
+      ` menemukan ini dalam dokumen yang terambil" — and do NOT claim the document or policy does not exist,` +
+      ` because the search may simply have missed it. Never state that a procedure or figure is absent from the` +
+      ` documents; state only what you did not find.]`
+    : ''
+
+  // Per-document contextPrompts + the org ragContextPrompt, in retrieval order.
+  // Empty prompts inject nothing (buildSourceGuidance returns '').
+  const distinctDocIds: string[] = []
+  for (const c of topChunks) {
+    if (c.documentId && !distinctDocIds.includes(c.documentId)) distinctDocIds.push(c.documentId)
+  }
+  let sourceGuidance = ''
+  if (distinctDocIds.length > 0) {
+    const docs = await db.document.findMany({
+      where: { id: { in: distinctDocIds } },
+      select: { id: true, name: true, contextPrompt: true },
+    })
+    const byId = new Map(docs.map((d) => [d.id, d]))
+    const docPrompts = distinctDocIds
+      .map((id) => byId.get(id))
+      .filter((d): d is NonNullable<typeof d> => Boolean(d))
+      .filter((d) => d.contextPrompt && d.contextPrompt.trim())
+      .map((d) => ({ name: d.name, content: d.contextPrompt! }))
+    const orgPrompt = (await getPromptSettings(db)).ragContextPrompt
+    sourceGuidance = buildSourceGuidance(docPrompts, { budget: 2000, orgPrompt })
+  }
+  const contextWithGuidance = sourceGuidance ? `${sourceGuidance}\n\n${context}` : context
+
   let usage: { promptTokens: number; completionTokens: number } | undefined
   const stream = streamAnswer({
     question: args.question,
-    context,
+    context: contextWithGuidance + reflectionNote,
     source: 'RAG',
     systemPromptPrefix: args.systemPromptPrefix,
     memoryContext: args.memoryContext,
@@ -150,6 +195,9 @@ export async function prepareRagStream(args: {
       chunkIndex: item.chunkIndex,
       content: item.content,
       score: item.score,
+      // Carried, not re-derived: `retrieveWithReflection` re-stamped this list after the merge, and the
+      // answer path concatenates several tool runs' citations, so the array index is not the rank.
+      rank: item.rank,
     }),
   )
 

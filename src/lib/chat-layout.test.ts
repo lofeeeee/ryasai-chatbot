@@ -54,4 +54,26 @@ describe('the citation badge reports a rank, not a confidence', () => {
     // whose fused score rounded to 0, which is most of a long tail.
     expect(citationRankLabel(4, 0)).toBe('Match #5')
   })
+
+  test('a carried rank WINS over the array position', () => {
+    // MEASURED IN UAT: the best chunk of a four-document result displayed as "Match #3", because
+    // `tool-router-agentic` concatenates the citations of every tool run — so the index in this
+    // array is not the position retrieval produced for that run.
+    expect(citationRankLabel(5, 0.0328, 2)).toBe('Match #2')
+    expect(citationRankLabel(0, 0.0328, 4)).toBe('Match #4')
+  })
+
+  test('an absent or nonsensical rank falls back to the position', () => {
+    // The fallback is what keeps DATABASE rows and pre-rank citations working. A rank of 0, NaN or
+    // a fraction would render "Match #0"/"Match #NaN", which is worse than the positional guess.
+    expect(citationRankLabel(1, 0.5, undefined)).toBe('Match #2')
+    expect(citationRankLabel(1, 0.5, null)).toBe('Match #2')
+    expect(citationRankLabel(1, 0.5, 0)).toBe('Match #2')
+    expect(citationRankLabel(1, 0.5, Number.NaN)).toBe('Match #2')
+    expect(citationRankLabel(1, 0.5, 1.5)).toBe('Match #2')
+  })
+
+  test('a carried rank still needs a score — the badge stays absent for DATABASE rows', () => {
+    expect(citationRankLabel(0, undefined, 1)).toBeNull()
+  })
 })

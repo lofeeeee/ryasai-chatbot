@@ -13,6 +13,23 @@ const log = scopedLogger('tool-router')
 const MAX_AGENTIC_ITERATIONS = 3
 
 /**
+ * Default per-round deadline budget.
+ *
+ * UAT MEASUREMENT (2026-09-28): one answer hit the deadline and the transcript ended in a half
+ * sentence plus "[Note: deadline exceeded — the answer may be incomplete.]". The cause was this
+ * default, not the model: 90_000 was SHORTER than the single stream it wraps — LLM_STREAM_TIMEOUT_MS
+ * is 120_000 — so the outer guard aborted a turn the LLM layer was still willing to finish (the
+ * measured turn took 98s, between the two numbers). An outer guard shorter than the inner budget is
+ * not a guard, it is a second, tighter copy of it — the same defect that made every scheduled run
+ * fail (SCHEDULED_RUN_TIMEOUT_MS, mini-services/scheduler/index.ts). 180_000 gives the stream its
+ * full budget plus room for retrieval, SQL and synthesis in front of it.
+ *
+ * The RELATION is the invariant, not the number: `tool-router-agentic.test.ts` reads this file and
+ * `constants.ts` and fails if the default stops exceeding LLM_STREAM_TIMEOUT_MS.
+ */
+const DEFAULT_AGENTIC_DEADLINE_MS = 180_000
+
+/**
  * Per-round deadline budget, read LAZILY.
  *
  * It used to be a module-level const, which made the deadline untestable: the
@@ -24,8 +41,8 @@ const MAX_AGENTIC_ITERATIONS = 3
  * termination tests use.
  */
 function agenticDeadlineMs(): number {
-  const raw = Number(process.env.AGENTIC_DEADLINE_MS ?? 90_000)
-  return Number.isFinite(raw) ? raw : 90_000
+  const raw = Number(process.env.AGENTIC_DEADLINE_MS ?? DEFAULT_AGENTIC_DEADLINE_MS)
+  return Number.isFinite(raw) ? raw : DEFAULT_AGENTIC_DEADLINE_MS
 }
 
 // ponytail: deadline is enforced per round (see withAgenticDeadline) so a hung

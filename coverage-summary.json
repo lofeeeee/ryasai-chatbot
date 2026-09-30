@@ -1,14 +1,14 @@
 {
-  "linePct": 75.45,
-  "linesHit": 25583,
-  "linesFound": 33907,
-  "reachableLinePct": 86.32,
-  "reachableLinesHit": 22238,
-  "reachableLinesFound": 25761,
-  "fnPct": 89.01,
-  "fnsHit": 2275,
-  "fnsFound": 2556,
-  "filesMeasured": 246,
+  "linePct": 75.39,
+  "linesHit": 25674,
+  "linesFound": 34056,
+  "reachableLinePct": 86.37,
+  "reachableLinesHit": 22324,
+  "reachableLinesFound": 25847,
+  "fnPct": 89.05,
+  "fnsHit": 2285,
+  "fnsFound": 2566,
+  "filesMeasured": 248,
   "failedTestFiles": [],
   "files": [
     {
@@ -22,9 +22,9 @@
     },
     {
       "file": "src/components/views/ai-configuration-view.tsx",
-      "hit": 30,
-      "found": 662,
-      "pct": 4.531722054380665,
+      "hit": 31,
+      "found": 667,
+      "pct": 4.6476761619190405,
       "fHit": 1,
       "fFound": 2,
       "fPct": 50
@@ -275,10 +275,10 @@
     {
       "file": "src/lib/rag-retrieval.ts",
       "hit": 387,
-      "found": 617,
-      "pct": 62.72285251215559,
-      "fHit": 54,
-      "fFound": 54,
+      "found": 622,
+      "pct": 62.21864951768489,
+      "fHit": 53,
+      "fFound": 53,
       "fPct": 100
     },
     {
@@ -301,9 +301,9 @@
     },
     {
       "file": "src/lib/intent-pipeline.ts",
-      "hit": 373,
-      "found": 574,
-      "pct": 64.98257839721255,
+      "hit": 374,
+      "found": 579,
+      "pct": 64.59412780656304,
       "fHit": 33,
       "fFound": 35,
       "fPct": 94.28571428571428
@@ -316,15 +316,6 @@
       "fHit": 13,
       "fFound": 15,
       "fPct": 86.66666666666667
-    },
-    {
-      "file": "src/components/views/knowledge-base/vector-store-panel.tsx",
-      "hit": 107,
-      "found": 159,
-      "pct": 67.29559748427673,
-      "fHit": 5,
-      "fFound": 10,
-      "fPct": 50
     },
     {
       "file": "src/components/ui/button.tsx",
@@ -370,6 +361,15 @@
       "fHit": 25,
       "fFound": 34,
       "fPct": 73.52941176470588
+    },
+    {
+      "file": "src/components/views/knowledge-base/vector-store-panel.tsx",
+      "hit": 114,
+      "found": 166,
+      "pct": 68.67469879518072,
+      "fHit": 5,
+      "fFound": 10,
+      "fPct": 50
     },
     {
       "file": "src/hooks/use-delayed-loading.ts",
@@ -444,6 +444,24 @@
       "fPct": 86.66666666666667
     },
     {
+      "file": "src/lib/stream-preparers.ts",
+      "hit": 485,
+      "found": 667,
+      "pct": 72.71364317841079,
+      "fHit": 33,
+      "fFound": 44,
+      "fPct": 75
+    },
+    {
+      "file": "src/lib/llm-config.ts",
+      "hit": 256,
+      "found": 352,
+      "pct": 72.72727272727273,
+      "fHit": 27,
+      "fFound": 30,
+      "fPct": 90
+    },
+    {
       "file": "src/lib/doc-versioning.ts",
       "hit": 81,
       "found": 111,
@@ -454,36 +472,18 @@
     },
     {
       "file": "src/lib/tool-branches.ts",
-      "hit": 669,
-      "found": 907,
-      "pct": 73.75964718853363,
+      "hit": 670,
+      "found": 910,
+      "pct": 73.62637362637363,
       "fHit": 34,
       "fFound": 36,
       "fPct": 94.44444444444444
     },
     {
-      "file": "src/lib/stream-preparers.ts",
-      "hit": 457,
-      "found": 619,
-      "pct": 73.82875605815832,
-      "fHit": 28,
-      "fFound": 39,
-      "fPct": 71.7948717948718
-    },
-    {
-      "file": "src/lib/llm-config.ts",
-      "hit": 250,
-      "found": 337,
-      "pct": 74.1839762611276,
-      "fHit": 25,
-      "fFound": 28,
-      "fPct": 89.28571428571429
-    },
-    {
       "file": "src/lib/tool-router-agentic.ts",
-      "hit": 414,
-      "found": 552,
-      "pct": 75,
+      "hit": 415,
+      "found": 553,
+      "pct": 75.04520795660035,
       "fHit": 30,
       "fFound": 31,
       "fPct": 96.7741935483871
@@ -597,6 +597,15 @@
       "fPct": 100
     },
     {
+      "file": "src/lib/embeddings.ts",
+      "hit": 335,
+      "found": 417,
+      "pct": 80.3357314148681,
+      "fHit": 35,
+      "fFound": 36,
+      "fPct": 97.22222222222221
+    },
+    {
       "file": "src/lib/mcp-installer.ts",
       "hit": 160,
       "found": 199,
@@ -640,15 +649,6 @@
       "fHit": 16,
       "fFound": 16,
       "fPct": 100
-    },
-    {
-      "file": "src/lib/embeddings.ts",
-      "hit": 334,
-      "found": 409,
-      "pct": 81.66259168704157,
-      "fHit": 35,
-      "fFound": 36,
-      "fPct": 97.22222222222221
     },
     {
       "file": "src/lib/scheduler-queue.ts",
@@ -720,6 +720,15 @@
       "pct": 83.09859154929578,
       "fHit": 5,
       "fFound": 5,
+      "fPct": 100
+    },
+    {
+      "file": "src/lib/embedding-stamp.ts",
+      "hit": 10,
+      "found": 12,
+      "pct": 83.33333333333334,
+      "fHit": 2,
+      "fFound": 2,
       "fPct": 100
     },
     {
@@ -876,6 +885,15 @@
       "fPct": 88.23529411764706
     },
     {
+      "file": "src/lib/tool-utils.ts",
+      "hit": 169,
+      "found": 188,
+      "pct": 89.8936170212766,
+      "fHit": 21,
+      "fFound": 22,
+      "fPct": 95.45454545454545
+    },
+    {
       "file": "src/lib/memory-worker.ts",
       "hit": 72,
       "found": 80,
@@ -892,15 +910,6 @@
       "fHit": 9,
       "fFound": 9,
       "fPct": 100
-    },
-    {
-      "file": "src/components/views/knowledge-base/external-vector-fields.tsx",
-      "hit": 96,
-      "found": 106,
-      "pct": 90.56603773584906,
-      "fHit": 3,
-      "fFound": 9,
-      "fPct": 33.33333333333333
     },
     {
       "file": "src/lib/metrics.ts",
@@ -957,6 +966,15 @@
       "fPct": 100
     },
     {
+      "file": "src/components/views/knowledge-base/external-vector-fields.tsx",
+      "hit": 106,
+      "found": 114,
+      "pct": 92.98245614035088,
+      "fHit": 3,
+      "fFound": 9,
+      "fPct": 33.33333333333333
+    },
+    {
       "file": "src/lib/tool-registry.ts",
       "hit": 262,
       "found": 281,
@@ -964,15 +982,6 @@
       "fHit": 17,
       "fFound": 18,
       "fPct": 94.44444444444444
-    },
-    {
-      "file": "src/lib/tool-utils.ts",
-      "hit": 168,
-      "found": 180,
-      "pct": 93.33333333333333,
-      "fHit": 21,
-      "fFound": 22,
-      "fPct": 95.45454545454545
     },
     {
       "file": "src/lib/redis.ts",
@@ -1479,6 +1488,15 @@
       "fPct": 100
     },
     {
+      "file": "src/lib/retrieval-rank.ts",
+      "hit": 5,
+      "found": 5,
+      "pct": 100,
+      "fHit": 2,
+      "fFound": 2,
+      "fPct": 100
+    },
+    {
       "file": "src/app/api/chat/sessions/route.ts",
       "hit": 47,
       "found": 47,
@@ -1642,8 +1660,8 @@
     },
     {
       "file": "src/app/api/llm-config/route.ts",
-      "hit": 93,
-      "found": 93,
+      "hit": 94,
+      "found": 94,
       "pct": 100,
       "fHit": 5,
       "fFound": 5,
@@ -1903,8 +1921,8 @@
     },
     {
       "file": "src/app/api/users/[id]/role/route.ts",
-      "hit": 52,
-      "found": 52,
+      "hit": 58,
+      "found": 58,
       "pct": 100,
       "fHit": 4,
       "fFound": 4,
@@ -1948,8 +1966,8 @@
     },
     {
       "file": "src/app/api/vector-store/route.ts",
-      "hit": 119,
-      "found": 119,
+      "hit": 126,
+      "found": 126,
       "pct": 100,
       "fHit": 9,
       "fFound": 9,
@@ -2019,6 +2037,15 @@
       "fPct": 100
     },
     {
+      "file": "src/lib/chat-layout.ts",
+      "hit": 16,
+      "found": 16,
+      "pct": 100,
+      "fHit": 4,
+      "fFound": 4,
+      "fPct": 100
+    },
+    {
       "file": "src/lib/async-worker.ts",
       "hit": 59,
       "found": 59,
@@ -2034,15 +2061,6 @@
       "pct": 100,
       "fHit": 6,
       "fFound": 6,
-      "fPct": 100
-    },
-    {
-      "file": "src/lib/chat-layout.ts",
-      "hit": 11,
-      "found": 11,
-      "pct": 100,
-      "fHit": 4,
-      "fFound": 4,
       "fPct": 100
     },
     {

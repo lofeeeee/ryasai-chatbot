@@ -95,6 +95,15 @@ export interface Citation {
   chunkIndex?: number
   snippet?: string
   score?: number
+  /**
+   * 1-based position this chunk was returned at, when the producer knows it.
+   *
+   * WHY THE ARRAY POSITION IS NOT ENOUGH: `tool-router-agentic` concatenates the
+   * citations of every tool run, so a citation's index in the array the UI receives
+   * is not the rank retrieval gave it. The badge must read this field, not its own
+   * loop counter. Absent on DATABASE citations, which have no retrieval rank.
+   */
+  rank?: number
 }
 
 export interface ChartData {
