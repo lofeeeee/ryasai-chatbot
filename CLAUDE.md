@@ -1,10 +1,10 @@
 # CLAUDE.md — ryasai Chatbot (Super-App Track)
 
 > Living document. Update the **Progress Log** at the bottom every session.
-> Last updated 2026-09-30. Version 1.4.0. PostgreSQL 16. All PLAN.md phases P0–P5 + S4 + RAG complete. Language standardized to English.
+> Last updated 2026-09-30. Version 1.5.0. PostgreSQL 16. All PLAN.md phases P0–P5 + S4 + RAG complete. Language standardized to English.
 >
 > **Counts and versions in this file drift.** Section 1 and 8 describe CURRENT state and are
-> corrected to 1.4.0; section 9 (Progress Log) is HISTORICAL and its numbers were true when
+> corrected to 1.5.0; section 9 (Progress Log) is HISTORICAL and its numbers were true when
 > written — do not "fix" them. When you need a number, run the command. (Section 2 was three
 > releases stale — it claimed 6825 tests across 265 files when this tree measures 7206 across 289 —
 > which is why it moved to docs/ rather than being re-corrected in place.)
@@ -19,8 +19,8 @@
 | Stack | Next.js 16 (App Router) · React 19 · TypeScript 5 · Prisma 6 · PostgreSQL 16 (pgvector + pg_trgm) · Bun · Tailwind 4 · shadcn/ui |
 | Runtime | Bun for dev/test, Node standalone for prod build |
 | Domain | Multi-tenant AI assistant deployed **on-prem per customer**, licensed with a signed machine-bound key: natural-language → SQL, RAG over company docs, whitelisted REST calls, streaming chat |
-| Status | **Release 1.4.0** (2026-09-30). Verified by execution, not assertion: `tsc` 0 · `lint` 0 · `bun run test` 300/300 files, 7431 pass, 0 fail · coverage:gate exit 0 · `e2e` dev and `e2e:prod` both 18 passed. Deployed to production and confirmed live (`/api/v1/health` reports 1.4.0) |
-| Version | 1.4.0 |
+| Status | **Release 1.5.0** (2026-09-30). Verified by execution, not assertion: `tsc` 0 · `lint` 0 · `bun run test` 300/300 files, 7441 pass, 0 fail · coverage:gate exit 0 · `e2e` dev and `e2e:prod` both 18 passed. Deployed to production and confirmed live (`/api/v1/health` reports 1.4.0) |
+| Version | 1.5.0 |
 | Language | English (standardized — all UI, errors, system prompts, comments in English) |
 
 ---
@@ -378,3 +378,17 @@ floor sits above its measurement, or when a floor names a file the summary no lo
 **Negative-controlled 21/21, and the control changed the code twice** — the recurring value of running it: (1) the test guarding ENCRYPTION of a billable credential asserted only that the mocked encryptor had been CALLED, so a route calling it and storing plaintext passed; it now reads the stored payload and decrypts it back, with the UPDATE arm covered separately (the harness proved those are separate write sites by only breaking one). (2) The rename guard asserted the new label but not the absence of the old, so reverting to `LLM` stayed green.
 
 **Verified:** tsc 0 · lint 0 errors · 300/300 files, 7431 pass, 0 fail · coverage:gate exit 0 (203 gated modules; new route floored at 98 against a measured 99.37%) · e2e dev 18 · e2e:prod 18.
+
+### 2026-09-30 (c) — Release 1.5.0: the memory tab leads with state, and one field that must not be read
+
+**Version 1.4.0 → 1.5.0.** Eight stamped locations bumped, CHANGELOG heading cut, then released and deployed.
+
+**The panel opened with a form; it now opens with the ANSWER.** The two consumers look identical to a compiler and must not look identical to an operator, so the memory tab states which one is in use before offering any field. In the follow-chat state the fields are GONE — a blank form invites a save that would pin memory to the chat model forever, which is the one irreversible-looking action the fallback exists to prevent.
+
+**`mode` is declared in the function signature and deliberately NOT read.** `readSidecarState` decides from `diagnostics.components` presence plus `enabled`/`connected`, because `mode` is unreliable: an ENABLED install whose sidecar is down reports `mode: 'disabled'`, which would libel working memory as switched off. Declaring the field lets the tests hand over the exact server body and assert that changing `mode` alone never moves the verdict — the field that caused the misreading is the one being exercised, rather than the one nobody touches.
+
+**Negative-controlled on the frozen bytes.** Planting `if (data?.mode === 'disabled') return 'off'` breaks "an ENABLED install whose sidecar did not answer is unreachable, never 'off'" (2 fail), restoring byte-identical at md5 `80b94ebd…`. Test diff across the change: **+32 assertions, 0 removed** — no guard was weakened to make it pass. `readSidecarState` was extracted as a testable leaf so the four verdicts are pinned individually rather than only through rendered HTML.
+
+**Verified on the frozen hash:** tsc 0 · lint 0 errors · 300/300 files, 7441 pass, 0 fail · coverage:gate exit 0 (203 modules) · e2e dev 18 · build · e2e:prod 18. Rendered in a real browser at 1440px and 390px: no horizontal overflow at either width, no console errors, the four store rows render, mobile stacks to one column.
+
+**A process note worth keeping.** The e2e modes were NOT re-run by the implementer after its final edit, and it said so rather than implying otherwise — which is why the two runs above were measured by a second party on the frozen file. An unverified claim flagged as unverified costs nothing; the same claim left implicit would have shipped.

@@ -5,6 +5,28 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-09-30
+
+### Changed
+- **The AI Memory tab now leads with the state, not the form.** It opens by answering the question you actually
+  have — is memory using its own model, or following the one that answers chat? — and only then offers the fields.
+  On an install that has never set a dedicated model, the panel says plainly that following chat is a working
+  setup and offers one action ("Use a dedicated model") instead of presenting an empty form. That matters more
+  than it sounds: filling in a blank form would pin memory to the chat model permanently, so the fields now appear
+  only when you ask for them.
+- **Memory storage reads as a grid of stores rather than a sentence.** The relational store, vector store,
+  knowledge graph and file store are listed individually with the backend each one reports, and the badge states
+  whether the memory service is reachable. When the service does not report its backends, every store says
+  "not reported" — unknown is shown as unknown, never as healthy, which is the difference between a panel that
+  looks reassuring and one that is telling you the truth.
+- **The endpoint that has to be set by hand is now a copyable step** rather than a sentence to retype, because the
+  operator's action is literally to paste a line into a file on the server.
+
+### Fixed
+- **"Memory off" and "memory unreachable" are no longer one state.** An install with memory switched ON whose
+  memory service is not answering used to be able to read as switched off, which sends an operator to check a
+  setting that was already correct while the real problem is a container that is not running.
+
 ## [1.4.0] - 2026-09-30
 
 ### Added
