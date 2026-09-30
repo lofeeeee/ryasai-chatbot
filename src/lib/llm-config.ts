@@ -374,6 +374,57 @@ export async function resolveChatConfigRow() {
 }
 
 /**
+ * The MEMORY config row, if the org has deliberately set one.
+ *
+ * WHY MEMORY CAN HAVE ITS OWN MODEL. The cognee sidecar runs its own entity/relation extraction
+ * pipeline against the customer's provider. Extraction is a different job from answering: it is
+ * high-volume, structurally repetitive and quality-tolerant — the schema is what matters, not prose.
+ * An operator with a cheap fast model beside an expensive answering model has every reason to want
+ * them separate, and until now there was no way to express that: the sidecar's credentials were a
+ * COPY of the chat row (`pushCogneeProviderConfig`), so pointing memory at a second model meant
+ * editing `.env.cognee` and restarting the container by hand.
+ *
+ * FALLS BACK TO CHAT, deliberately, and that fallback is not a convenience: every install that
+ * upgraded into this feature has no `purpose: 'memory'` row, and their memory works today. Returning
+ * null instead would read as "memory is unconfigured" and stop extraction on installs that were
+ * fine. `getMemoryLlmConfig` below is the expression callers should use; this one answers the
+ * narrower question "did somebody deliberately choose a memory model?".
+ *
+ * Returns null when unset, and also when there is no org context — the same fail-closed rule the
+ * other resolvers hold, because an unscoped `findFirst()` returns whichever tenant sorts first.
+ */
+export async function resolveMemoryConfigRow() {
+  if (!getOrgContext()) return null
+  return db.llmConfig.findFirst({ where: { purpose: 'memory' } })
+}
+
+/**
+ * The credentials the memory sidecar should use: the memory row when one exists, else the chat row.
+ *
+ * `source` is returned rather than inferred by the caller so the UI can say WHICH model memory is
+ * actually using. That distinction is the whole point of this pair: "memory has its own model" and
+ * "memory is following chat" are different states, and a screen that renders them identically would
+ * make the new feature invisible on every install that has not used it yet.
+ */
+export async function getMemoryLlmConfig(): Promise<
+  (LlmRuntimeConfig & { source: 'memory' | 'chat' }) | null
+> {
+  const memoryRow = await resolveMemoryConfigRow()
+  if (memoryRow) {
+    return {
+      id: memoryRow.id,
+      provider: memoryRow.provider,
+      baseUrl: memoryRow.baseUrl,
+      apiKey: decryptApiKey(memoryRow.encryptedApiKey),
+      model: memoryRow.model,
+      source: 'memory',
+    }
+  }
+  const chat = await getLlmRuntimeConfig()
+  return chat ? { ...chat, source: 'chat' } : null
+}
+
+/**
  * The model a retrieval query would ACTUALLY be embedded with, right now.
  *
  * This is deliberately the same expression the write path uses (`getEmbeddingRuntimeConfig`),

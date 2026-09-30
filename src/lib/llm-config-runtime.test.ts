@@ -60,6 +60,8 @@ import {
   fetchProviderModels,
   maskSecret,
   resolveConfiguredEmbeddingModel,
+  getMemoryLlmConfig,
+  resolveMemoryConfigRow,
 } from './llm-config'
 // The fallback asserted below is a PRODUCTION value, not a test fixture. Pinning
 // a copied string lets the assertion and the code drift apart silently: this test
@@ -506,5 +508,73 @@ describe('maskSecret', () => {
   test('keeps a recognisable head so an operator can tell keys apart', () => {
     const masked = maskSecret('sk-live-abcdef123456')
     expect(masked.startsWith('sk-l')).toBe(true)
+  })
+})
+
+/**
+ * AI Memory's OWN provider row — the feature that lets extraction use a different model than answering.
+ *
+ * THE FALLBACK IS THE WHOLE RISK. Every install that upgrades into this feature has no `purpose:
+ * 'memory'` row and its memory works today. So "no memory row" must resolve to the CHAT credentials,
+ * not to null: a null here reads as "memory is unconfigured" and silently stops extraction on
+ * installs that were fine. `source` exists so a caller can tell the two states apart rather than
+ * assuming, which is what makes the feature visible on an install that has not used it yet.
+ */
+describe('getMemoryLlmConfig — memory may have its own model, and follows chat when it does not', () => {
+  test('a dedicated memory row wins over chat, and is reported as the source', async () => {
+    state.rows = [
+      row({ purpose: 'chat', model: 'chat-model', baseUrl: 'https://chat.example/v1' }),
+      row({ purpose: 'memory', model: 'memory-model', baseUrl: 'https://memory.example/v1' }),
+    ]
+    const cfg = await getMemoryLlmConfig()
+    expect(cfg?.model).toBe('memory-model')
+    expect(cfg?.baseUrl).toBe('https://memory.example/v1')
+    expect(cfg?.source).toBe('memory')
+  })
+
+  test('NO memory row falls back to chat rather than to null', async () => {
+    // The upgrade case, and the reason this test exists: returning null would stop memory writes on
+    // every install that never opened the new screen.
+    state.rows = [row({ purpose: 'chat', model: 'chat-model' })]
+    const cfg = await getMemoryLlmConfig()
+    expect(cfg).not.toBeNull()
+    expect(cfg?.model).toBe('chat-model')
+    expect(cfg?.source).toBe('chat')
+  })
+
+  test('the memory row is read by PURPOSE, so it cannot pick up the agent or role rows', async () => {
+    // `purpose` is the only discriminator on this table. An unscoped findFirst would return whichever
+    // row the planner happened to sort first — the exact defect the chat resolver documents.
+    state.rows = [
+      row({ purpose: 'agent', model: 'agent-model' }),
+      row({ purpose: 'chat', model: 'chat-model' }),
+    ]
+    expect((await getMemoryLlmConfig())?.model).toBe('chat-model')
+    expect(state.findFirstCalls[0]).toMatchObject({ where: { purpose: 'memory' } })
+  })
+
+  test('NO ORG CONTEXT resolves null, and never reads another tenant\'s memory row', async () => {
+    state.orgContext = undefined
+    state.rows = [row({ purpose: 'memory', model: 'another-org-model' })]
+    expect(await resolveMemoryConfigRow()).toBeNull()
+    expect(await getMemoryLlmConfig()).toBeNull()
+  })
+
+  test('with no config at all it resolves null — "cannot tell", never a fabricated model', async () => {
+    state.rows = []
+    expect(await getMemoryLlmConfig()).toBeNull()
+    expect(await resolveMemoryConfigRow()).toBeNull()
+  })
+
+  test('a memory row with an undecryptable key throws rather than silently falling back to chat', async () => {
+    /*
+     * Deliberately NOT a fallback. An operator who saved a memory provider and then had decryption
+     * fail must see an error: quietly extracting with the CHAT key instead would bill a different
+     * account and hide a broken credential — and the user would have no way to notice, because the
+     * screen would show the memory row they saved.
+     */
+    state.rows = [row({ purpose: 'memory', model: 'memory-model' })]
+    state.decryptThrows = true
+    await expect(getMemoryLlmConfig()).rejects.toThrow()
   })
 })

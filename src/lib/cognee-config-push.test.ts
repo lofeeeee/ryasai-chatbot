@@ -13,6 +13,13 @@ import { join } from 'node:path'
 const state = {
   serverOptions: null as { baseUrl: string; timeoutMs?: number; apiKey?: string } | null,
   llmConfig: null as { id: string; provider: string; baseUrl: string; apiKey: string; model: string } | null,
+  /**
+   * Which row the memory credentials came from. In production `getMemoryLlmConfig()` prefers a
+   * `purpose: 'memory'` row and falls back to chat; the push mechanics are identical either way, so
+   * this is the only extra input the tests need. A second mocked function with its own fixture would
+   * let the two disagree about WHICH model is being pushed — the one thing these tests exist to pin.
+   */
+  memorySource: 'chat' as 'memory' | 'chat',
   requests: [] as Array<{ url: string; body: unknown; headers: Record<string, string> }>,
   respond: (() => new Response('{}', { status: 200 })) as () => Response,
 }
@@ -23,6 +30,10 @@ mock.module('@/lib/cognee-core', () => ({
 
 mock.module('@/lib/llm-config', () => ({
   getLlmRuntimeConfig: async () => state.llmConfig,
+  // The push reads the MEMORY credentials. This must exist here because the module is consumed
+  // through a partial mock: a missing export is a SyntaxError at import, not a failed assertion.
+  getMemoryLlmConfig: async () =>
+    state.llmConfig ? { ...state.llmConfig, source: state.memorySource } : null,
 }))
 
 mock.module('@/lib/logger', () => ({
@@ -363,5 +374,46 @@ describe('cognee provider push — the MODEL read-back was fetched and discarded
     const r = await pushCogneeProviderConfig()
     expect(r.endpointNeedsEnv).toBe(true)
     expect(r.modelMismatch).toBe(true)
+  })
+})
+
+/**
+ * The push reads the MEMORY credentials, not the chat row directly.
+ *
+ * WHY THIS IS A SEPARATE CONCERN FROM THE MECHANICS ABOVE. The push used to call
+ * `getLlmRuntimeConfig()` — the chat row, always. Now it calls `getMemoryLlmConfig()`, which prefers
+ * a `purpose: 'memory'` row and falls back to chat. Every assertion above still passes if that call
+ * is reverted, because the fallback makes chat the answer in most fixtures — so without these tests
+ * the feature could be dead and the suite would stay green. That is silent-failure class 5: the
+ * mechanism correct and tested while the call site bypasses it.
+ */
+describe('cognee provider push — the credentials come from the MEMORY config', () => {
+  test('a dedicated memory source reports itself as such in the result', async () => {
+    // The operator-facing half: the UI can only say "memory is on its own model" if this survives the
+    // round trip. Dropping it would make the feature invisible exactly when it is in use.
+    state.memorySource = 'memory'
+    const result = await pushCogneeProviderConfig()
+    expect(result.ok).toBe(true)
+    expect(result.source).toBe('memory')
+  })
+
+  test('following chat is reported as `chat`, distinctly from a dedicated model', async () => {
+    state.memorySource = 'chat'
+    const result = await pushCogneeProviderConfig()
+    expect(result.source).toBe('chat')
+  })
+
+  test('the model PUSHED is the memory model, not the chat model', async () => {
+    /*
+     * The behavioural half, and the assertion that actually fails if the call site is reverted. The
+     * fixture deliberately gives the mocked memory resolver a DIFFERENT model than the chat row would
+     * produce, so "which function was called" is observable in the request body rather than only in a
+     * mock's call count.
+     */
+    state.memorySource = 'memory'
+    state.llmConfig!.model = 'memory-only-model'
+    await pushCogneeProviderConfig()
+    const body = state.requests[0].body as { llm: { model: string } }
+    expect(body.llm.model).toBe('openai/memory-only-model')
   })
 })

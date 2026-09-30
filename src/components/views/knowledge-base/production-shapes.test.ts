@@ -29,6 +29,7 @@ import { DocCard } from '@/components/views/knowledge-base/doc-card'
 import { MemoryStatusCard } from '@/components/views/memory-status-card'
 import { CogneeCard } from '@/components/views/cognee-card'
 import { VectorStorePanel } from '@/components/views/knowledge-base/vector-store-panel'
+import { MemoryConfigurationPanel } from '@/components/views/memory-configuration-panel'
 import { versionsOutcome } from '@/components/views/knowledge-base/doc-detail-dialog'
 import type { DocumentItem } from '@/lib/types'
 
@@ -604,5 +605,98 @@ describe('versionsOutcome — "none" and "unknown" are different answers', () =>
     const list = [{ id: 'v2', version: 2, createdAt: '2026-01-02T00:00:00.000Z' }]
     const r = versionsOutcome(true, { versions: list })
     expect(r.outcome === 'loaded' && r.versions).toEqual(list)
+  })
+})
+
+/* ------------------------------------------------- memory configuration panel */
+
+/**
+ * AI Memory Configuration — the provider form and the storage facts.
+ *
+ * WHAT THESE HOLD THAT A TYPECHECK CANNOT. Two states look identical to the compiler and must not look
+ * identical to an operator:
+ *
+ *   1. "no dedicated memory provider" means FOLLOW CHAT, not "unconfigured". Every install that
+ *      upgrades into this feature is in that state and its memory works, so a screen that rendered an
+ *      empty form would send an operator to fix something that is already fine — and, worse, a save
+ *      from that screen would silently pin memory to the chat model forever.
+ *   2. "the sidecar did not report its storage" is UNKNOWN, not empty. Green badges over an unmeasured
+ *      store is exactly the false-success shape this codebase catalogues.
+ */
+describe('MemoryConfigurationPanel — "follows chat" must not render as "unconfigured"', () => {
+  const stub = (memory: unknown, source: 'memory' | 'chat', components: unknown = null) =>
+    (async (url: string) => {
+      if (String(url).includes('/api/llm-config/memory')) {
+        return json({ ok: true, data: { memory, source } })
+      }
+      return json({ ok: true, data: { diagnostics: components ? { components } : null } })
+    }) as unknown as typeof fetch
+
+  test('with no dedicated row it SAYS it follows Chat Configuration, and offers no Clear', async () => {
+    /*
+     * The upgrade case. `source: 'chat'` must read as an affirmative state, and the Clear button must
+     * be ABSENT — offering "clear, follow chat" to an install that already follows chat is a control
+     * that can only make things worse by implying a change is possible.
+     */
+    g.fetch = stub(null, 'chat')
+    const html = await renderComponent(React.createElement(MemoryConfigurationPanel))
+    expect(html).toContain('following Chat Configuration')
+    expect(html).not.toContain('Clear, follow chat')
+    expect(html).not.toContain('own model')
+  })
+
+  test('a dedicated row renders as an owned model, with Clear offered', async () => {
+    // The other direction, so the assertions above cannot pass on a component that never varies.
+    g.fetch = stub(
+      { provider: 'OPENAI_COMPATIBLE', baseUrl: 'https://mem.example/v1', model: 'fast-model', apiKeyMasked: 'sk-ab••••' },
+      'memory',
+    )
+    const html = await renderComponent(React.createElement(MemoryConfigurationPanel))
+    expect(html).toContain('own model')
+    expect(html).toContain('Clear, follow chat')
+    expect(html).not.toContain('following Chat Configuration')
+    // The stored endpoint is seeded into the form rather than left blank, or a save would clear it.
+    expect(html).toContain('https://mem.example/v1')
+  })
+
+  test('the storage block names the provider the SIDECAR reported, per store', async () => {
+    g.fetch = stub(null, 'chat', [
+      { name: 'relational_db', status: 'healthy', provider: 'postgres' },
+      { name: 'vector_db', status: 'healthy', provider: 'pgvector' },
+      { name: 'graph_db', status: 'healthy', provider: 'kuzu' },
+      { name: 'file_storage', status: 'healthy', provider: 'local' },
+      { name: 'llm_provider', status: 'healthy', provider: 'openai' },
+    ])
+    const html = await renderComponent(React.createElement(MemoryConfigurationPanel))
+    expect(html).toContain('Relational store')
+    expect(html).toContain('pgvector')
+    expect(html).toContain('kuzu')
+    // A component that is NOT storage must not be listed as one: the extraction LLM is on this same
+    // diagnostics payload and belongs to the provider card, not to "where memory lives".
+    expect(html).not.toContain('>Extraction LLM<')
+  })
+
+  test('an unreported store renders as UNKNOWN, never as healthy', async () => {
+    // No diagnostics at all — the shape an older or degraded sidecar returns. The failure this pins is
+    // a green panel over a store nothing measured.
+    g.fetch = stub(null, 'chat', null)
+    const html = await renderComponent(React.createElement(MemoryConfigurationPanel))
+    expect(html).toContain('not reporting its storage backends')
+    expect(html).toContain('unknown rather than empty')
+  })
+
+  test('a FAILED load must not paint an empty, saveable form', async () => {
+    /*
+     * DEFECT PINNED. A blank form beside an armed Save is how a transient read failure becomes a
+     * permanent overwrite: the fields look empty because nothing loaded, and pressing Save would write
+     * those blanks over a working provider. The banner names the distinction so the operator reloads.
+     */
+    g.fetch = (async (url: string) => {
+      if (String(url).includes('/api/llm-config/memory')) return json({ error: 'boom' }, 500)
+      return json({ ok: true, data: {} })
+    }) as unknown as typeof fetch
+    const html = await renderComponent(React.createElement(MemoryConfigurationPanel))
+    expect(html).toContain('Could not load the memory configuration')
+    expect(html).toContain('not an empty one')
   })
 })

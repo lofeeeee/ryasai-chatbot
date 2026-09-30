@@ -97,6 +97,51 @@ describe('AI Memory is reachable without guessing its parent menu', () => {
     expect(aiConfigSrc).toContain('<CogneeCard />')
   })
 
+  /*
+   * THE SUB-MENU STRUCTURE, pinned because the labels ARE the feature.
+   *
+   * The tabs used to read "LLM / Embedding / AI Memory". Two of those three fed DIFFERENT consumers
+   * with different credentials, and "LLM" did not say which — an operator configuring memory could
+   * reasonably have been editing chat, and vice versa. A rename is exactly the kind of change a later
+   * refactor reverts as "just wording", so it is asserted here.
+   */
+  test('the AI Configuration view labels the chat tab, so the two consumers are not interchangeable', () => {
+    expect(aiConfigSrc).toContain('Chat Configuration')
+    /*
+     * AND THE OLD NAME IS GONE. Asserting only the new label let the bare "LLM" survive alongside it —
+     * NEGATIVE CONTROL: reverting the label to `LLM` left that assertion green, so it could not detect
+     * the rename it exists to protect. Both directions, as with every guard in this file.
+     */
+    expect(aiConfigSrc).not.toMatch(/>\s*LLM\s*</)
+  })
+
+  test('the memory tab is named as a configuration surface, not a status page', () => {
+    expect(aiConfigSrc).toContain('AI Memory Configuration')
+  })
+
+  test('the memory tab renders the memory configuration panel', () => {
+    // The label alone would survive the panel being dropped — the tab would keep its name and lose
+    // its content, which is the failure a name-only assertion cannot see.
+    expect(aiConfigSrc).toContain('<MemoryConfigurationPanel />')
+  })
+
+  test('the memory tab keeps the operational memory card', () => {
+    // Both, not either: the new panel configures, the card operates (documents, cognify, re-cognify,
+    // clear graph). Swapping one for the other removes a surface rather than adding one.
+    expect(aiConfigSrc).toContain('<MemoryConfigurationPanel />')
+    expect(aiConfigSrc).toContain('<CogneeCard />')
+  })
+
+  test('the Embedding tab still reports the memory embedder as a FACT, not a second form', () => {
+    /*
+     * Memory's embedder is fixed by the deployment (`.env.cognee`) and its settings API accepts no
+     * embedding parameters, so a form here would be a control that cannot take effect. The tab says
+     * so instead. Asserted because "add a memory embedding field" is the obvious-looking next change
+     * and it would silently do nothing.
+     */
+    expect(aiConfigSrc).toContain('AI Memory shares this embedder')
+  })
+
   test('Knowledge does NOT duplicate the memory card — one configuration surface only', () => {
     // INCIDENT: the full AI Memory card rendered in BOTH Knowledge and AI Configuration, so the same
     // settings existed in two menus with no way to tell which was authoritative. Knowledge now shows a

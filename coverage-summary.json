@@ -1,14 +1,14 @@
 {
-  "linePct": 75.39,
-  "linesHit": 25674,
-  "linesFound": 34056,
-  "reachableLinePct": 86.37,
-  "reachableLinesHit": 22324,
-  "reachableLinesFound": 25847,
-  "fnPct": 89.05,
-  "fnsHit": 2285,
-  "fnsFound": 2566,
-  "filesMeasured": 248,
+  "linePct": 75.23,
+  "linesHit": 26070,
+  "linesFound": 34653,
+  "reachableLinePct": 86.26,
+  "reachableLinesHit": 22689,
+  "reachableLinesFound": 26303,
+  "fnPct": 88.85,
+  "fnsHit": 2304,
+  "fnsFound": 2593,
+  "filesMeasured": 250,
   "failedTestFiles": [],
   "files": [
     {
@@ -22,9 +22,9 @@
     },
     {
       "file": "src/components/views/ai-configuration-view.tsx",
-      "hit": 31,
-      "found": 667,
-      "pct": 4.6476761619190405,
+      "hit": 32,
+      "found": 705,
+      "pct": 4.539007092198582,
       "fHit": 1,
       "fFound": 2,
       "fPct": 50
@@ -282,6 +282,15 @@
       "fPct": 100
     },
     {
+      "file": "src/components/views/memory-configuration-panel.tsx",
+      "hit": 210,
+      "found": 333,
+      "pct": 63.06306306306306,
+      "fHit": 6,
+      "fFound": 14,
+      "fPct": 42.857142857142854
+    },
+    {
       "file": "src/lib/source-guidance.ts",
       "hit": 55,
       "found": 86,
@@ -289,15 +298,6 @@
       "fHit": 2,
       "fFound": 2,
       "fPct": 100
-    },
-    {
-      "file": "src/components/ui/card.tsx",
-      "hit": 38,
-      "found": 59,
-      "pct": 64.40677966101694,
-      "fHit": 4,
-      "fFound": 7,
-      "fPct": 57.14285714285714
     },
     {
       "file": "src/lib/intent-pipeline.ts",
@@ -417,6 +417,15 @@
       "fPct": 100
     },
     {
+      "file": "src/lib/cognee-config-push.ts",
+      "hit": 111,
+      "found": 156,
+      "pct": 71.15384615384616,
+      "fHit": 4,
+      "fFound": 7,
+      "fPct": 57.14285714285714
+    },
+    {
       "file": "src/lib/real-connectors.ts",
       "hit": 701,
       "found": 977,
@@ -453,15 +462,6 @@
       "fPct": 75
     },
     {
-      "file": "src/lib/llm-config.ts",
-      "hit": 256,
-      "found": 352,
-      "pct": 72.72727272727273,
-      "fHit": 27,
-      "fFound": 30,
-      "fPct": 90
-    },
-    {
       "file": "src/lib/doc-versioning.ts",
       "hit": 81,
       "found": 111,
@@ -478,6 +478,24 @@
       "fHit": 34,
       "fFound": 36,
       "fPct": 94.44444444444444
+    },
+    {
+      "file": "src/lib/llm-config.ts",
+      "hit": 274,
+      "found": 371,
+      "pct": 73.8544474393531,
+      "fHit": 30,
+      "fFound": 33,
+      "fPct": 90.9090909090909
+    },
+    {
+      "file": "src/components/ui/card.tsx",
+      "hit": 45,
+      "found": 60,
+      "pct": 75,
+      "fHit": 5,
+      "fFound": 7,
+      "fPct": 71.42857142857143
     },
     {
       "file": "src/lib/tool-router-agentic.ts",
@@ -1225,6 +1243,15 @@
       "fHit": 16,
       "fFound": 16,
       "fPct": 100
+    },
+    {
+      "file": "src/app/api/llm-config/memory/route.ts",
+      "hit": 158,
+      "found": 159,
+      "pct": 99.37106918238993,
+      "fHit": 9,
+      "fFound": 10,
+      "fPct": 90
     },
     {
       "file": "src/app/api/agent/dashboard/sessions/route.ts",
@@ -2071,15 +2098,6 @@
       "fHit": 1,
       "fFound": 1,
       "fPct": 100
-    },
-    {
-      "file": "src/lib/cognee-config-push.ts",
-      "hit": 109,
-      "found": 109,
-      "pct": 100,
-      "fHit": 4,
-      "fFound": 7,
-      "fPct": 57.14285714285714
     },
     {
       "file": "src/lib/conversation-export.ts",

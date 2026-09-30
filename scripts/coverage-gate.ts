@@ -223,6 +223,11 @@ const FLOORS: Record<string, number> = {
   'src/app/api/webhooks/license/route.ts': 100, // merged 100.00%; was one of the untested routes
   'src/app/api/analytics/route.ts': 100, // merged 100.00%; was one of the untested routes
   'src/app/api/llm-config/route.ts': 100, // merged 100.00%; was one of the untested routes
+  // The SECOND credential store, and the one that also pushes to another process. Floored just under
+  // its measurement (99.37%) rather than at 100 because one line — the read-back helper shared with
+  // the create response — is reached only through a path this suite does not drive. A floor above the
+  // measurement would be a number nobody can satisfy, which is how a gate stops being read.
+  'src/app/api/llm-config/memory/route.ts': 98, // re-measured 99.37% (158/159)
   'src/app/api/monitoring/route.ts': 100, // merged 100.00%; was one of the untested routes
   'src/app/api/auth/accept-invite/route.ts': 100, // merged 100.00%; was one of the untested routes
   'src/app/api/setup/complete/route.ts': 100, // merged 100.00%; was one of the untested routes

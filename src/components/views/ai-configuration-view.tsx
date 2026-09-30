@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import {
   Bot,
   Brain,
+  Info,
   KeyRound,
   Server,
   RefreshCw,
@@ -37,6 +38,7 @@ import type { PublicLlmConfig } from '@/lib/types'
 import { extractError } from '@/lib/extract-error'
 import { handleSessionFailure } from '@/lib/session-guard'
 import { CogneeCard } from '@/components/views/cognee-card'
+import { MemoryConfigurationPanel } from '@/components/views/memory-configuration-panel'
 
 /**
  * Build the PUT body for a model change.
@@ -393,26 +395,28 @@ export function AIConfigurationView() {
     <div className="space-y-3">
       <Tabs value={tab} onValueChange={setTab} className="min-h-[500px]">
         <TabsList className="w-max">
+          {/*
+            NAMED FOR WHAT THEY CONFIGURE, because "LLM / Embedding / AI Memory" asked an operator to
+            infer which model fed which consumer — and two of the three DID feed different consumers
+            with different credentials.
+
+            `Chat Configuration` answers chat and the agentic loop. `AI Memory Configuration` is the
+            sidecar's own extraction provider plus where its memory physically lives. `Embedding` stays
+            its own tab because it belongs to RAG (documents), not to either model above it — the
+            memory embedder is fixed by the deployment, so that tab REPORTS it rather than offering a
+            field that could not take effect.
+          */}
           <TabsTrigger value="llm" className="gap-1.5 text-xs">
             <Bot className="h-3.5 w-3.5" />
-            LLM
+            Chat Configuration
+          </TabsTrigger>
+          <TabsTrigger value="memory" className="gap-1.5 text-xs">
+            <Brain className="h-3.5 w-3.5" />
+            AI Memory Configuration
           </TabsTrigger>
           <TabsTrigger value="embedding" className="gap-1.5 text-xs">
             <Server className="h-3.5 w-3.5" />
             Embedding
-          </TabsTrigger>
-          {/*
-            AI Memory lives here as well as under Knowledge.
-
-            WHY BOTH: this view is where an admin already goes to configure the model and embedding
-            endpoint, and memory needs its OWN model credentials — so the tab that explains that
-            belongs beside the two settings it is adjacent to. Knowledge keeps its tab because that
-            is where the memory's EFFECT is visible (documents, graph, cognify status). Neither is a
-            duplicate link: they show the same card for two different tasks.
-          */}
-          <TabsTrigger value="memory" className="gap-1.5 text-xs">
-            <Brain className="h-3.5 w-3.5" />
-            AI Memory
           </TabsTrigger>
         </TabsList>
 
@@ -601,6 +605,31 @@ export function AIConfigurationView() {
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
+              {/*
+                MEMORY USES THE SAME EMBEDDER, AND THIS SAYS SO RATHER THAN OFFERING A FIELD.
+
+                The memory sidecar embeds through the deployment's own bundled model — its
+                `EMBEDDING_MODEL`/`EMBEDDING_DIMENSIONS` come from `.env.cognee`, and its settings API
+                accepts no embedding parameters at all (its `LLMConfigInputDTO` and
+                `VectorDBConfigInputDTO` carry provider/model/key/url only). So a second embedding form
+                here would be a control that cannot take effect: the field would save, the panel would
+                show the new value, and extraction would keep using the old model.
+
+                Stated because the alternative is an operator assuming memory follows THIS form. It
+                does not, and the consequence of assuming it does is the same silent-zero-similarity
+                failure the embedding dimension work already cost once.
+              */}
+              <div className="flex items-start gap-2 rounded-md border border-border/70 bg-muted/20 p-2.5 text-[11px] text-muted-foreground">
+                <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                <div>
+                  <strong>AI Memory shares this embedder.</strong> The memory sidecar embeds with the
+                  deployment&apos;s bundled model (<code className="font-mono">{DEFAULT_EMBEDDING_MODEL}</code>, 384
+                  dimensions), set in <code className="font-mono">.env.cognee</code> — it is not
+                  configurable from this screen, and changing the model here would not change what memory
+                  uses. It must stay 384-dimensional to match the{' '}
+                  <code className="font-mono">vector(384)</code> column both consumers write to.
+                </div>
+              </div>
               {/* status row */}
               <div className="flex flex-wrap items-center gap-2">
                 {cfg?.embeddingApiKeyMasked ? (
@@ -715,7 +744,17 @@ export function AIConfigurationView() {
           </Card>
         </TabsContent>
 
-        <TabsContent value="memory" className="mt-2">
+        <TabsContent value="memory" className="mt-2 space-y-3">
+          {/*
+            The dedicated provider + the storage facts first, then the operational card.
+
+            ORDER IS THE POINT. `CogneeCard` is the memory OPERATIONS surface — documents, cognify
+            status, re-cognify, clear graph. An operator arriving to answer "what model extracts for
+            me, and where does it keep the result?" had to read past all of that to find out, and the
+            answer to the storage half was not on this screen at all. Configuring comes before
+            operating.
+          */}
+          <MemoryConfigurationPanel />
           <CogneeCard />
         </TabsContent>
       </Tabs>

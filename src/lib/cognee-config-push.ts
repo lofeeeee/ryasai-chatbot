@@ -1,4 +1,4 @@
-import { getLlmRuntimeConfig } from '@/lib/llm-config'
+import { getMemoryLlmConfig } from '@/lib/llm-config'
 import { getCogneeServerOptions } from '@/lib/cognee-core'
 import { scopedLogger } from '@/lib/logger'
 
@@ -66,6 +66,13 @@ export interface CogneeProviderPushResult {
    * accepted — and `error` carries the operator-facing explanation.
    */
   modelMismatch?: boolean
+  /**
+   * Which config the pushed credentials came from: the org's dedicated memory row, or the chat row it
+   * falls back to. Returned rather than inferred so the operator can see WHICH model memory is
+   * actually extracting with — the whole point of a separate memory config is being able to tell the
+   * two states apart, and a screen that renders them identically makes the feature invisible.
+   */
+  source?: 'memory' | 'chat'
 }
 
 const log = scopedLogger('cognee-config-push')
@@ -85,7 +92,7 @@ export async function pushCogneeProviderConfig(): Promise<CogneeProviderPushResu
     return { ok: false, detail: 'Memory is off (no COGNEE_SERVER_URL).', error: 'Memory is not configured.' }
   }
 
-  const cfg = await getLlmRuntimeConfig()
+  const cfg = await getMemoryLlmConfig()
   if (!cfg) {
     // Nothing to share. This is a normal state, not an error: an install that has not configured a
     // provider yet cannot have memory extract anything, and the diagnostics panel already says so.
@@ -166,10 +173,12 @@ export async function pushCogneeProviderConfig(): Promise<CogneeProviderPushResu
       endpoint: cfg.baseUrl,
       endpointDropped,
       modelMismatch,
+      source: cfg.source,
     })
     return {
       ok: true,
       detail,
+      source: cfg.source,
       ...(modelMismatch
         ? {
             modelMismatch: true,
