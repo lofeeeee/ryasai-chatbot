@@ -29,7 +29,7 @@ import { DocCard } from '@/components/views/knowledge-base/doc-card'
 import { MemoryStatusCard } from '@/components/views/memory-status-card'
 import { CogneeCard } from '@/components/views/cognee-card'
 import { VectorStorePanel } from '@/components/views/knowledge-base/vector-store-panel'
-import { MemoryConfigurationPanel } from '@/components/views/memory-configuration-panel'
+import { MemoryConfigurationPanel, readSidecarState } from '@/components/views/memory-configuration-panel'
 import { versionsOutcome } from '@/components/views/knowledge-base/doc-detail-dialog'
 import type { DocumentItem } from '@/lib/types'
 
@@ -698,5 +698,194 @@ describe('MemoryConfigurationPanel — "follows chat" must not render as "unconf
     const html = await renderComponent(React.createElement(MemoryConfigurationPanel))
     expect(html).toContain('Could not load the memory configuration')
     expect(html).toContain('not an empty one')
+  })
+
+  test('following chat renders NO editable field and no armed Save', async () => {
+    /*
+     * The follow-chat branch is a working state, and a rendered form on it is read as an unfinished one:
+     * every empty box looks like something left to fill in, and Save would pin memory to the chat model
+     * permanently. The fields are one click away instead, behind a control that says what it does.
+     *
+     * Asserted on the absence of the CONTROLS, not on a wrapper class: a layout change that revealed the
+     * inputs without their labels would still be the defect this pins.
+     */
+    g.fetch = stub(null, 'chat')
+    const html = await renderComponent(React.createElement(MemoryConfigurationPanel))
+    expect(html).toContain('Use a dedicated model')
+    expect(html).not.toContain('Save and share with memory')
+    expect(html).not.toContain('id="mem-model"')
+    expect(html).not.toContain('id="mem-base"')
+    expect(html).not.toContain('id="mem-key"')
+  })
+
+  test('the endpoint gap is handed over as a copyable .env.cognee LINE, not a sentence', async () => {
+    /*
+     * The operator's action is literally a paste into a file on the host, so the line has to be in the
+     * DOM in the exact form it is typed — `OPENAI_API_BASE=<the stored value>`. A prose sentence names
+     * the variable and leaves the value to be retyped, which is where a gateway URL gets typo'd into a
+     * provider error that names the wrong cause.
+     */
+    g.fetch = stub(
+      { provider: 'OPENAI_COMPATIBLE', baseUrl: 'https://mem.example/v1', model: 'fast-model', apiKeyMasked: 'sk-ab••••' },
+      'memory',
+    )
+    const html = await renderComponent(React.createElement(MemoryConfigurationPanel))
+    expect(html).toContain('OPENAI_API_BASE=https://mem.example/v1')
+    expect(html).toContain('env.cognee')
+    // The endpoint must NOT be presented as shared: the sidecar's settings API cannot carry it.
+    expect(html).toContain('cannot reach it')
+  })
+
+  test('a store the sidecar DID report is shown as its provider, not as unknown', async () => {
+    // The other direction for the four-row grid: an always-"not reported" grid would satisfy the
+    // unknown-state test above while telling an operator nothing about a sidecar that answered.
+    g.fetch = stub(null, 'chat', [
+      { name: 'relational_db', status: 'healthy', provider: 'postgres' },
+      { name: 'vector_db', status: 'healthy', provider: 'pgvector' },
+      { name: 'graph_db', status: 'healthy', provider: 'kuzu' },
+      { name: 'file_storage', status: 'healthy', provider: 'local' },
+    ])
+    const html = await renderComponent(React.createElement(MemoryConfigurationPanel))
+    expect(html).toContain('postgres')
+    expect(html).toContain('local')
+    // All four named, so nothing is left in the unknown state and the footnote is gone entirely.
+    expect(html).not.toContain('not reported')
+    /*
+     * The footnote must be ABSENT, asserted on a phrase it owns in both of its forms.
+     *
+     * The two assertions above do NOT establish this, and the negative control proved it: a plant that
+     * rendered the footnote unconditionally (guarding on `MEMORY_STORES.length > 0` instead of on the
+     * missing count) still passed, because the all-reported footnote reads "0 of 4 stores were absent"
+     * — a sentence containing neither "not reported" nor the unreported-case wording. A footnote
+     * telling an operator that zero stores are unknown, on a card where four rows already say so, is
+     * noise at best and a hedge against the rows at worst.
+     */
+    expect(html).not.toContain('absent from the sidecar')
+  })
+
+  test('a PARTIALLY reported sidecar keeps the unnamed stores visible and says they are unknown', async () => {
+    /*
+     * The middle state, and the one the four-row grid exists for: a sidecar that answered but named only
+     * some backends. Collapsing this to prose (the old behaviour) lost the distinction between "this
+     * store was not reported" and "this screen has nothing to say".
+     */
+    g.fetch = stub(null, 'chat', [
+      { name: 'relational_db', status: 'healthy', provider: 'postgres' },
+      { name: 'vector_db', status: 'healthy', provider: 'pgvector' },
+      { name: 'llm_provider', status: 'healthy', provider: 'openai' },
+    ])
+    const html = await renderComponent(React.createElement(MemoryConfigurationPanel))
+    expect(html).toContain('Knowledge graph')
+    expect(html).toContain('File storage')
+    expect(html).toContain('not reported')
+    expect(html).toContain('2 of 4 stores were absent')
+    // The unreported-everything sentence must NOT fire here: it claims a total blackout, which is a
+    // different (and false) statement about a sidecar that answered with two of its four stores.
+    expect(html).not.toContain('not reporting its storage backends')
+  })
+
+  test('the storage badge prints the REACHABILITY the payload supports, not a green default', async () => {
+    /*
+     * The badge is the one line an operator reads before deciding whether to investigate, so each of its
+     * four states is asserted THROUGH the component. Testing `readSidecarState` alone is not enough: it
+     * returns the right word while the badge renders a different one, which is exactly what a plant
+     * swapping the unreachable branch for a green "Reachable" proved — the pure-function tests stayed
+     * green because the defect was in the mapping to the label, one layer below them.
+     */
+    const badge = async (data: Record<string, unknown>) => {
+      g.fetch = stubWithCognee(data)
+      const html = await renderComponent(React.createElement(MemoryConfigurationPanel))
+      // Four payloads in one test means four renders into one container, which React refuses to adopt
+      // twice. Unmounting between them keeps each state a fresh mount — the alternative, four near
+      // identical tests, would hide that they are one comparison.
+      root?.unmount()
+      return html
+    }
+
+    // The measured dev-install shape: enabled, sidecar down. It must NOT read as a healthy service, and
+    // it must NOT read as switched off either.
+    const down = await badge({ enabled: true, connected: false, mode: 'disabled', diagnostics: null })
+    expect(down).toContain('Unreachable')
+    expect(down).not.toContain('>Reachable<')
+    expect(down).not.toContain('Memory off')
+
+    const up = await badge({
+      enabled: true,
+      connected: true,
+      mode: 'postgres',
+      diagnostics: { components: [{ name: 'vector_db', status: 'healthy', provider: 'pgvector' }] },
+    })
+    expect(up).toContain('Reachable')
+
+    // A genuinely switched-off install is neither of the above, and the grid says so rather than asking
+    // the operator to chase a sidecar nothing started.
+    const off = await badge({ enabled: false, connected: false, mode: 'disabled', diagnostics: null })
+    expect(off).toContain('Memory off')
+    expect(off).toContain('Memory is switched off')
+
+    // No usable verdict in the payload at all: "unknown", never a claim in either direction.
+    const unknown = await badge({})
+    expect(unknown).toContain('Status unknown')
+  })
+})
+
+/**
+ * The same two endpoints the component reads, with an arbitrary `/api/cognee` body.
+ *
+ * A separate stub from `stub` above because that one derives the diagnostics purely from a component
+ * array; this one needs to vary `enabled`/`connected`/`mode`, which is where the badge's verdict lives.
+ */
+function stubWithCognee(data: Record<string, unknown>): typeof fetch {
+  return (async (url: string) => {
+    if (String(url).includes('/api/llm-config/memory')) {
+      return json({ ok: true, data: { memory: null, source: 'chat' } })
+    }
+    return json({ ok: true, data })
+  }) as unknown as typeof fetch
+}
+
+/* ------------------------------------------------------- sidecar reachability */
+
+/**
+ * The storage badge reads reachability, and the FIRST version of it got this wrong in the direction
+ * that costs an operator the most time.
+ *
+ * `cogneeHealth()` returns `mode: 'disabled'` in TWO cases that mean opposite things: memory switched
+ * off, and a sidecar URL that did not answer. Keying the badge on `mode` therefore printed "Memory off"
+ * — an instruction to go and turn something on — on an install whose memory was enabled and whose
+ * sidecar was merely down. MEASURED against the running dev install: `{enabled: true, connected: false,
+ * mode: 'disabled'}`. The fix keys on `enabled` and `connected`, which are the switch and the
+ * reachability, and drops `mode` from the decision entirely.
+ */
+describe('readSidecarState — "memory off" and "sidecar down" are not one value', () => {
+  test('an ENABLED install whose sidecar did not answer is unreachable, never "off"', () => {
+    // The exact payload the dev install returns. `mode: 'disabled'` is what made this read as "off".
+    expect(readSidecarState({ enabled: true, connected: false, mode: 'disabled' })).toBe('unreachable')
+  })
+
+  test('a genuinely switched-off memory reads as off', () => {
+    expect(readSidecarState({ enabled: false, connected: false, mode: 'disabled' })).toBe('off')
+  })
+
+  test('a reachable sidecar reads as reachable, and its component list is proof of it', () => {
+    expect(readSidecarState({ enabled: true, connected: true, mode: 'postgres' })).toBe('reachable')
+    // `/api/cognee` omits nothing today, but a cached or older body may drop `connected`. Components can
+    // only exist because `/health/detailed` answered, so the list wins over the missing flag rather than
+    // rendering four rows it plainly just read as "unknown".
+    expect(readSidecarState({ diagnostics: { components: [{ name: 'vector_db' }] } })).toBe('reachable')
+  })
+
+  test('an empty component list is NOT proof of reachability', () => {
+    // `components: []` is the shape a response with no diagnosis has. Treating it as a successful probe
+    // would be the green-badge-over-nothing failure this repo catalogues.
+    expect(readSidecarState({ enabled: true, connected: false, diagnostics: { components: [] } })).toBe(
+      'unreachable',
+    )
+    expect(readSidecarState({ diagnostics: { components: [] } })).toBe('unknown')
+  })
+
+  test('a payload that says nothing either way is unknown, not a verdict', () => {
+    expect(readSidecarState(null)).toBe('unknown')
+    expect(readSidecarState({})).toBe('unknown')
   })
 })
