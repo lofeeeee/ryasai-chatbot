@@ -1,6 +1,21 @@
 import { test, expect, describe, mock, afterEach } from 'bun:test'
 import { traceLlmCall, getRecentTraces, getTraceStats, postLangfuseScore } from '@/lib/observability'
+import { enterWithOrg } from '@/lib/prisma-tenant'
 
+/**
+ * NOTE ON THIS FILE'S ORG CONTEXT (the readers became org-scoped).
+ *
+ * The module-global ring buffer now stamps every trace with the `organizationId` from `getOrgContext()`, and the
+ * readers return only the calling org's traces. Every call below runs with NO org context, so its traces land in
+ * the no-org bucket and the readers default to that same bucket. That is why the pre-existing calls needed no
+ * update: this file exercises the buffer's MECHANICS (ordering, the 100 cap, field pass-through, forwarding), not
+ * tenancy. The tenancy assertions live in the describe block at the bottom of this file and, for the end-to-end
+ * guarantee, in observability-org-scope.test.ts — which mocks nothing and drives the real route.
+ *
+ * Verified rather than assumed: `enterWithOrg` inside a `beforeEach` does NOT reach the test body on Bun 1.4.2, so
+ * a context established there would leave these tests in the no-org bucket while LOOKING scoped. Each test that
+ * wants an org enters it in its own body.
+ */
 const originalFetch = global.fetch
 afterEach(() => {
   global.fetch = originalFetch
@@ -556,5 +571,75 @@ describe('observability — the forward failure path is guarded TWICE, and the i
     })
     await new Promise((r) => setTimeout(r, 50))
     expect(getRecentTraces(50).some((t) => t.purpose === purpose)).toBe(true)
+  })
+})
+
+describe('observability — org scoping of the shared buffer (the cross-tenant leak)', () => {
+  // The buffer is a module GLOBAL, shared by every org in the process, and it is NOT a Prisma query — so the
+  // tenant extension cannot scope it and `enterWithOrg` alone scopes nothing. These are the unit-level assertions;
+  // observability-org-scope.test.ts carries the same guarantee end-to-end through the real route.
+  const ORG_X = 'org-x-unit'
+  const ORG_Y = 'org-y-unit'
+
+  test('a trace is stamped with the recording org, and only that org reads it back', () => {
+    const purpose = `unit-scope-${Math.random()}`
+    enterWithOrg(ORG_X)
+    traceLlmCall({
+      purpose,
+      provider: 'x',
+      model: 'm',
+      inputPreview: 'for-org-x-only',
+      outputPreview: '',
+      latencyMs: 1,
+    })
+
+    enterWithOrg(ORG_Y)
+    const seenByY = getRecentTraces(100)
+    expect(seenByY.some((t) => t.purpose === purpose)).toBe(false)
+
+    enterWithOrg(ORG_X)
+    const seenByX = getRecentTraces(100)
+    expect(seenByX.some((t) => t.purpose === purpose)).toBe(true)
+    expect(seenByX.find((t) => t.purpose === purpose)?.organizationId).toBe(ORG_X)
+  })
+
+  test('the org argument alone scopes a read, with no ambient context', () => {
+    const purpose = `unit-arg-${Math.random()}`
+    enterWithOrg(ORG_X)
+    traceLlmCall({ purpose, provider: 'x', model: 'm', inputPreview: '', outputPreview: '', latencyMs: 1 })
+    expect(getRecentTraces(100, ORG_X).some((t) => t.purpose === purpose)).toBe(true)
+    expect(getRecentTraces(100, ORG_Y).some((t) => t.purpose === purpose)).toBe(false)
+  })
+
+  test('stats count only the calling org, and are not zeroed for the recording org', () => {
+    enterWithOrg(ORG_X)
+    const beforeX = getTraceStats()
+    traceLlmCall({
+      purpose: `unit-stats-${Math.random()}`,
+      provider: 'x',
+      model: 'm',
+      inputPreview: '',
+      outputPreview: '',
+      latencyMs: 1,
+    })
+    expect(getTraceStats(ORG_X).totalCalls).toBe(beforeX.totalCalls + 1)
+    enterWithOrg(ORG_Y)
+    expect(getTraceStats(ORG_Y).totalCalls).not.toBe(beforeX.totalCalls + 1)
+  })
+
+  test('an explicit org contradicting the context returns nothing (fail closed)', () => {
+    enterWithOrg(ORG_X)
+    expect(getRecentTraces(100, ORG_Y)).toEqual([])
+    expect(getTraceStats(ORG_Y)).toEqual({ totalCalls: 0, avgLatencyMs: 0, errorRate: 0, totalTokens: 0 })
+  })
+
+  test('with NO org anywhere, traces and reads share the no-org bucket — still never a tenant\'s', () => {
+    const purpose = `unit-noorg-${Math.random()}`
+    traceLlmCall({ purpose, provider: 'x', model: 'm', inputPreview: '', outputPreview: '', latencyMs: 1 })
+    const seenByOrgX = (() => {
+      enterWithOrg(ORG_X)
+      return getRecentTraces(100)
+    })()
+    expect(seenByOrgX.some((t) => t.purpose === purpose)).toBe(false)
   })
 })

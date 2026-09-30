@@ -18,6 +18,51 @@ const PLAN_RANK: Record<string, number> = {
 
 export type Plan = 'starter' | 'pro' | 'enterprise' | 'flat'
 
+/**
+ * The plans this build actually knows about. Anything else is UNKNOWN and must
+ * never be persisted.
+ *
+ * WHY THIS EXISTS — a MEASURED commercial hazard, not a style preference.
+ *
+ * `license-client.ts` used to store `data.plan` verbatim from the signed
+ * validator response. Both `quotaFor` and `hasPlan` fall back to `starter` for
+ * an unrecognised value — deliberately, because failing closed is the safe
+ * direction for a QUOTA. But the blast radius of that fallback is not a quota
+ * at all: `starter` is the most restrictive tier, so a validator that renames
+ * a plan, drops the field, or returns a typo would silently reduce a PAYING
+ * flat-licence install to 3 users / 1 data source / 25 documents, and answer
+ * 403 to Schedules, MCP and Agentic with a message that names a plan the
+ * customer never bought.
+ *
+ * Nothing in the test suite could catch it: `e2e/mock-license-validator.ts`
+ * defaults an unknown key to `enterprise`, so every green run exercised the
+ * happy path only.
+ *
+ * So the value crossing the trust boundary is validated HERE, once, instead of
+ * being trusted at each of the four write sites (the same four that already
+ * drifted apart once — see the INCIDENT note on `licenseUpdateFromResult`).
+ */
+export const KNOWN_PLANS: readonly Plan[] = ['starter', 'pro', 'enterprise', 'flat']
+
+/**
+ * Resolve a plan string from an untrusted source (the signed validator
+ * response, a webhook body) to a known plan.
+ *
+ * Returns `null` for anything unrecognised — NOT `starter`. The caller decides
+ * what to do, because the two callers want different things: a validation
+ * result should keep its previously stored plan (the spread in
+ * `licenseUpdateFromResult` leaves the column untouched), while a first-time
+ * write should record the commercial reality rather than a downgrade.
+ *
+ * Normalises case and trims, because `"Pro"` and `" pro "` are the same plan to
+ * a human and must not become a downgrade.
+ */
+export function normalizePlan(raw: unknown): Plan | null {
+  if (typeof raw !== 'string') return null
+  const value = raw.trim().toLowerCase()
+  return (KNOWN_PLANS as readonly string[]).includes(value) ? (value as Plan) : null
+}
+
 export function hasPlan(userPlan: string | null | undefined, minPlan: Plan): boolean {
   const userRank = PLAN_RANK[userPlan ?? 'starter'] ?? 0
   const requiredRank = PLAN_RANK[minPlan] ?? 0

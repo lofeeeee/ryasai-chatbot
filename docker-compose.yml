@@ -58,6 +58,15 @@ services:
       # healthy-looking similarity score. Scoped to the compose service name,
       # not a wildcard.
       - LLM_ALLOWED_HOSTS=${LLM_ALLOWED_HOSTS:-local-embeddings}
+      # Where the DEEP health check (/api/health) reaches the bundled embedding
+      # service. Set from the compose file, which is where that service is
+      # defined, so a fresh install probes it with no operator input. Unset is a
+      # SUPPORTED state — a BYOK install pointing at a hosted embedder runs no
+      # local service, and the probe then reports "not configured" without failing
+      # the container. `:-` keeps it overridable per deployment; a literal here
+      # would OVERRIDE an operator's .env (environment beats env_file) and leave a
+      # permanent, false "degraded" entry on an install with no such service.
+      - LOCAL_EMBEDDINGS_URL=${LOCAL_EMBEDDINGS_URL:-http://local-embeddings:8081}
     depends_on:
       db:
         condition: service_healthy
@@ -71,14 +80,42 @@ services:
       # a total outage, which is the opposite of the intended degradation.
       cognee:
         condition: service_started
-    # ponytail: liveness probe against /api/v1/health (no DB hit — dependency
-    # status lives at /api/health). bun is the runtime image, so no curl needed.
+    # THIS CHECK PROBES THE DEPENDENCY-AWARE ROUTE, and that is the fix for a
+    # measured production defect: it used to probe /api/v1/health, which touches
+    # NOTHING and answered ok:true unconditionally — so with POSTGRES DEAD the
+    # container still reported `healthy` and no orchestrator ever restarted it
+    # (silent-failure class #14, a dead mechanism reporting itself healthy).
+    #
+    # /api/health answers 503 when a CRITICAL dependency is unreachable. Only `db`
+    # is critical; redis, the license validator, the cognee memory sidecar and
+    # local-embeddings are reported in `degraded` WITHOUT changing the status,
+    # because all four are optional by design and a check that failed on a
+    # transient sidecar blip would restart-loop a container over a dependency the
+    # product is built to survive. The split is stated once, in
+    # CRITICAL_CHECKS in src/lib/health-status.ts.
+    #
+    # /api/v1/health remains the LIVENESS probe (public, fast, no dependency
+    # touched) for orchestrators and the public site — see its route header for
+    # why the two questions stay separate.
+    #
+    # THE FAILING BODY IS PRINTED into the health log, so `docker compose ps` /
+    # `docker inspect` NAMES the dependency that is down instead of showing a bare
+    # "unhealthy". The endpoint's error strings are sanitized classes (never
+    # hosts, ports or connection strings), which is what makes that safe.
+    #
+    # WINDOW, and why these numbers: 5 x 30s = 150s of CONTINUOUS failure before
+    # unhealthy, so a single slow query never restarts the app; `start_period`
+    # 180s covers a cold boot (the `migrate` schema push plus the first pool
+    # warm-up) without a spurious restart; `timeout` 10s exceeds the endpoint's own
+    # worst-case probe budget (its longest single probe is 2.5s, and the probes run
+    # CONCURRENTLY so the answer is the slowest one, not their sum). bun is the
+    # runtime image, so no curl is needed.
     healthcheck:
-      test: ["CMD-SHELL", "bun -e \"const r = await fetch('http://127.0.0.1:3000/api/v1/health'); process.exit(r.ok ? 0 : 1)\""]
+      test: ["CMD-SHELL", "bun -e \"try { const r = await fetch('http://127.0.0.1:3000/api/health'); const b = await r.text(); if (!r.ok) console.error('unhealthy:', b.slice(0, 400)); process.exit(r.ok ? 0 : 1) } catch (e) { console.error('unreachable:', (e && e.message) || e); process.exit(1) }\""]
       interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 60s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
     restart: unless-stopped
     networks:
       - ryasai-net

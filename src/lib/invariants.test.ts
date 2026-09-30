@@ -723,8 +723,27 @@ describe('invariant: plan quotas are enforced, not decorative', () => {
       'src/app/api/org/license/route.ts',
       'src/app/api/org/route.ts',
     ])
+    // COMMENTS ARE STRIPPED FIRST, because a bare `.includes('findUnique')` matches the
+    // WORD wherever it appears — including in a comment explaining that findUnique is
+    // not used. That is a false positive, but a loud one, and the sibling arm of this
+    // very test already fixed the same defect ("Comments stripped first: a module that
+    // EXPLAINS in prose why it stopped using `findUnique` must not be flagged for
+    // saying the word. This cost a false positive on the very file fixed by the change
+    // above."). The route scan was the arm that did not get the fix.
+    //
+    // It fired for real: the `billing/orders/[id]` docstring now documents WHY it uses
+    // findFirst rather than findUnique, and the guard flagged the route for naming the
+    // operation it deliberately avoids.
+    //
+    // Still matches an IDENTIFIER, not an INVOCATION, which this repo's rule warns
+    // about ("prefer matching an invocation, a call count, or behaviour over a bare
+    // identifier"). Comment-stripping is the minimum fix that resolves the false
+    // positive without silently widening the allowlist — which would be the wrong
+    // direction for a guard protecting against cross-tenant IDOR.
+    const stripComments = (src: string) =>
+      src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
     const routeFiles = globSync('src/app/api/**/route.ts').filter((rel) =>
-      readFileSync(join(REPO_ROOT, rel), 'utf8').includes('findUnique'),
+      stripComments(readFileSync(join(REPO_ROOT, rel), 'utf8')).includes('findUnique'),
     )
     const offenders = routeFiles.filter((rel) => !ALLOWED.has(rel))
     expect(offenders).toEqual([])
@@ -1098,5 +1117,140 @@ describe('invariant: columns the runtime DDL creates are DECLARED in the Prisma 
     const model = schema.slice(schema.indexOf('model DocumentChunk'), schema.indexOf('model DocumentVersion'))
     expect(model).toMatch(/embedding\s+Unsupported\("vector\(384\)"\)/)
     expect(ragFts).toContain('to_tsvector')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// N. Every organizationId-bearing model is in ORG_SCOPED_MODELS
+// ---------------------------------------------------------------------------
+// INCIDENT (model added 2026-09, leak found 2026-10): `Order` carried
+// `organizationId` in prisma/schema.prisma but was absent from `ORG_SCOPED_MODELS`
+// in src/lib/prisma-tenant.ts. The tenant extension therefore NEVER FIRED for it, so
+// `GET /api/billing/orders/[id]` — which takes a client-supplied order id and used
+// the CORRECT operation (`findFirst`) after calling the CORRECT ritual
+// (`enterWithOrg`) — returned another org's `status`, `months`, `amountIdr` and
+// `licenseIssued` for any order id in the install.
+//
+// Measured by driving the real `$allOperations` handler; same process, same shape:
+//     Document.findFirst -> WHERE (id = $1 AND organizationId = $2)   <- scoped
+//     Order.findFirst    -> WHERE  id = $1                            <- NOT scoped
+//
+// WHY NOTHING CAUGHT IT — there were TWO guard dimensions and this was a THIRD:
+//   - this file enforced the OPERATION  (findUnique vs findFirst, with an allowlist)
+//   - tenant-route-guard.test.ts enforced the RITUAL (enterWithOrg on every route)
+//   - NOTHING enforced MODEL MEMBERSHIP.
+// Both existing guards stayed green while it leaked: the leaking call had the right
+// operation and the right ritual, and the extension simply never ran.
+//
+// The precise completeness guard is `tenant-scope-coverage.test.ts` (it imports the
+// real set and reports the missing model BY NAME). This block is the TEXT-LEVEL
+// cross-check and uses a DIFFERENT mechanism on purpose — it reads the two files as
+// source rather than importing. Two guards that both trust one import are one guard;
+// this one still fires if that import is mocked, renamed, or replaced.
+describe('invariant: no model with organizationId is left unscoped', () => {
+  const tenantSrc = readRepo('src/lib/prisma-tenant.ts')
+  // Read here rather than reusing the `schema` in the block above: that one is scoped to
+  // its own `describe`, and a shared binding would couple this guard's input to a
+  // neighbour's refactor.
+  const scopedSchema = readRepo('prisma/schema.prisma')
+
+  /** The `new Set([...])` literal for ORG_SCOPED_MODELS, as source text, comments removed. */
+  function scopedModelsBlock(): string {
+    const start = tenantSrc.indexOf('const ORG_SCOPED_MODELS')
+    expect(start, 'ORG_SCOPED_MODELS declaration not found — this guard cannot parse it').toBeGreaterThan(-1)
+    const end = tenantSrc.indexOf('])', start)
+    expect(end, 'ORG_SCOPED_MODELS literal is unterminated — this guard cannot parse it').toBeGreaterThan(start)
+    // COMMENTS ARE STRIPPED FIRST, AND STRIPPING WAS NEGATIVE-CONTROLLED INTO PLACE.
+    //
+    // Without this the guard was VACUOUS. The comment above the set explains the fix in
+    // the words "WHY 'order' IS HERE AND WAS NOT BEFORE", so deleting the real `'order',`
+    // ENTRY left the quoted word behind in a comment, the regex still matched it, and the
+    // suite stayed at 55 pass / 0 fail with the defect planted. Measured, not theorised.
+    //
+    // That is this repo's documented #1 failure mode — "a guard matching a WORD, not a
+    // CALL" — and the second time in this file alone (the instrumentation guard matched an
+    // identifier that survived inside an import). A guard that a COMMENT can satisfy
+    // reports safety it does not have.
+    return tenantSrc
+      .slice(start, end)
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '')
+  }
+
+  test('the parse extracts real entries (guards against a vacuous empty list)', () => {
+    // Without this, a rename/restructure could make every assertion below compare two
+    // empty lists and pass — the "guard that cannot fail" class this repo has paid for.
+    const block = scopedModelsBlock()
+    const entries = [...block.matchAll(/'([a-zA-Z][a-zA-Z0-9]*)'/g)].map((m) => m[1]!)
+    expect(entries.length).toBeGreaterThanOrEqual(29)
+    expect(entries).toContain('document')
+    expect(entries).toContain('order')
+  })
+
+  test('every schema model carrying organizationId is scoped, or is a stated exception', () => {
+    // Model blocks parsed by brace-depth matching, NOT a regex over the whole file: a
+    // `model String` FIELD (LlmConfig) matches a naive `^model\s+(\w+)` header pattern
+    // and would inject a phantom model into this list.
+    const models: Array<{ name: string; body: string }> = []
+    let current: { name: string; lines: string[] } | null = null
+    for (const raw of scopedSchema.split('\n')) {
+      const line = raw.trim()
+      const header = /^model\s+(\w+)\s*\{\s*$/.exec(line)
+      if (header) {
+        current = { name: header[1]!, lines: [] }
+        continue
+      }
+      if (current && line === '}') {
+        models.push({ name: current.name, body: current.lines.join('\n') })
+        current = null
+        continue
+      }
+      if (current) current.lines.push(line)
+    }
+    if (current) {
+      const c = current as { name: string; lines: string[] }
+      models.push({ name: c.name, body: c.lines.join('\n') })
+    }
+    expect(models.length, 'schema parse found too few models to be trustworthy').toBeGreaterThanOrEqual(31)
+
+    // Exceptions, read from their own declaration so the two lists cannot drift.
+    const excStart = tenantSrc.indexOf('export const ORG_SCOPE_EXCEPTIONS')
+    expect(excStart, 'ORG_SCOPE_EXCEPTIONS not found — update this guard with the rename').toBeGreaterThan(-1)
+    const exceptionBlock = tenantSrc.slice(excStart, tenantSrc.indexOf('\n}', excStart))
+    const exceptions = new Set(
+      [...exceptionBlock.matchAll(/^\s{2}([a-zA-Z][a-zA-Z0-9]*):/gm)].map((m) => m[1]!),
+    )
+    expect(exceptions.has('invitation'), 'invitation must be the recorded exception').toBe(true)
+
+    const scoped = new Set(
+      [...scopedModelsBlock().matchAll(/'([a-zA-Z][a-zA-Z0-9]*)'/g)].map((m) => m[1]!),
+    )
+
+    const unscoped = models
+      .filter((m) => /^organizationId\s+String\b/m.test(m.body))
+      .map((m) => (m.name.charAt(0).toLowerCase() + m.name.slice(1)))
+      .filter((m) => !scoped.has(m) && !exceptions.has(m))
+
+    expect(
+      unscoped,
+      `These models have organizationId in prisma/schema.prisma but are NOT in ORG_SCOPED_MODELS ` +
+        `(src/lib/prisma-tenant.ts): ${unscoped.join(', ')}. Every Prisma operation on them is ` +
+        `UNSCOPED — a cross-tenant leak that neither the findUnique allowlist above nor ` +
+        `tenant-route-guard.test.ts can detect, because the leaking call can have the right ` +
+        `operation AND the right route ritual. Add each to ORG_SCOPED_MODELS, or to ` +
+        `ORG_SCOPE_EXCEPTIONS with its reason.`,
+    ).toEqual([])
+  })
+
+  test('the exceptions are justified, and Organization is NOT one of them', () => {
+    // `Invitation` is exempt because accepting an invite is pre-auth: the token IS the
+    // credential and no org context exists to inject. `Organization` must NEVER appear
+    // as an exception — it has no `organizationId` column at all, which is a different
+    // fact, and recording it as an exception would make the list read as "org scoping
+    // deliberately skipped for the tenant root" instead of "nothing to scope".
+    const excStart = tenantSrc.indexOf('export const ORG_SCOPE_EXCEPTIONS')
+    const exceptionBlock = tenantSrc.slice(excStart, tenantSrc.indexOf('\n}', excStart))
+    expect(exceptionBlock).toMatch(/pre-auth/i)
+    expect(exceptionBlock).not.toMatch(/^\s{2}organization:/m)
   })
 })

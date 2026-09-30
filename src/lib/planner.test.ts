@@ -736,6 +736,127 @@ describe('planQuery — the entry point the router actually calls', () => {
   })
 })
 
+// ===========================================================================
+// The provider's system-message ceiling — MEASURED, not assumed.
+//
+// The customer's BYOK provider DISCARDS a `role:'system'` message above ~2000 characters WHOLE
+// rather than truncating it: 1800 chars reports `prompt_tokens` 411, 2100+ reports 44 (the user
+// message alone), 3/3 reproducible. The same text as a USER message has no ceiling (12000 chars
+// reports 1558 prompt_tokens and is still obeyed). That is silent-failure class 11 — an
+// instruction never DELIVERED, which presents as a model ignoring its prompt — and it already
+// cost this repo the Text-to-SQL rules (3033 chars) and the intent prompt (2872 chars).
+//
+// MEASURED DEFECT THIS BLOCK GUARDS: `planQuery`'s JSON-fallback system message was 3023
+// characters, so on every request that reached that path (planQueryWithTools returns null —
+// no runtime config, a non-array reply, a JSON parse failure, a validatePlan throw) the ENTIRE
+// planner rule set was dropped. The RULES now ride in the user message.
+//
+// These tests measure the REAL RENDERED message through the public entry points, never a
+// constant: a constant would keep passing while the prompt grew, which is the whole failure.
+// The technique is copied from the `provider system-message ceiling` block in `ai.test.ts`.
+// ===========================================================================
+describe('planner prompts stay under the provider system-message ceiling', () => {
+  const CEILING = 2000
+
+  /** System text as the wire carries it: every system message, in order, joined as Anthropic does. */
+  const joinedSystemText = (msgs: Array<{ role: string; content: string }>): string =>
+    msgs.filter((m) => m.role === 'system').map((m) => m.content).join('\n\n')
+
+  /** The messages the tool-calling planner actually sent (it goes through the real transport). */
+  function sentByToolCallingPlanner(fetchMock: ReturnType<typeof mock>): Array<{ role: string; content: string }> {
+    const call = fetchMock.mock.calls[fetchMock.mock.calls.length - 1] as unknown as [string, RequestInit]
+    return (JSON.parse(call[1].body as string) as { messages: Array<{ role: string; content: string }> }).messages
+  }
+
+  test('the TOOL-CALLING planner system message is under the ceiling', async () => {
+    // The live path. Measured because the schema in `tools` is NOT part of the system message —
+    // if a future change folds the tool descriptions into it, only this measures the result.
+    const fetchMock = global.fetch as unknown as ReturnType<typeof mock>
+    fetchMock.mockImplementationOnce(async () => openaiToolCallResponse(
+      JSON.stringify({ steps: [{ id: 'step1', tool: 'sql', input: { question: 'sales' } }], needsSynthesis: false })
+    ))
+    await planQueryWithTools({ question: 'show me sales', availableTools: TOOLS })
+    const sys = sentByToolCallingPlanner(fetchMock)
+    const text = joinedSystemText(sys)
+    expect(text.length).toBeGreaterThan(0)
+    expect(text.length).toBeLessThan(CEILING)
+  })
+
+  test('the JSON-FALLBACK planner system message is under the ceiling — it was 3023', async () => {
+    // The defect itself. The fallback path is entered whenever planQueryWithTools returns null,
+    // so this is not a rare branch: it is every request on an install whose provider cannot do
+    // function calling, and every request where the tool-call plan fails validation.
+    const fetchMock = global.fetch as unknown as ReturnType<typeof mock>
+    fetchMock.mockImplementationOnce(async () => openaiTextResponse('no tools'))
+    mockGenerateChat.mockImplementationOnce(async () => JSON.stringify({
+      steps: [{ id: 'step1', tool: 'rag', input: { question: 'policy' } }],
+      needsSynthesis: false,
+    }))
+    await planQuery({ question: 'what is the refund policy', availableTools: TOOLS })
+    const [, systemPrompt] = mockGenerateChat.mock.calls[mockGenerateChat.mock.calls.length - 1] as unknown as [string, string]
+    expect(systemPrompt.length).toBeGreaterThan(0)
+    expect(systemPrompt.length).toBeLessThan(CEILING)
+  })
+
+  test('the rules were MOVED, not deleted — every rule the system prompt used to carry is still delivered', async () => {
+    /*
+     * The assertion that stops the cheap "fix". Shortening the system prompt by DELETING the rules
+     * satisfies a length check and re-creates the original defect in a quieter form: the model
+     * still never learns which tool to use and when. So the length assertion above is paired with
+     * this one, which requires each load-bearing rule to appear SOMEWHERE in the rendered request.
+     *
+     * The rules may live in the system message or a user message — the ceiling decides that, and
+     * only one of the two roles has one — so this checks the joined TEXT of the whole request.
+     */
+    const fetchMock = global.fetch as unknown as ReturnType<typeof mock>
+    fetchMock.mockImplementationOnce(async () => openaiTextResponse('no tools'))
+    mockGenerateChat.mockImplementationOnce(async () => JSON.stringify({
+      steps: [{ id: 'step1', tool: 'web_search', input: { query: 'news' } }],
+      needsSynthesis: false,
+    }))
+    await planQuery({ question: 'latest news about Acme', availableTools: TOOLS })
+    const [userPrompt, systemPrompt] = mockGenerateChat.mock.calls[mockGenerateChat.mock.calls.length - 1] as unknown as [string, string]
+    const everything = `${systemPrompt}\n\n${userPrompt}`
+
+    // The routing rules that decide web_search vs chat vs sql vs rag.
+    expect(everything).toContain('web_search')
+    expect(everything).toMatch(/NEVER use chat/i)
+    expect(everything).toContain('plugin:translate')
+    expect(everything).toContain('plugin:calculator')
+    expect(everything).toContain('admin:mcp_install')
+    // The DAG contract: without these the planner cannot express web_fetch -> install.
+    expect(everything).toContain('dependsOn')
+    expect(everything).toContain('{{stepN}}')
+    // The step ceiling, which bounds the blast radius of one plan.
+    expect(everything).toContain('Maximum 6 steps')
+    // The output contract, which the parser depends on.
+    expect(everything).toContain('needsSynthesis')
+  })
+
+  test('a long question and history do not push the system message over — they never enter it', async () => {
+    // The runtime additions after the static floor (toolList, memoryBlock, historyText) all go to
+    // the USER message. Measured with deliberately large ones, because a future edit that moves
+    // any of them into the system block would pass the small-input test above and fail here.
+    const fetchMock = global.fetch as unknown as ReturnType<typeof mock>
+    fetchMock.mockImplementationOnce(async () => openaiTextResponse('no tools'))
+    mockGenerateChat.mockImplementationOnce(async () => 'not a plan')
+    await planQuery({
+      question: 'q'.repeat(4000),
+      availableTools: TOOLS,
+      chatHistory: Array.from({ length: 10 }, (_, i) => ({ role: 'user' as const, content: `turn ${i} ` + 'y'.repeat(2000) })),
+    })
+    const [userPrompt, systemPrompt] = mockGenerateChat.mock.calls[mockGenerateChat.mock.calls.length - 1] as unknown as [string, string]
+    expect(systemPrompt.length).toBeLessThan(CEILING)
+    // The bulky material really did arrive — otherwise this would pass by carrying nothing.
+    // The history turns are capped at 2000 chars each, so assert on the question (uncapped) and
+    // on a run that fits inside that window.
+    expect(userPrompt).toContain('q'.repeat(4000))
+    expect(userPrompt).toContain('y'.repeat(1000))
+    expect(userPrompt).not.toContain('y'.repeat(2500))
+    expect(userPrompt.length).toBeGreaterThan(20000)
+  })
+})
+
 describe('synthesizeAnswer', () => {
   test('all steps successful + needsSynthesis → calls generateAnswer', async () => {
     const plan: Plan = {

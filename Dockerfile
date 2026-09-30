@@ -68,6 +68,16 @@ ENV HOME=/home/nextjs
 USER nextjs
 EXPOSE 3000
 VOLUME ["/app/db"]
-HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD bun -e "fetch('http://localhost:3000/api/v1/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"
+# Probes the DEEP endpoint, matching docker-compose.yml and the generated prod compose.
+#
+# MEASURED DEFECT this fixes: this probed /api/v1/health, which touches NO dependency and returns
+# 200 unconditionally — so the image reported `healthy` with Postgres gone, and an orchestrator would
+# never restart a broken container. /api/v1/health is still the LVENESS endpoint (a public probe that
+# must stay dependency-free); readiness is what a restart decision needs, and that is /api/health.
+#
+# The generous start-period/retries are deliberate: a transient blip must not restart-loop the
+# container, and only `db` is critical — redis, the validator, cognee and the embeddings service are
+# all optional by design and are REPORTED rather than fatal (see CRITICAL_CHECKS in health-status.ts).
+HEALTHCHECK --interval=30s --timeout=10s --start-period=180s --retries=5 \
+  CMD bun -e "try { const r = await fetch('http://localhost:3000/api/health'); if (!r.ok) console.error('unhealthy:', (await r.text()).slice(0, 400)); process.exit(r.ok ? 0 : 1) } catch (e) { console.error('unreachable:', (e && e.message) || e); process.exit(1) }"
 CMD ["bun", "server.js"]

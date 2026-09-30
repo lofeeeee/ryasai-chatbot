@@ -519,3 +519,193 @@ describe('validateAndSanitizeLlmSql — a fabricated constant SELECT is blocked'
     expect((r as { detectedNodes?: string[] }).detectedNodes).toEqual([';'])
   })
 })
+
+/**
+ * Row-cap bypasses — the ONLY row-count control in the text-to-SQL pipeline.
+ *
+ * WHY: `enforceRowCap` was written to fix these but had **zero callers**, so the shipped
+ * `validateAndSanitizeLlmSql` kept the original 12-line clamp and every bypass stayed live. These
+ * tests drive the SHIPPED path, so they cannot pass on a fix that nobody calls — the exact defect
+ * class this repo catalogs as #9 ("a fix placed where it can never run").
+ *
+ * Each case below was MEASURED broken before the fix: two spellings returned byte-identical SQL, and
+ * two others had the wrong half clamped while the row bound survived at a million.
+ */
+describe('row cap — the bypasses a lexical clamp must not leave open', () => {
+  const capped = (sql: string) => {
+    const r = validateAndSanitizeLlmSql(sql)
+    expect(r.ok, `unexpected block: ${r.ok ? '' : r.reason}`).toBe(true)
+    return r.sanitized.replace(/;\s*$/, '')
+  }
+
+  test('LIMIT ALL is REWRITTEN, not left alone', () => {
+    // Previously returned unchanged: the digits-only pattern matched nothing, and the append-guard
+    // then found the word LIMIT and skipped the cap. Two words defeated the whole control.
+    expect(capped('SELECT id FROM orders LIMIT ALL')).toBe('SELECT id FROM orders LIMIT 100')
+  })
+
+  test('LIMIT NULL is rewritten too — same statement, different spelling', () => {
+    expect(capped('SELECT id FROM orders LIMIT NULL')).toBe('SELECT id FROM orders LIMIT 100')
+  })
+
+  test('MySQL `LIMIT <offset>, <count>` clamps the COUNT and leaves the offset', () => {
+    // Previously clamped the FIRST number: the OFFSET was reduced to 100 while the COUNT stayed at
+    // 1,000,000. The count is the row bound, so the count is what must be clamped.
+    expect(capped('SELECT id FROM orders LIMIT 0, 1000000')).toBe('SELECT id FROM orders LIMIT 0, 100')
+    // And the offset must SURVIVE a clamp of the count — the number-boundary bug turned 500000 into
+    // 1000 here, which is a different row window than the model asked for.
+    expect(capped('SELECT id FROM orders LIMIT 500000, 2000000')).toBe(
+      'SELECT id FROM orders LIMIT 500000, 100',
+    )
+  })
+
+  test('FETCH FIRST is clamped IN PLACE — no second, invalid clause is appended', () => {
+    // Previously produced `... FETCH FIRST 1000000 ROWS ONLY LIMIT 100`. On MSSQL `LIMIT` is not
+    // valid syntax, so the "fix" turned a bypass into a syntax error.
+    expect(capped('SELECT id FROM orders FETCH FIRST 1000000 ROWS ONLY')).toBe(
+      'SELECT id FROM orders FETCH FIRST 100 ROWS ONLY',
+    )
+    expect(capped('SELECT id FROM orders FETCH NEXT 1000000 ROWS ONLY')).not.toContain('LIMIT')
+  })
+
+  test('MSSQL TOP is clamped in place — clamped count, no appended LIMIT', () => {
+    expect(capped('SELECT TOP 1000000 id FROM orders')).toBe('SELECT TOP 100 id FROM orders')
+    expect(capped('SELECT TOP (1000000) id FROM orders')).toBe('SELECT TOP (100) id FROM orders')
+  })
+
+  test('a LIMIT already under the cap is untouched, so the clamp is not a rewrite', () => {
+    expect(capped('SELECT id FROM orders LIMIT 5')).toBe('SELECT id FROM orders LIMIT 5')
+    expect(capped('SELECT id FROM orders LIMIT 5 OFFSET 20')).toBe('SELECT id FROM orders LIMIT 5 OFFSET 20')
+  })
+
+  test('OFFSET is never treated as a bound', () => {
+    // Clamping an offset changes WHICH rows return without bounding HOW MANY, so it is not a cap.
+    expect(capped('SELECT id FROM orders LIMIT 10 OFFSET 500000')).toBe(
+      'SELECT id FROM orders LIMIT 10 OFFSET 500000',
+    )
+  })
+
+  test('a bare SELECT still gets the cap appended', () => {
+    expect(capped('SELECT id FROM orders')).toBe('SELECT id FROM orders LIMIT 100')
+  })
+
+  test('CONTROL: `TOP` used as a COLUMN name is not REWRITTEN as a limit', () => {
+    // `SELECT top FROM parts` is a column reference, not a row limit, so the identifier must survive
+    // untouched. The cap is still APPENDED because the statement has no row limit at all — appending
+    // the cap to any limit-less SELECT is this function's established contract (pinned at HEAD).
+    // The distinction that matters: `top` is NOT rewritten into a limit expression.
+    const out2 = capped('SELECT top FROM parts')
+    expect(out2).toBe('SELECT top FROM parts LIMIT 100')
+    expect(out2).not.toContain('TOP 100')
+  })
+})
+
+/**
+ * The clamp must not corrupt NON-clause text, and must recognise every numeric literal spelling.
+ *
+ * Both halves were found by a second reader probing the first version of the fix:
+ *   - a limit-shaped value inside a STRING LITERAL was rewritten, silently changing the value the
+ *     query compares against (`WHERE note = 'LIMIT 999999'` -> `'LIMIT 100'`) — a wrong answer that
+ *     still parses, which is the worst shape of bug in a text-to-SQL pipeline;
+ *   - `_` separators and exponent form were unbounded, because the pattern only accepted `[0-9]`.
+ *     PostgreSQL 16 accepts `LIMIT 1_000_000` and `LIMIT 1e10`, so both were live bypasses.
+ */
+describe('row cap — must not corrupt non-clause text, and must see every numeric spelling', () => {
+  const out = (sql: string) => {
+    const r = validateAndSanitizeLlmSql(sql)
+    expect(r.ok).toBe(true)
+    return r.sanitized.replace(/;\s*$/, '')
+  }
+
+  test('a LIMIT-shaped value inside a STRING LITERAL is left byte-identical', () => {
+    // The value is DATA, not a clause. Rewriting it changes which rows the query selects.
+    expect(out("SELECT id FROM orders WHERE note = 'LIMIT 999999'")).toBe(
+      "SELECT id FROM orders WHERE note = 'LIMIT 999999' LIMIT 100",
+    )
+    expect(out("SELECT id FROM orders WHERE note = 'TOP 100 PERCENT'")).toContain("'TOP 100 PERCENT'")
+    expect(out("SELECT id FROM orders WHERE note = 'LIMIT ALL'")).toContain("'LIMIT ALL'")
+  })
+
+  test('a double-quoted IDENTIFIER containing a limit is left alone', () => {
+    expect(out('SELECT "LIMIT 999" FROM orders')).toContain('"LIMIT 999"')
+  })
+
+  test('underscore digit separators are clamped (PostgreSQL accepts them)', () => {
+    expect(out('SELECT id FROM orders LIMIT 1_000_000')).toBe('SELECT id FROM orders LIMIT 100')
+    expect(out('SELECT id FROM orders LIMIT 1_000_000, 2_000_000')).toBe(
+      'SELECT id FROM orders LIMIT 1_000_000, 100',
+    )
+  })
+
+  test('exponent form is clamped', () => {
+    expect(out('SELECT id FROM orders LIMIT 1e10')).toBe('SELECT id FROM orders LIMIT 100')
+    expect(out('SELECT id FROM orders LIMIT 5e0')).toBe('SELECT id FROM orders LIMIT 5')
+  })
+
+  test('DOCUMENTED GAP: an ARITHMETIC count is not bounded at this layer', () => {
+    // Pinned as a KNOWN LIMITATION rather than a passing claim. `1000000*100` is an expression, and
+    // bounding it needs a real parser — this is a lexical clamp. It is recorded here so the next
+    // reader does not mistake the absence for an oversight, and asserts the ACTUAL behaviour so a
+    // future improvement shows up as a failure to update rather than a silent change.
+    expect(out('SELECT id FROM orders LIMIT 1000000*100')).toBe('SELECT id FROM orders LIMIT 100*100')
+  })
+
+  test('DOCUMENTED GAP: MSSQL `TOP n PERCENT` is not a row count', () => {
+    // `100 PERCENT` means ALL rows, and expressing that as a `LIMIT` would change dialects. Left
+    // intact deliberately; note the statement is then uncapped, which is why this is documented.
+    expect(out('SELECT TOP 100 PERCENT id FROM orders')).toBe('SELECT TOP 100 PERCENT id FROM orders')
+  })
+})
+
+/**
+ * The clamp matches TEXT, so it must be blind to delimited IDENTIFIERS — not just literals.
+ *
+ * WHY THIS IS THE HIGHEST-SEVERITY CASE IN THIS FILE: a corrupted string literal changes a filter
+ * VALUE, but a corrupted identifier changes WHICH COLUMN IS READ. `[Credit Limit 5000]` was rewritten
+ * to `[Credit LIMIT 100]`, i.e. a different, probably non-existent column — and the aliased form
+ * (`AS [Limit 5000]`) changed the RESULT SET's field names while the query still SUCCEEDED, so no
+ * runtime error and no test would have caught it. Both are ordinary column names in the finance and
+ * ERP schemas this product is deployed against.
+ */
+describe('row cap — must be blind to delimited identifiers', () => {
+  const out = (sql: string) => {
+    const r = validateAndSanitizeLlmSql(sql)
+    expect(r.ok).toBe(true)
+    return r.sanitized.replace(/;\s*$/, '')
+  }
+
+  test('MSSQL bracket identifiers survive byte-identical', () => {
+    expect(out('SELECT [Credit Limit 5000] FROM loans')).toBe(
+      'SELECT [Credit Limit 5000] FROM loans LIMIT 100',
+    )
+    expect(out('SELECT id FROM loans WHERE [Credit Limit 5000] > 10')).toBe(
+      'SELECT id FROM loans WHERE [Credit Limit 5000] > 10 LIMIT 100',
+    )
+  })
+
+  test('an ALIASED identifier is preserved, so the result set keeps its field names', () => {
+    // The subtlest shape: the query runs, and the caller's field name changes without an error.
+    expect(out('SELECT COUNT(*) AS [Limit 5000] FROM t')).toBe(
+      'SELECT COUNT(*) AS [Limit 5000] FROM t LIMIT 100',
+    )
+  })
+
+  test('MySQL backtick identifiers survive too', () => {
+    expect(out('SELECT `credit limit 5000` FROM loans')).toBe(
+      'SELECT `credit limit 5000` FROM loans LIMIT 100',
+    )
+  })
+
+  test('an identifier merely SPELLING a limit keyword is not rewritten', () => {
+    // Rule 1 matches the bare words ALL/NULL, so an identifier reading "Limit All" used to be
+    // replaced wholesale — no digits required.
+    expect(out('SELECT [Limit All] FROM t')).toBe('SELECT [Limit All] FROM t LIMIT 100')
+    expect(out('SELECT `Limit All` FROM t')).toBe('SELECT `Limit All` FROM t LIMIT 100')
+  })
+
+  test('CONTROL: a PostgreSQL ARRAY SUBSCRIPT `[1]` is NOT masked as an identifier', () => {
+    // `[` is ambiguous. A subscript must stay visible or a real clause after it could be hidden;
+    // here it simply proves masking keys on the CONTENT (a letter/space), not on the bracket.
+    expect(out('SELECT tags[1] FROM t')).toBe('SELECT tags[1] FROM t LIMIT 100')
+  })
+})

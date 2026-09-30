@@ -292,6 +292,35 @@ function maskStringLiterals(sql: string): string {
       }
       continue
     }
+    /*
+     * Backtick (MySQL) and bracket (MSSQL) identifiers are masked too, and this was a MEASURED
+     * corruption before it was: `SELECT [Credit Limit 5000] FROM loans` was rewritten to
+     * `SELECT [Credit LIMIT 100] FROM loans`, i.e. a DIFFERENT COLUMN NAME. That is worse than
+     * corrupting a literal — a literal only changes a filter VALUE, while an identifier changes which
+     * column is read, and an aliased one (`AS [Limit 5000]`) silently changes the result set's field
+     * names while the query still succeeds. `[Credit Limit 5000]` and `[Limit 5000]` are ordinary
+     * column names in exactly the finance/ERP schemas this product is deployed against.
+     *
+     * `[` IS AMBIGUOUS — it also opens a PostgreSQL ARRAY SUBSCRIPT (`tags[1]`), which must NOT be
+     * treated as an identifier and must stay visible. The two are told apart by what the brackets
+     * CONTAIN: an identifier holds a letter or a space, a subscript holds only digits/expressions.
+     * Required here because masking `[1]` would hide a real `LIMIT`-shaped subscript from the guard.
+     */
+    if (ch === '`' || (ch === '[' && /^\[[^\]]*[A-Za-z ][^\]]*\]/.test(sql.slice(i)))) {
+      const close = ch === '`' ? '`' : ']'
+      out += ch
+      i++
+      while (i < sql.length) {
+        if (sql[i] === close) {
+          out += close
+          i++
+          break
+        }
+        out += '_'
+        i++
+      }
+      continue
+    }
     out += ch
     i++
   }
@@ -430,16 +459,144 @@ export function validateAndSanitizeLlmSql(generatedSql: string): GuardrailResult
     }
   }
 
-  // Clamp any existing LIMIT n / LIMIT n OFFSET m down to SQL_MAX_LIMIT.
-  compiled = compiled.replace(
-    /\bLIMIT\s+(\d+)(?:\s+OFFSET\s+(\d+))?/gi,
-    (_m, n, off) => {
-      const clamped = Math.min(Number(n), SQL_MAX_LIMIT)
-      return off !== undefined ? `LIMIT ${clamped} OFFSET ${off}` : `LIMIT ${clamped}`
+  /*
+   * Clamp the ROW-COUNT clause to SQL_MAX_LIMIT. This lexical clamp is the ONLY row-count control in
+   * the text-to-SQL pipeline, so the bypasses below were the whole cap rather than a detail of it.
+   *
+   * THREE MEASURED BYPASSES this replaces, each re-confirmed by executing the previous version:
+   *
+   *   LIMIT ALL / LIMIT NULL   the old pattern required DIGITS, so it matched nothing, and the
+   *                            `/\bLIMIT\b/` append-guard then found the word "LIMIT" and skipped the
+   *                            cap. Two words defeated the only row bound. Both spellings now rewrite
+   *                            TO the cap, because a non-numeric limit means "no bound at all".
+   *   LIMIT 0, 1000000         MySQL's `LIMIT <offset>, <count>` — the old pattern clamped the FIRST
+   *                            number, i.e. the OFFSET, and left the COUNT at a million. The count is
+   *                            the row bound, so the count is what gets clamped.
+   *   FETCH FIRST / TOP        the append-guard saw no `LIMIT` and appended one, producing
+   *                            `... FETCH FIRST 1000000 ROWS ONLY LIMIT 100` and
+   *                            `SELECT TOP 1000000 ... LIMIT 100` — the first is invalid on MSSQL
+   *                            (`LIMIT` is not MSSQL syntax) and both are redundant. These spellings
+   *                            are now clamped in place, and no `LIMIT` is appended when one of them
+   *                            is already present.
+   *
+   * What this deliberately does NOT do: rewrite one clause spelling INTO another. An earlier attempt
+   * built `LIMIT n OFFSET m` and substituted it positionally, which turned
+   * `FETCH FIRST 1000000 ROWS ONLY` into `LIMIT 1000000 OFFSET 0 ONLY` and
+   * `SELECT TOP 1000000 id` into `SELECT TOP LIMIT 1000000 OFFSET 0 id` — syntactically broken in both
+   * dialects, and worse than the bypass. This version only ever replaces a NUMBER, never structure.
+   *
+   * Still not covered, and not fixable at this layer: cartesian joins, `SELECT *`, and work
+   * amplification such as `generate_series(1, 100000000)` — LIMIT bounds ROWS RETURNED, not the work
+   * the server does. `OFFSET` is left alone throughout: clamping it changes which rows come back
+   * without bounding how many, so it is not a cap.
+   */
+
+  // Presence checks are taken BEFORE any rewrite, so an appended cap can never be mistaken for one the
+  // model already wrote.
+  //
+  // `TOP` counts as a row limit ONLY when it directly follows the leading SELECT: deeper in the text it
+  // is an ordinary column name (`SELECT top FROM parts`), and clamping that would rewrite a reference.
+  // Clamp over the STRING-MASKED SQL, then apply the edits back onto the original by index.
+  //
+  // WHY MASKING IS MANDATORY HERE — a measured corruption, not a precaution. The clamp used to run
+  // on the RAW text, so a limit-looking value INSIDE A STRING LITERAL was rewritten:
+  // `WHERE note = 'LIMIT 999999'` became `WHERE note = 'LIMIT 100'`, silently changing the value the
+  // query compares against — an answer the model never asked for, in a statement that still parses.
+  // `maskStringLiterals` blanks literal CONTENT (keeping the quotes and length), so a `LIMIT` inside
+  // a literal can no longer be seen as a clause. Indices are preserved by that helper, which is what
+  // makes the in-place edits below safe.
+  const masked = maskStringLiterals(compiled)
+  const edits: { start: number; end: number; text: string }[] = []
+  const rewrite = (re: RegExp, make: (...groups: string[]) => string) => {
+    re.lastIndex = 0
+    for (let m = re.exec(masked); m; m = re.exec(masked)) {
+      edits.push({ start: m.index, end: m.index + m[0].length, text: make(...m.slice(1)) })
+    }
+  }
+
+  // The 1..100-char bound keeps the match near the start of the list.
+  //
+  // NOTE these presence checks read the MASKED text for the same reason. They must also run BEFORE any
+  // rewrite, so an appended cap can never be mistaken for one the model wrote.
+  const hasFetch = /\bFETCH\s+(?:FIRST|NEXT)\b/i.test(masked)
+  const hasTop = /\bSELECT\s{1,100}TOP\s*\(?\s*[\d_]/i.test(masked)
+  const hasLimit = /\bLIMIT\b/i.test(masked)
+
+  // A numeric literal, in every spelling PostgreSQL/MySQL accept: plain digits, `_` digit separators
+  // (`1_000_000`) and exponent form (`1e10`). All three were MEASURED unbounded before this: the
+  // digits-only pattern matched none of them, and the append-guard then saw the word `LIMIT` and
+  // skipped the cap. `Number('1_000_000')` is NaN in JS, so separators are stripped before
+  // converting; `Number('1e10')` is already correct.
+  // The FULL literal, including a fraction. `[\\d_]+(?:[eE]...)?` matched only the integer part of
+  // `1.9e9`, so the rewrite produced `LIMIT 1.9e9` from its own "clamp" and left the statement
+  // unbounded — MEASURED on PostgreSQL 16 (500000-row series, full set returned).
+  const NUM = '[\\d_]+(?:\\.[\\d_]+)?(?:[eE][+-]?[\\d_]+)?'
+  // `(?!\\w|\\.)` is the difference between clamping a number and clamping PART of one: with a bare
+  // `\\b`, `LIMIT 1000000.5e2` rewrote the `1000000` and left `100.5e2` = 10050 rows, MEASURED.
+  const LIT = `${NUM}(?![\\w.])`
+  const toNum = (raw: string) => Number(String(raw).replace(/_/g, ''))
+  // A number this layer cannot evaluate is emitted VERBATIM, never as `LIMIT NaN`.
+  const clampText = (raw: string) => {
+    const n = toNum(raw)
+    return Number.isFinite(n) ? String(Math.min(n, SQL_MAX_LIMIT)) : raw
+  }
+
+  // 1. `LIMIT ALL` / `LIMIT NULL` bound nothing — rewrite to the cap. Group 1 keeps the spelling out
+  // of the way so the replacement is uniform.
+  rewrite(/\bLIMIT\s+(?:ALL|NULL)\b/gi, () => `LIMIT ${SQL_MAX_LIMIT}`)
+
+  // 2. MySQL `LIMIT <offset>, <count>` — clamp the COUNT (second number), keep the offset. The offset
+  // is not a bound: reducing it changes WHICH rows return without bounding HOW MANY.
+  rewrite(
+    new RegExp(`\\bLIMIT\\s+(${LIT})\\s*,\\s*(${LIT})`, 'gi'),
+    (off, count) => `LIMIT ${off}, ${clampText(count)}`,
+  )
+
+  // 3. `LIMIT <count> [OFFSET <n>]` — clamp the count, keep the offset.
+  //
+  // The `(?!\s*,)` lookahead is load-bearing: without it this rule also matches the FIRST number of a
+  // MySQL `LIMIT <off>, <count>` and clamps the OFFSET — measured producing `LIMIT 100, 100` from
+  // `LIMIT 500000, 2000000`. A comma after the number means the form is rule 2's, not this one's.
+  // (A lookahead is ES5; only lookBEHIND needs ES2018, which this repo's target forbids.)
+  rewrite(
+    new RegExp(`\\bLIMIT\\s+(${LIT})(?!\\s*,)(?:\\s+OFFSET\\s+(${LIT}))?`, 'gi'),
+    (n, off) => {
+      return off !== undefined ? `LIMIT ${clampText(n)} OFFSET ${off}` : `LIMIT ${clampText(n)}`
     },
   )
-  // If (still) no LIMIT, append the cap.
-  if (!/\bLIMIT\b/i.test(compiled)) {
+
+  // 4. `FETCH FIRST|NEXT <n> ROWS ONLY` — clamp the count IN PLACE, leaving the spelling intact.
+  rewrite(
+    // `WITH TIES` is a SECOND spelling of this clause and was left uncapped: MEASURED on PostgreSQL 16,
+    // `ORDER BY 1 FETCH FIRST 1000000 ROWS WITH TIES` returned all 500000 rows while the guardrail
+    // reported success. Rewritten to `ONLY`, not merely renumbered, because ties ADD rows past the
+    // count — `WITH TIES` cannot express a hard cap at all.
+    new RegExp(`\\b(FETCH\\s+(?:FIRST|NEXT)\\s+)(${LIT})(\\s+ROWS?\\s+)(ONLY|WITH\\s+TIES)`, 'gi'),
+    (head, n, rows, mode) => `${head}${clampText(n)}${rows}${/^with/i.test(mode) ? 'ONLY' : mode}`,
+  )
+
+  // 5. MSSQL `TOP <n>` / `TOP (<n>)` after the leading SELECT — clamp the count in place.
+  rewrite(
+    new RegExp(`\\b(SELECT\\s{1,100}TOP\\s*\\(?\\s*)(${LIT})`, 'gi'),
+    (head, n) => `${head}${clampText(n)}`,
+  )
+
+  // Apply every edit right-to-left so earlier indices stay valid as later text changes length.
+  edits.sort((a, b) => b.start - a.start)
+  for (const e of edits) compiled = compiled.slice(0, e.start) + e.text + compiled.slice(e.end)
+
+  // Append the cap ONLY when no row-limit clause exists in ANY spelling the databases understand.
+  // Testing for the word `LIMIT` alone is what appended a second, invalid clause after FETCH/TOP.
+  //
+  // KNOWN CONSEQUENCE, stated because it is a real behaviour change and not an oversight: a statement
+  // whose only `TOP` is a COLUMN REFERENCE (`SELECT top FROM parts`) has no row limit, so the cap is
+  // appended — `... FROM parts LIMIT 100`. Appending the cap to any limit-less SELECT is the
+  // established contract here (a HEAD-era test pins "missing LIMIT -> appended as LIMIT 100"), and on
+  // a UNIQUE column it is a no-op. On a NON-unique one it changes the result to the first 100 rows.
+  // The alternative — treating a bare `top` as a row limit — would be wrong in the other direction:
+  // it would suppress the cap on every statement that merely mentions the word, which is the bypass
+  // this whole function exists to close.
+  if (!hasLimit && !hasFetch && !hasTop) {
     compiled = `${compiled} LIMIT ${SQL_MAX_LIMIT}`
   }
   compiled = `${compiled};`

@@ -475,8 +475,12 @@ describe('generateAnswer', () => {
     const messages = getSentMessages()
     const histMsg = messages.find((m) => m.content.includes('Prior conversation history'))
     expect(histMsg).toBeDefined()
-    expect(histMsg!.content).toContain('show me sales')
-    expect(histMsg!.content).toContain('sales are $42k')
+    // The turns arrive as REAL user/assistant messages (the mechanism the signpost describes), not
+    // as text embedded in the signpost — the label used to duplicate them, which made it 20,116
+    // characters of system message on a long conversation and got it discarded whole. Assert the
+    // dialogue turns, which is where the history is actually delivered.
+    expect(messages.filter((m) => m.role === 'user').map((m) => m.content)).toContain('show me sales')
+    expect(messages.filter((m) => m.role === 'assistant').map((m) => m.content)).toContain('sales are $42k')
   })
 
   test('a systemPromptPrefix is sent as the FIRST system message', async () => {
@@ -612,7 +616,9 @@ describe('generateChat', () => {
     const messages = getSentMessages()
     const histMsg = messages.find((m) => m.content.includes('Prior conversation history'))
     expect(histMsg).toBeDefined()
-    expect(histMsg!.content).toContain('show me products')
+    // Delivered as a real turn, not embedded in the signpost — see the note in the generateAnswer
+    // chatHistory test above for the measured 20,116-character discard this avoids.
+    expect(messages.filter((m) => m.role === 'user').map((m) => m.content)).toContain('show me products')
   })
 })
 
@@ -752,7 +758,9 @@ describe('streamChat', () => {
     const messages = getSentMessages()
     const histMsg = messages.find((m) => m.content.includes('Prior conversation history'))
     expect(histMsg).toBeDefined()
-    expect(histMsg!.content).toContain('what is X?')
+    // Delivered as a real turn, not embedded in the signpost — see the note in the generateAnswer
+    // chatHistory test above for the measured 20,116-character discard this avoids.
+    expect(messages.filter((m) => m.role === 'user').map((m) => m.content)).toContain('what is X?')
   })
 })
 
@@ -1103,6 +1111,155 @@ describe('provider system-message ceiling', () => {
     expect(carrier!.role).toBe('user')
     // The fence is what marks it as data rather than instructions.
     expect(carrier!.content).toContain('<<<RYASAI-UNTRUSTED-DATA>>>')
+  })
+
+  /*
+   * =========================================================================
+   * THE ORG PREFIX — the axis NO test measured before this block.
+   *
+   * Every existing prefix test passes a tiny fixed literal ("Be friendly.",
+   * "You are terse."), so the suite could not see the defect: `systemPromptPrefix`
+   * is UNBOUNDED server-side. Its sources:
+   *   - `promptSettings.systemPrompt` — the UI caps it at 8000, CLIENT-SIDE only;
+   *   - `savedPrompt.content` — `src/app/api/prompts/route.ts` validates only that
+   *     it is non-empty, so there is NO cap anywhere;
+   *   - the rolling session summary, concatenated ahead of either — measured at
+   *     ~2052 characters on its own, over the ceiling BY ITSELF.
+   * `mergePromptSettings` accepts any string. The app builds a system message out
+   * of all of it and hands it to a provider that discards it whole over ~2000
+   * characters, so a long org prompt silently became NO org prompt.
+   *
+   * A fixed literal cannot observe any of that. These tests set a long prefix and
+   * measure the REAL RENDERED message, the same technique as the two guards above.
+   * =========================================================================
+   */
+
+  test('a LONG systemPromptPrefix is demoted so the composed system message stays under the ceiling', async () => {
+    fetchChatResponse = 'ok'
+    // 8000 is the UI's own cap on promptSettings.systemPrompt — the largest value an operator can
+    // reach through the supported path, so it is the size this bound must survive.
+    const longPrefix = 'ORG RULE: always answer in Indonesian. ' + 'z'.repeat(8000)
+    await generateAnswer({
+      question: 'q',
+      context: 'rows: []',
+      source: 'SQL',
+      systemPromptPrefix: longPrefix,
+    })
+    const msgs = getSentMessages()
+    const sys = msgs.filter((m) => m.role === 'system').map((m) => m.content).join('\n\n')
+    expect(sys.length).toBeLessThan(CEILING)
+
+    // And the operator's instructions still ARRIVED — the cheap way to pass the assertion above is
+    // to shorten or drop the prefix, which re-creates the silent loss in a different place.
+    const carrier = msgs.find((m) => m.content.includes('ORG RULE: always answer in Indonesian.'))
+    expect(carrier).toBeDefined()
+    expect(carrier!.role).toBe('user')
+    expect(carrier!.content).toContain('z'.repeat(8000))
+  })
+
+  test('a session summary over the ceiling BY ITSELF is demoted too', async () => {
+    // The summary block is prepended to the prefix in the chat send route:
+    //   `[Earlier in this session (summary of older turns): ${session.summary}]`
+    // `generateSessionSummary` caps its OWN output at 2000, and the wrapper adds ~58 more — so the
+    // block alone is over the ceiling, with no `savedPrompt` involved at all.
+    fetchChatResponse = 'ok'
+    const summaryBlock = `[Earlier in this session (summary of older turns): ${'s'.repeat(2000)}]`
+    await generateAnswer({ question: 'q', context: 'rows: []', source: 'SQL', systemPromptPrefix: summaryBlock })
+    const msgs = getSentMessages()
+    const sys = msgs.filter((m) => m.role === 'system').map((m) => m.content).join('\n\n')
+    expect(summaryBlock.length).toBeGreaterThan(CEILING)
+    expect(sys.length).toBeLessThan(CEILING)
+    const carrier = msgs.find((m) => m.content.includes('Earlier in this session'))
+    expect(carrier!.role).toBe('user')
+  })
+
+  test('a SHORT prefix keeps its SYSTEM role — the demotion is a fallback, not a change of behaviour', async () => {
+    // The inverse direction, and it matters: the prefix is the OPERATOR's framing and carries the
+    // highest authority deliberately. Demoting every prefix would lose that, so the guard must only
+    // fire when it has to. Order is pinned too: the prefix is framing, and it must not end up after
+    // the retrieved context where it would read as part of the data.
+    fetchChatResponse = 'ok'
+    await generateAnswer({
+      question: 'q',
+      context: 'rows: []',
+      source: 'SQL',
+      systemPromptPrefix: 'You are a sales analyst. Be concise.',
+    })
+    const msgs = getSentMessages()
+    const prefix = msgs.find((m) => m.content === 'You are a sales analyst. Be concise.')
+    expect(prefix).toBeDefined()
+    expect(prefix!.role).toBe('system')
+    expect(msgs.indexOf(prefix!)).toBeLessThan(msgs.findIndex((m) => m.content.includes('CONTEXT')))
+  })
+
+  test('the STREAMING paths apply the same bound — a long prefix is demoted there too', async () => {
+    // streamAnswer/streamChat build their own message arrays. A bound applied only to the
+    // non-streaming twins would leave the SSE path (the one the chat UI actually uses) unfixed,
+    // which is the "sibling that did not get the rule" shape this repo keeps finding.
+    const longPrefix = 'ORG RULE: never quote competitor prices. ' + 'z'.repeat(8000)
+
+    streamTokens = ['ok']
+    for await (const _ of streamAnswer({ question: 'q', context: 'c', source: 'SQL', systemPromptPrefix: longPrefix })) {
+      // drain
+    }
+    let msgs = getSentMessages()
+    let sys = msgs.filter((m) => m.role === 'system').map((m) => m.content).join('\n\n')
+    expect(sys.length).toBeLessThan(CEILING)
+    let carrier = msgs.find((m) => m.content.includes('ORG RULE: never quote competitor prices.'))
+    expect(carrier).toBeDefined()
+    expect(carrier!.role).toBe('user')
+
+    for await (const _ of streamChat('q', undefined, longPrefix)) {
+      // drain
+    }
+    msgs = getSentMessages()
+    sys = msgs.filter((m) => m.role === 'system').map((m) => m.content).join('\n\n')
+    expect(sys.length).toBeLessThan(CEILING)
+    carrier = msgs.find((m) => m.content.includes('ORG RULE: never quote competitor prices.'))
+    expect(carrier).toBeDefined()
+    expect(carrier!.role).toBe('user')
+  })
+
+  test('every remaining SYSTEM message in this module is under the ceiling, measured end to end', async () => {
+    /*
+     * A sweep, not a spot check. Four prompts in this module already carry a ceiling incident
+     * between them, and each one was found only after the model took the blame for a prompt it
+     * never received. Sweeping the module's own entry points with deliberately LARGE inputs closes
+     * the "no test ever measured this one" gap that let the planner prompt reach 3023 characters.
+     *
+     * Each entry drives a real public entry point through the real transport, then measures the
+     * JOINED system text — the shape the wire carries, since the Anthropic builder concatenates
+     * every system message into one block.
+     */
+    const call = async (label: string, run: () => Promise<unknown>) => {
+      await run()
+      const msgs = getSentMessages()
+      const joined = msgs.filter((m) => m.role === 'system').map((m) => m.content).join('\n\n')
+      // The label is in the VALUE so a failure names WHICH prompt grew, not just a number.
+      expect(`${label}: ${joined.length < CEILING ? 'under' : 'OVER'}`).toBe(`${label}: under`)
+      // NON-VACUITY: an empty system message is also "under the ceiling", and a sweep that
+      // accepted it would report safety for a prompt that had been deleted. The real system
+      // messages here are an order of magnitude larger than this floor.
+      expect(`${label}: ${joined.length > 100 ? 'present' : 'MISSING'}`).toBe(`${label}: present`)
+      return joined.length
+    }
+
+    fetchChatResponse = 'ok'
+    fetchSqlResponse = '{"sql":"SELECT 1","explanation":"ok"}'
+    fetchRouterResponse = 'CHAT'
+
+    // The router prompt is the TIGHTEST fit in this module: 1936 characters, ~64 of headroom
+    // against the measured cliff. Measured explicitly so its size is a number in the suite rather
+    // than a hope — this is the prompt that would cross next.
+    expect(await call('routeQuery', () => routeQuery({ question: 'q', hasIntegrations: true, hasDocuments: true })))
+      .toBeGreaterThan(1900)
+    await call('generateAnswer + rowCount/truncated notes', () => generateAnswer({
+      question: 'q', context: 'c', source: 'SQL', rowCount: 100, truncated: true,
+      chatHistory: [{ role: 'user', content: 'x'.repeat(4000) }],
+    }))
+    await call('generateChat + history', () => generateChat('q', undefined, undefined,
+      Array.from({ length: 10 }, () => ({ role: 'user' as const, content: 'y'.repeat(3000) }))))
+    await call('generateSql', () => generateSql({ question: 'q', schemaDescription: 'TABLE t(c int)', provider: 'POSTGRESQL' }))
   })
 })
 
@@ -1654,17 +1811,46 @@ describe('historyToMessages — the window and the blank-turn filter', () => {
     expect(bodies).toEqual(['real question', 'real answer'])
   })
 
-  test('a long turn is truncated to 2000 characters in both the label and the turn', async () => {
+  test('a long turn is truncated to 2000 characters in the dialogue turn', async () => {
     const { historyToMessages } = await import('./ai')
     const out = historyToMessages([{ role: 'user', content: 'x'.repeat(5000) }])
     // The dialogue turn itself carries exactly the 2000-char window.
     expect(out[1].content).toHaveLength(2000)
     expect(out[1].content).toBe('x'.repeat(2000))
-    // The system label embeds that same truncated text, so the run of x is capped
-    // at 2000 and the 3000 dropped characters never reach the prompt either.
-    const afterPrefix = out[0].content.replace('Prior conversation history (most recent last):\nUser: ', '')
-    expect(/^x+$/.exec(afterPrefix)![0]).toHaveLength(2000)
+    // The 3000 dropped characters never reach the prompt.
     expect(out[0].content).not.toContain('x'.repeat(2001))
+    expect(out[1].content).not.toContain('x'.repeat(2001))
+  })
+
+  test('the system label does NOT duplicate the history — it was 20116 chars and got discarded', async () => {
+    /*
+     * MEASURED DEFECT this pins, with the number: the label used to EMBED the whole history a
+     * second time (`Prior conversation history (most recent last):\n${formatHistory(recent)}`).
+     * With ten realistic 2000-character turns that is 20,116 characters in ONE system message,
+     * and the provider DISCARDS a system message above ~2000 whole — so on any long conversation
+     * the label never arrived, while the same text was sent AND PAID FOR twice.
+     *
+     * The previous version of the test above asserted the duplication as CORRECT
+     * (`expect(/^x+$/.exec(afterPrefix)![0]).toHaveLength(2000)`), which is how it survived: a
+     * test pinning a lossy stage entrenches it. The assertion is now inverted on purpose.
+     */
+    const { historyToMessages } = await import('./ai')
+    const tenFullTurns = Array.from({ length: 10 }, (_, i) => ({
+      role: 'user' as const,
+      content: `turn ${i} ` + 'y'.repeat(2000),
+    }))
+    const out = historyToMessages(tenFullTurns)
+    const label = out[0]
+    expect(label.role).toBe('system')
+    // The label carries the SIGNAL — that these are prior turns — and none of the payload.
+    expect(label.content).toContain('Prior conversation history')
+    expect(label.content).not.toContain('y'.repeat(50))
+    // Measured against the real ceiling, not a vibe: the joined system text must fit.
+    const joinedSystem = out.filter((m) => m.role === 'system').map((m) => m.content).join('\n\n')
+    expect(joinedSystem.length).toBeLessThan(2000)
+    // The payload itself is still delivered — in the TURNS, which is the whole point.
+    expect(out).toHaveLength(11)
+    expect(out[10].content).toContain('y'.repeat(500))
   })
 
   test('an assistant turn stays assistant (not relabelled user)', async () => {

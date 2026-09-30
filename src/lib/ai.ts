@@ -18,6 +18,11 @@ import { selectRelevantPlugins } from '@/lib/plugin-selector'
 import { db } from '@/lib/db'
 import { LlmNotConfiguredError } from '@/lib/errors'
 import { wrapUntrusted } from '@/lib/evidence-boundary'
+import {
+  assertSystemPromptUnderCeiling,
+  assertSystemMessagesUnderCeiling,
+  orgSystemPrefixMessage,
+} from '@/lib/system-message-ceiling'
 
 // ---------------------------------------------------------------------------
 // Backend resolution + shared completion helpers
@@ -64,6 +69,38 @@ async function* chatStream(
 // ---------------------------------------------------------------------------
 
 export type RouteDecision = 'SQL' | 'RAG' | 'REST' | 'CHAT' | 'CONTEXTUAL_CHAT' | 'PLUGIN'
+
+/**
+ * The router's system message. 1936 characters today — under the ~2000-character ceiling, but with
+ * only ~64 characters of headroom, which is why it is measured by `assertSystemPromptUnderCeiling`
+ * rather than trusted to stay small. Named (rather than inline) so the guard can see it: this
+ * prompt is another candidate for the same silent discard that already cost this repo the intent
+ * prompt and the Text-to-SQL rules, and a guard cannot measure an expression it cannot name.
+ */
+export const ROUTER_SYSTEM_PROMPT =
+  'You are an enterprise AI router. Determine the handling ROUTE for the user message. ' +
+  'Answer ONLY with one word: SQL, RAG, REST, CHAT, or CONTEXTUAL_CHAT.\n' +
+  '- SQL: questions about structured data in connected databases — any question asking for ' +
+  'counts, totals, lists, or data from database tables. If the question asks "how many", ' +
+  '"berapa", "count", "total", "list", "show me", and databases are available, route to SQL.\n' +
+  '- RAG: questions about policies, SOPs, documents, procedures, guidelines, regulations, or non-structural text.\n' +
+  '- REST: questions that need to call whitelisted REST API endpoints on external systems.\n' +
+  '- CHAT: greetings, small talk, or general questions that do not need internal data.\n' +
+  '- CONTEXTUAL_CHAT: the user refers to a previous conversation OR provides new information/facts.\n' +
+  '  Examples of CONTEXTUAL_CHAT:\n' +
+  '  - "mention your answer again" → CONTEXTUAL_CHAT (not SQL)\n' +
+  '  - "what product did I ask about earlier?" → CONTEXTUAL_CHAT (not SQL)\n' +
+  '  - "how much does it cost?" (without mentioning a product) → CONTEXTUAL_CHAT (not SQL, because "it" = the cost of the product discussed earlier)\n' +
+  '  - "the best-selling product is SKU-902 with 5800 units" → CONTEXTUAL_CHAT (not SQL, because the user is stating a fact, not asking)\n' +
+  '  - "I want to say that..." → CONTEXTUAL_CHAT\n' +
+  '  Examples of SQL/RAG (not CONTEXTUAL_CHAT):\n' +
+  '  - "what is the stock of SKU-902?" → SQL (specific product mentioned + asking for data)\n' +
+  '  - "what is the stock opname procedure?" → RAG (asking about a document)\n' +
+  '  IMPORTANT RULE: if the message does NOT end with a question mark AND contains the words "is/that is/namely", it is likely a statement → CONTEXTUAL_CHAT.\n' +
+  '  IMPORTANT: When databases are available and the question asks about data (counts, lists, ' +
+  'totals, or mentions any table/entity name), prefer SQL over CHAT. Do NOT route to CHAT ' +
+  'just because the question does not mention "sales" or "customers" — any structured data ' +
+  'question goes to SQL.'
 
 export interface RoutingContext {
   question: string
@@ -227,35 +264,15 @@ export async function routeQuery(ctx: RoutingContext): Promise<{
   // what remains as background from PAST turns rather than material for this one.
   const routingBlock = routingMemoryBlock(ctx.memoryContext)
 
+  // The router prompt sits closest to the ceiling of any system message left in this file, and a
+  // discarded router prompt does not look like a delivery failure: the model returns prose, the
+  // caller below reads no known keyword and routes to CHAT, and every question silently stops
+  // reaching SQL/RAG. Warn once per label rather than per request.
+  assertSystemPromptUnderCeiling(ROUTER_SYSTEM_PROMPT, 'routeQuery')
+
   const decisionRaw = await chatOnce(
     [
-      {
-        role: 'system',
-        content:
-          'You are an enterprise AI router. Determine the handling ROUTE for the user message. ' +
-          'Answer ONLY with one word: SQL, RAG, REST, CHAT, or CONTEXTUAL_CHAT.\n' +
-          '- SQL: questions about structured data in connected databases — any question asking for ' +
-          'counts, totals, lists, or data from database tables. If the question asks "how many", ' +
-          '"berapa", "count", "total", "list", "show me", and databases are available, route to SQL.\n' +
-          '- RAG: questions about policies, SOPs, documents, procedures, guidelines, regulations, or non-structural text.\n' +
-          '- REST: questions that need to call whitelisted REST API endpoints on external systems.\n' +
-          '- CHAT: greetings, small talk, or general questions that do not need internal data.\n' +
-          '- CONTEXTUAL_CHAT: the user refers to a previous conversation OR provides new information/facts.\n' +
-          '  Examples of CONTEXTUAL_CHAT:\n' +
-          '  - "mention your answer again" → CONTEXTUAL_CHAT (not SQL)\n' +
-          '  - "what product did I ask about earlier?" → CONTEXTUAL_CHAT (not SQL)\n' +
-          '  - "how much does it cost?" (without mentioning a product) → CONTEXTUAL_CHAT (not SQL, because "it" = the cost of the product discussed earlier)\n' +
-          '  - "the best-selling product is SKU-902 with 5800 units" → CONTEXTUAL_CHAT (not SQL, because the user is stating a fact, not asking)\n' +
-          '  - "I want to say that..." → CONTEXTUAL_CHAT\n' +
-          '  Examples of SQL/RAG (not CONTEXTUAL_CHAT):\n' +
-          '  - "what is the stock of SKU-902?" → SQL (specific product mentioned + asking for data)\n' +
-          '  - "what is the stock opname procedure?" → RAG (asking about a document)\n' +
-          '  IMPORTANT RULE: if the message does NOT end with a question mark AND contains the words "is/that is/namely", it is likely a statement → CONTEXTUAL_CHAT.\n' +
-          '  IMPORTANT: When databases are available and the question asks about data (counts, lists, ' +
-          'totals, or mentions any table/entity name), prefer SQL over CHAT. Do NOT route to CHAT ' +
-          'just because the question does not mention "sales" or "customers" — any structured data ' +
-          'question goes to SQL.',
-      },
+      { role: 'system', content: ROUTER_SYSTEM_PROMPT },
       {
         role: 'user',
         content:
@@ -357,16 +374,17 @@ export async function generateSql(args: {
    */
   sqlRules?: string
 }): Promise<{ sql: string; explanation: string }> {
+  const sqlSystemPrompt =
+    `You are an expert ${args.provider} Text-to-SQL specialist. ` +
+    'Your task: convert a natural language question into ONE valid & efficient SELECT query, ' +
+    'following the RULES given in the next message. '
+  // Guarded rather than assumed: this is the prompt that measured 3033 characters before the RULES
+  // moved to a user message, which is why the split is visible here at all. The variable closes
+  // over a provider name, so it is measured at runtime rather than trusted on inspection.
+  assertSystemPromptUnderCeiling(sqlSystemPrompt, 'generateSql')
   const raw = await chatOnce(
     [
-      {
-        role: 'system',
-        content:
-          `You are an expert ${args.provider} Text-to-SQL specialist. ` +
-          'Your task: convert a natural language question into ONE valid & efficient SELECT query, ' +
-          'following the RULES given in the next message. ',
-
-      },
+      { role: 'system', content: sqlSystemPrompt },
       {
         // The RULES live in a USER message, not the system message.
         //
@@ -455,15 +473,6 @@ export async function generateAnswer(args: {
 }): Promise<string> {
   const sourceLabel = answerContextLabel(args.source)
   const messages: ChatMessage[] = []
-  if (args.systemPromptPrefix) {
-    messages.push({ role: 'system', content: args.systemPromptPrefix })
-  }
-  if (args.memoryContext) {
-    pushMemoryContext(messages, args.memoryContext)
-  }
-  if (args.chatHistory && args.chatHistory.length > 0) {
-    messages.push(...historyToMessages(args.chatHistory))
-  }
   // ponytail: empty results and LIMIT truncation used to reach the synthesis
   // prompt as bare "[]" / 100 rows with no framing — the model either invented
   // an explanation or presented a truncated set as complete. Surface both
@@ -476,21 +485,33 @@ export async function generateAnswer(args: {
     args.truncated
       ? `The result was TRUNCATED to the first ${args.rowCount} rows by the system row limit. Tell the user explicitly (e.g. "showing the first ${args.rowCount} matching rows") — never present a truncated set as the complete answer, and offer to narrow the question for a complete view. `
       : ''
-  messages.push({
-    role: 'system',
-    content:
-      `You are ryasai, an enterprise AI assistant. ` +
-      `Answer the user's question based on the CONTEXT provided. ` +
-      `If the question refers to prior data or conversation, use both the CONTEXT and the conversation history to answer. ` +
-      `Do not say data is unavailable if it appears in the context or history. ` +
-      emptyNote +
-      truncatedNote +
-      `If the CONTEXT marks a step FAILED, report that failure and its reason. ` +
-      `Never invent data, and never substitute manual setup instructions for the user to run by hand. ` +
-      `Never invent a REASON for a failure: do not claim a network problem, a blocked host, a timeout or a permission error unless the CONTEXT states it, and never tell the user to change firewall or security settings to fix something that was never attempted. If you could not answer, say what YOU did not find. If the question asks you to COMPARE two things and the CONTEXT covers only one, give that one and state plainly that the other was not available in this result — never relabel one source's rows as another's.` +
-      `Format numbers for readability. ` +
-      `Mention the data source naturally at the end of the answer.`,
-  })
+  // Built BEFORE the prefix is pushed, because the prefix's ROLE now depends on how much system
+  // budget this fixed block needs. See `orgSystemPrefixMessage`: an org prefix that does not fit
+  // alongside it is delivered as a USER message rather than pushing the assistant instructions
+  // over the provider's ceiling, where the provider drops the whole system message.
+  const systemContent =
+    `You are ryasai, an enterprise AI assistant. ` +
+    `Answer the user's question based on the CONTEXT provided. ` +
+    `If the question refers to prior data or conversation, use both the CONTEXT and the conversation history to answer. ` +
+    `Do not say data is unavailable if it appears in the context or history. ` +
+    emptyNote +
+    truncatedNote +
+    `If the CONTEXT marks a step FAILED, report that failure and its reason. ` +
+    `Never invent data, and never substitute manual setup instructions for the user to run by hand. ` +
+    `Never invent a REASON for a failure: do not claim a network problem, a blocked host, a timeout or a permission error unless the CONTEXT states it, and never tell the user to change firewall or security settings to fix something that was never attempted. If you could not answer, say what YOU did not find. If the question asks you to COMPARE two things and the CONTEXT covers only one, give that one and state plainly that the other was not available in this result — never relabel one source's rows as another's.` +
+    `Format numbers for readability. ` +
+    `Mention the data source naturally at the end of the answer.`
+  assertSystemPromptUnderCeiling(systemContent, 'generateAnswer')
+  if (args.systemPromptPrefix) {
+    messages.push(orgSystemPrefixMessage(args.systemPromptPrefix, 'generateAnswer', systemContent))
+  }
+  if (args.memoryContext) {
+    pushMemoryContext(messages, args.memoryContext)
+  }
+  if (args.chatHistory && args.chatHistory.length > 0) {
+    messages.push(...historyToMessages(args.chatHistory))
+  }
+  messages.push({ role: 'system', content: systemContent })
   messages.push({
     role: 'user',
     content:
@@ -498,6 +519,7 @@ export async function generateAnswer(args: {
       `CONTEXT (${sourceLabel}):\n${args.context}\n\n` +
       `Answer:`,
   })
+  assertSystemMessagesUnderCeiling(messages, 'generateAnswer')
   return chatOnce(messages, { purpose: 'synthesis' })
 }
 
@@ -706,25 +728,27 @@ export async function generateChat(
   chatHistory?: ChatMessage[],
 ): Promise<string> {
   const messages: ChatMessage[] = []
+  // Built first so the org prefix's ROLE can be decided against the system budget it must share
+  // (see `orgSystemPrefixMessage`); the push ORDER below is unchanged.
+  const systemContent =
+    'You are ryasai, an enterprise AI assistant. ' +
+    'You can help with: database queries (SQL), document search (RAG), REST API calls, and general chat. ' +
+    'When the user refers to prior conversation or data, use the conversation history to answer without needing a new query. ' +
+    'If the user provides new information, acknowledge and remember it. ' +
+    'Do not say data is unavailable if it was discussed in prior conversation history.'
+  assertSystemPromptUnderCeiling(systemContent, 'generateChat')
   if (systemPromptPrefix) {
-    messages.push({ role: 'system', content: systemPromptPrefix })
+    messages.push(orgSystemPrefixMessage(systemPromptPrefix, 'generateChat', systemContent))
   }
   if (memoryContext) {
     pushMemoryContext(messages, memoryContext)
   }
-  messages.push({
-    role: 'system',
-    content:
-      'You are ryasai, an enterprise AI assistant. ' +
-      'You can help with: database queries (SQL), document search (RAG), REST API calls, and general chat. ' +
-      'When the user refers to prior conversation or data, use the conversation history to answer without needing a new query. ' +
-      'If the user provides new information, acknowledge and remember it. ' +
-      'Do not say data is unavailable if it was discussed in prior conversation history.',
-  })
+  messages.push({ role: 'system', content: systemContent })
   if (chatHistory && chatHistory.length > 0) {
     messages.push(...historyToMessages(chatHistory))
   }
   messages.push({ role: 'user', content: question })
+  assertSystemMessagesUnderCeiling(messages, 'generateChat')
   return chatOnce(messages, { purpose: 'chat' })
 }
 
@@ -815,15 +839,6 @@ export async function* streamAnswer(args: {
   onUsage?: (usage: LlmUsage) => void
 }): AsyncGenerator<string, void, unknown> {
   const messages: ChatMessage[] = []
-  if (args.systemPromptPrefix) {
-    messages.push({ role: 'system', content: args.systemPromptPrefix })
-  }
-  if (args.memoryContext) {
-    pushMemoryContext(messages, args.memoryContext)
-  }
-  if (args.chatHistory && args.chatHistory.length > 0) {
-    messages.push(...historyToMessages(args.chatHistory))
-  }
   // ponytail: keep in sync with generateAnswer's empty/truncation notes.
   const emptyNote =
     args.rowCount === 0
@@ -833,26 +848,38 @@ export async function* streamAnswer(args: {
     args.truncated
       ? `The result was TRUNCATED to the first ${args.rowCount} rows by the system row limit. Tell the user explicitly (e.g. "showing the first ${args.rowCount} matching rows") — never present a truncated set as the complete answer, and offer to narrow the question for a complete view. `
       : ''
+  // Built before the prefix is pushed: the prefix is demoted to a USER message when it will not
+  // fit the surviving system budget (see `orgSystemPrefixMessage`). The streaming path needs the
+  // same bound as its non-streaming twin or the two would diverge on exactly the long prefix.
+  const systemContent =
+    'You are ryasai, an enterprise AI assistant. ' +
+    'Answer the user\'s question based on the CONTEXT provided. ' +
+    'If the question refers to prior data or conversation, use both the CONTEXT and the conversation history to answer. ' +
+    'Do not say data is unavailable if it appears in the context or history. ' +
+    emptyNote +
+    truncatedNote +
+    'If the CONTEXT marks a step FAILED, report that failure and its reason. ' +
+    'Never invent data, and never substitute manual setup instructions for the user to run by hand. ' +
+    `Never invent a REASON for a failure: do not claim a network problem, a blocked host, a timeout or a permission error unless the CONTEXT states it, and never tell the user to change firewall or security settings to fix something that was never attempted. If you could not answer, say what YOU did not find. If the question asks you to COMPARE two things and the CONTEXT covers only one, give that one and state plainly that the other was not available in this result — never relabel one source's rows as another's.` +
+    'Format numbers for readability.'
+  assertSystemPromptUnderCeiling(systemContent, 'streamAnswer')
+  if (args.systemPromptPrefix) {
+    messages.push(orgSystemPrefixMessage(args.systemPromptPrefix, 'streamAnswer', systemContent))
+  }
+  if (args.memoryContext) {
+    pushMemoryContext(messages, args.memoryContext)
+  }
+  if (args.chatHistory && args.chatHistory.length > 0) {
+    messages.push(...historyToMessages(args.chatHistory))
+  }
   messages.push(
-    {
-      role: 'system',
-      content:
-        'You are ryasai, an enterprise AI assistant. ' +
-        'Answer the user\'s question based on the CONTEXT provided. ' +
-        'If the question refers to prior data or conversation, use both the CONTEXT and the conversation history to answer. ' +
-        'Do not say data is unavailable if it appears in the context or history. ' +
-        emptyNote +
-        truncatedNote +
-        'If the CONTEXT marks a step FAILED, report that failure and its reason. ' +
-        'Never invent data, and never substitute manual setup instructions for the user to run by hand. ' +
-        `Never invent a REASON for a failure: do not claim a network problem, a blocked host, a timeout or a permission error unless the CONTEXT states it, and never tell the user to change firewall or security settings to fix something that was never attempted. If you could not answer, say what YOU did not find. If the question asks you to COMPARE two things and the CONTEXT covers only one, give that one and state plainly that the other was not available in this result — never relabel one source's rows as another's.` +
-        'Format numbers for readability.',
-    },
+    { role: 'system', content: systemContent },
     {
       role: 'user',
       content: `Question: ${args.question}\n\nCONTEXT (${answerContextLabel(args.source)}):\n${args.context}\n\nAnswer:`,
     },
   )
+  assertSystemMessagesUnderCeiling(messages, 'streamAnswer')
   yield* chatStream(messages, { purpose: 'synthesis', onUsage: args.onUsage })
 }
 
@@ -865,8 +892,17 @@ export async function* streamChat(
   onUsage?: (usage: LlmUsage) => void,
 ): AsyncGenerator<string, void, unknown> {
   const messages: ChatMessage[] = []
+  // Same system block as generateChat, and the same budget rule for the prefix: the streaming
+  // twin must not diverge on exactly the long prefix this bound exists for.
+  const systemContent =
+    'You are ryasai, an enterprise AI assistant. ' +
+    'You can help with: database queries (SQL), document search (RAG), REST API calls, and general chat. ' +
+    'When the user refers to prior conversation or data, use the conversation history to answer without needing a new query. ' +
+    'If the user provides new information, acknowledge and remember it. ' +
+    'Do not say data is unavailable if it was discussed in prior conversation history.'
+  assertSystemPromptUnderCeiling(systemContent, 'streamChat')
   if (systemPromptPrefix) {
-    messages.push({ role: 'system', content: systemPromptPrefix })
+    messages.push(orgSystemPrefixMessage(systemPromptPrefix, 'streamChat', systemContent))
   }
   if (memoryContext) {
     pushMemoryContext(messages, memoryContext)
@@ -875,17 +911,10 @@ export async function* streamChat(
     messages.push(...historyToMessages(chatHistory))
   }
   messages.push(
-    {
-      role: 'system',
-      content:
-        'You are ryasai, an enterprise AI assistant. ' +
-        'You can help with: database queries (SQL), document search (RAG), REST API calls, and general chat. ' +
-        'When the user refers to prior conversation or data, use the conversation history to answer without needing a new query. ' +
-        'If the user provides new information, acknowledge and remember it. ' +
-        'Do not say data is unavailable if it was discussed in prior conversation history.',
-    },
+    { role: 'system', content: systemContent },
     { role: 'user', content: question },
   )
+  assertSystemMessagesUnderCeiling(messages, 'streamChat')
   yield* chatStream(messages, { purpose: 'chat', onUsage })
 }
 
@@ -897,11 +926,25 @@ export async function* streamChat(
  * user/assistant turns keep the model's dialogue attention on the thread.
  * A short system note still labels the block so the model knows these are
  * prior turns, not the current question.
+ *
+ * MEASURED DEFECT in the first version of that note: it EMBEDDED the whole history a second
+ * time (`Prior conversation history (most recent last):\n${formatHistory(recent)}`). Ten turns
+ * of 2000 characters made the note 20,116 characters — and it is a `role:'system'` message, so
+ * the provider DISCARDED it WHOLE (cliff ~2000, see `system-message-ceiling.ts`). The ordinary
+ * case is over too: ten turns of 200 characters plus the 47-character prefix is 2047, so on any
+ * realistic 10-turn conversation the label never arrived, while the same text was paid for twice
+ * in the prompt. It is a SIGNPOST, so it now carries the signal without the copy — the turns
+ * below already carry the content, and that is the mechanism the note describes.
  */
 export function historyToMessages(history: ChatMessage[]): ChatMessage[] {
   const recent = history.slice(-10)
   const out: ChatMessage[] = [
-    { role: 'system', content: `Prior conversation history (most recent last):\n${formatHistory(recent)}` },
+    {
+      role: 'system',
+      content:
+        'Prior conversation history (most recent last): the turns that follow are shared context, ' +
+        'not the current question. Answer the NEW question at the end.',
+    },
   ]
   for (const m of recent) {
     if (!m.content || !m.content.trim()) continue
@@ -910,12 +953,9 @@ export function historyToMessages(history: ChatMessage[]): ChatMessage[] {
       content: m.content.slice(0, 2000),
     })
   }
+  // Guarded here rather than only at each caller: this produces the history block for
+  // generateAnswer / generateChat / streamAnswer / streamChat, so a note that grows again fails
+  // once, at the source, instead of in whichever call site happens to be exercised.
+  assertSystemMessagesUnderCeiling(out, 'historyToMessages')
   return out
-}
-
-function formatHistory(history: ChatMessage[]): string {
-  const recent = history.slice(-10)
-  return recent
-    .map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content.slice(0, 2000)}`)
-    .join('\n')
 }

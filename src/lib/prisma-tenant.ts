@@ -31,6 +31,21 @@
  * findUnique because Prisma's unique `where` rejects extra fields. So a new
  * `findUnique({where:{id}})` on a client-supplied ID is a silent regression.
  * `src/lib/tenant-route-guard.test.ts` now fails on that pattern; keep it green.
+ *
+ * THERE ARE TWO INDEPENDENT WAYS ISOLATION IS LOST HERE, and the first one hid
+ * behind the second for months:
+ *
+ *   1. MODEL MEMBERSHIP. A model can be absent from `ORG_SCOPED_MODELS` even
+ *      though it HAS `organizationId`. Then EVERY operation on it is unscoped,
+ *      not just findUnique — the handler's org ritual is irrelevant because the
+ *      extension never fires. This is how `Order` leaked (see the entry below):
+ *      the guards all checked the OPERATION (`findUnique` vs `findFirst`) and
+ *      nothing checked the MODEL. `tenant-scope-coverage.test.ts` now does.
+ *   2. OPERATION COVERAGE. On a model that IS listed, `findUnique`,
+ *      `findUniqueOrThrow` and `updateManyAndReturn` are not scoped.
+ *
+ * So "the query used findFirst and the route called enterWithOrg" is NOT
+ * sufficient evidence of isolation. Check the model is in the set.
  */
 import { Prisma } from '@prisma/client'
 import { AsyncLocalStorage } from 'async_hooks'
@@ -49,9 +64,26 @@ export async function bypassOrg<T>(fn: () => Promise<T>): Promise<T> {
   return orgStorage.run(undefined as unknown as string, fn)
 }
 
-// ponytail: org-scoped models — every model that has organizationId.
-// Organization and Invitation are NOT scoped (they ARE the org layer).
-const ORG_SCOPED_MODELS = new Set([
+// ponytail: org-scoped models — every model that has organizationId, MINUS the
+// explicit exceptions listed in ORG_SCOPE_EXCEPTIONS below.
+//
+// THE TWO EXCLUSIONS ARE DIFFERENT FACTS AND MUST NOT BE CONFLATED:
+//   - `Organization` is not scoped because it IS the org root: it has no
+//     `organizationId` column to inject.
+//   - `Invitation` HAS `organizationId` and is deliberately unscoped, because
+//     accepting an invitation is pre-auth — the token IS the credential and
+//     there is no org context to inject yet. See ORG_SCOPE_EXCEPTIONS.
+//
+// This list is no longer maintained by hand. `tenant-scope-coverage.test.ts`
+// parses prisma/schema.prisma, derives the set of models carrying
+// `organizationId`, and fails if any of them is missing here. Add a model to the
+// schema without adding it here and that test fails NAMING the model.
+//
+// Exported as a `ReadonlySet` so the guard compares against THE set the extension
+// actually consults, rather than a second hand-written copy that could drift —
+// a duplicate list is the artifact whose failure is being fixed here. Read-only
+// because nothing outside this module should be able to widen or narrow scope.
+export const ORG_SCOPED_MODELS: ReadonlySet<string> = new Set([
   'user',
   'integration',
   'integrationSchema',
@@ -80,7 +112,36 @@ const ORG_SCOPED_MODELS = new Set([
   'llmUsageLog',
   'documentVersion',
   'savedPrompt',
+  // WHY 'order' IS HERE AND WAS NOT BEFORE: `Order` has carried `organizationId`
+  // since the model was added (2026-09), but it was omitted from this set when it
+  // was created — and nothing caught the omission, because the only guard was a
+  // hand-maintained list checked per-model, never against the schema.
+  //
+  // The omission was a LIVE cross-tenant IDOR, not a theoretical one. Measured by
+  // driving the real handler and reading the SQL Prisma emitted:
+  //     Document.findFirst -> WHERE (id = $1 AND organizationId = $2)   <- scoped
+  //     Order.findFirst    -> WHERE  id = $1                            <- NOT scoped
+  // `GET /api/billing/orders/[id]` (client-supplied order id) returned another
+  // org's `status`, `months`, `amountIdr` and `licenseIssued` for any order id in
+  // the install. Its docstring claimed the extension scoped the read, which is
+  // exactly why nobody re-checked it — the false claim is fixed in that file too.
+  'order',
 ])
+
+/**
+ * Models that carry `organizationId` but are DELIBERATELY not org-scoped.
+ *
+ * Exported so `tenant-scope-coverage.test.ts` can compare the schema against
+ * `ORG_SCOPED_MODELS ∪ ORG_SCOPE_EXCEPTIONS` instead of against a second
+ * hand-written copy of this list — a duplicated list would drift exactly like the
+ * one that let `Order` through.
+ *
+ * Every entry MUST state its reason. An entry here is a place isolation does not
+ * happen automatically, so adding one is a security decision, not a formality.
+ */
+export const ORG_SCOPE_EXCEPTIONS: Readonly<Record<string, string>> = {
+  invitation: 'pre-auth: accepting an invite has no org context yet — the token IS the credential, and the invite route supplies organizationId explicitly in its compound unique key',
+}
 
 // Operations that accept a where clause for filtering (non-unique)
 const FILTER_OPS = new Set([

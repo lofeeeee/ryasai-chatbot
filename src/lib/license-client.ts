@@ -10,6 +10,7 @@
  */
 import crypto from 'crypto'
 import { scopedLogger } from '@/lib/logger'
+import { normalizePlan, KNOWN_PLANS } from '@/lib/plan-gating'
 
 const log = scopedLogger('license')
 
@@ -124,9 +125,32 @@ export async function validateLicense(
     return { valid: false, plan: null, expiresAt: null, message: 'Signature verification failed.', signatureVerified: false }
   }
 
+  /*
+   * The plan is normalised at the BOUNDARY, not trusted downstream.
+   *
+   * This is the single point where an untrusted `data.plan` enters the app, so
+   * it is the right place to reject a value we do not recognise — see the WHY
+   * block on `KNOWN_PLANS` in plan-gating.ts. An unknown plan resolves to
+   * `null`, which the callers treat as "no plan information" and therefore
+   * leave the stored `licensePlan` alone (the conditional spread in
+   * `licenseUpdateFromResult` drops `undefined`), instead of silently
+   * downgrading a paying install to `starter`.
+   *
+   * A rejection is LOGGED, because an unrecognised plan means the validator and
+   * this build disagree about the plan vocabulary — which an operator needs to
+   * know about, and which would otherwise be invisible.
+   */
+  const plan = normalizePlan(data.plan)
+  if (data.plan != null && plan === null) {
+    log.warn('License validator returned an unrecognised plan — ignoring it and keeping the stored plan', {
+      receivedPlan: String(data.plan),
+      knownPlans: KNOWN_PLANS.join(', '),
+    })
+  }
+
   return {
     valid: data.valid as boolean,
-    plan: (data.plan as string) ?? null,
+    plan,
     expiresAt: (data.expires_at as string) ?? null,
     message: (data.message as string) ?? '',
     signatureVerified: true,
@@ -246,7 +270,29 @@ export function licenseUpdateFromResult(
   licenseExpiresAt?: Date
 } {
   const verified = result.signatureVerified
-  const plan = verified ? (result.plan ?? options.planFallback) : undefined
+  /*
+   * BOTH inputs are validated, because both reach the database.
+   *
+   * `result.plan` is already normalised at the parse boundary, but
+   * `options.planFallback` is a caller-supplied LITERAL — `'flat'` today, in
+   * `license-issue.ts`. A typed fallback that drifts (or that this build does
+   * not recognise) would be stored verbatim and then silently resolve to
+   * `starter` in every quota check, which is the same downgrade this
+   * normalisation exists to prevent. Validating a value twice is cheaper than
+   * trusting it once.
+   *
+   * `null` means "no plan information": the conditional spread below omits the
+   * field entirely, and Prisma ignores `undefined` on `update`, so the stored
+   * plan survives a validator that answered without one — the exact drift the
+   * INCIDENT above records between the four call sites.
+   */
+  const plan = normalizePlan(verified ? (result.plan ?? options.planFallback) : undefined)
+  if (verified && plan === null && options.planFallback) {
+    log.warn('Ignoring an unrecognised plan fallback — keeping the stored plan', {
+      receivedFallback: options.planFallback,
+      knownPlans: KNOWN_PLANS.join(', '),
+    })
+  }
   return {
     licenseStatus: licenseStatusFromResult(result),
     ...(plan ? { licensePlan: plan } : {}),

@@ -56,6 +56,19 @@ const CONCURRENCY = 8
 const INTEGRATION_FILES = new Set(['src/lib/connector-dummy.test.ts'])
 const isIntegration = (f: string) => INTEGRATION_FILES.has(f) || f.endsWith('.integration.test.ts')
 
+/**
+ * THE collection pattern. `scripts/coverage.ts` carries the IDENTICAL string, and
+ * `src/lib/test-runner-parity.test.ts` reads both files and fails if they ever differ.
+ *
+ * WHY A NAMED CONSTANT: the two runners drifted once already — this script was widened to
+ * `{src,benchmark}` while `coverage.ts` kept `src/**`, so 13 benchmark test files RAN in CI but were
+ * never part of the coverage measurement (`benchmark/arms/hybrid-fusion.test.ts` imports
+ * `@/lib/rag-ranking`, which the gate floors at 80%, so that module was being measured without the
+ * tests that exercise it). A named constant is what the guard can compare; an inline string literal
+ * in a `for await` is not.
+ */
+const TEST_FILE_GLOB = '{src,benchmark,scripts}/**/*.test.{ts,tsx}'
+
 // ponytail: unit tests must not depend on a developer's .env. Without this, every
 // test touching crypto.ts (notifications, plugin-registry, vector-stores) failed
 // with "Missing required env var: ENCRYPTION_SECRET_KEY" on a fresh checkout.
@@ -78,6 +91,23 @@ const TEST_ENV: Record<string, string> = {
   ...(process.env as Record<string, string>),
   ENCRYPTION_SECRET_KEY: process.env.ENCRYPTION_SECRET_KEY ?? 'deadbeef'.repeat(8),
   DATABASE_URL: process.env.DATABASE_URL ?? 'postgresql://unit:unit@127.0.0.1:1/unit_test_unreachable',
+  // A SHORT LLM retry backoff, injected for exactly the reason the two fallbacks above exist: a
+  // unit run must measure assertions, not production retry timing. Driving the retry ladder to
+  // exhaustion otherwise sleeps the real (1+2+4) x 500 ms = 3500 ms.
+  //
+  // MEASURED: 11 tests in `src/lib/ai.test.ts` paid 3501-3523 ms each in `setTimeout` — 38.66 s of
+  // that file's 38.84 s — and the file was the WHOLE suite's critical path: `time bun run test` was
+  // 39.99 s, and raising CONCURRENCY 8 -> 16 -> 32 moved the total by under 0.8 s, which is the
+  // signature of a critical path rather than a parallelism limit.
+  //
+  // 25 ms keeps the LADDER'S SHAPE (wait, then 2x, then 4x = 175 ms total) while removing the wait.
+  // Attempt COUNTS are untouched: the assertions are `toHaveBeenCalledTimes(3)`-shaped, so
+  // shortening the base is assertion-neutral. Verified before the change by
+  // `grep -rn "backoff\|BACKOFF" src/lib/llm-client.test.ts src/lib/ai.test.ts` -> exit 1 (no
+  // match): no test asserts the DURATION. The production default stays 500 in
+  // `src/lib/constants.ts`, which is where this variable is read; an explicit ambient value still
+  // wins, so an operator can raise the real number and this fallback will not overwrite it.
+  LLM_RETRY_BACKOFF_BASE_MS: process.env.LLM_RETRY_BACKOFF_BASE_MS ?? '25',
 }
 
 // Set to the EMPTY STRING, which is the only form that actually works. Bun does not override
@@ -115,10 +145,17 @@ const files: string[] = []
 // it looks like coverage of a surface nothing checks. `scripts/coverage.ts` globs the same narrow pattern,
 // so such a file does not even show up as missing there.
 //
-// This is the SECOND instance of this shape inside one loop (`benchmark/` before, `.tsx` now), which is why
-// the fix belongs in the glob: renaming one file leaves the next one to fail the same way. A guard in
-// `release-images.test.ts` now asserts this glob covers both extensions.
-for await (const f of new Bun.Glob('{src,benchmark}/**/*.test.{ts,tsx}').scan()) {
+// `scripts/` IS INCLUDED for the same reason, and it was the third instance of this shape:
+// `scripts/test-runner.test.ts` unit-tests this runner's own summary parser and had NEVER RUN, because
+// no glob covered the directory it lives in. The accounting confirmed it exactly — 303 files on disk
+// minus the 3 integration exclusions is 300, the number this runner printed, so that one file was the
+// only thing missing.
+//
+// THE GLOB IS ONE STRING IN TWO SCRIPTS, which is how it drifted before: `coverage.ts` kept the old
+// `src/**` form while this one was widened, so 13 benchmark files ran in CI but were never measured.
+// `scripts/coverage.ts` now carries the IDENTICAL pattern, and `src/lib/test-runner-parity.test.ts`
+// fails if the two ever disagree or if the collected set stops matching the files on disk.
+for await (const f of new Bun.Glob(TEST_FILE_GLOB).scan()) {
   if (isIntegration(f) !== runIntegration) continue
   files.push(f)
 }

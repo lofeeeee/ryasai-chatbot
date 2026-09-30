@@ -163,7 +163,21 @@ export function maxTokensForPurpose(purpose: string): number {
 }
 export const LLM_STREAM_TIMEOUT_MS = 120_000
 export const LLM_MAX_RETRIES = 3
-export const LLM_RETRY_BACKOFF_BASE_MS = 500
+// ponytail: LLM_RETRY_BACKOFF_BASE_MS is env-overridable because the retry ladder is
+// WALL CLOCK THE HARNESS PAYS AND PRODUCTION DOES NOT. Exhausting it sleeps
+// (1+2+4) x base = 3500 ms at the default, and MEASURED, 11 tests in
+// `src/lib/ai.test.ts` wait it out in full (3501-3523 ms each, 38.66 s of that
+// file's 38.84 s), which made the whole suite's wall time 39.99 s -- one file's
+// timer, not a parallel-work limit: raising the runner's concurrency 8 -> 16 -> 32
+// moved the total by under 0.8 s. The two runners now inject a small base into the
+// child environment so a unit run measures assertions rather than patience.
+//
+// The DEFAULT STAYS 500. It is the production retry policy -- it spaces retries so a
+// struggling provider is not hammered -- and no test asserts the DURATION (the
+// assertions are attempt COUNTS, e.g. `toHaveBeenCalledTimes(3)`), so shortening it
+// for a test run is assertion-neutral while shortening it by default would change
+// every install's timing.
+export const LLM_RETRY_BACKOFF_BASE_MS = Number(process.env.LLM_RETRY_BACKOFF_BASE_MS ?? 500)
 
 // Session
 export const SESSION_INACTIVITY_TIMEOUT_MS = 30 * 60 * 1000

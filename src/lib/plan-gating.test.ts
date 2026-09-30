@@ -5,6 +5,8 @@ import {
   checkQuota,
   quotaExceededMessage,
   quotaFor,
+  normalizePlan,
+  KNOWN_PLANS,
   type Plan,
 } from './plan-gating'
 
@@ -153,5 +155,54 @@ describe('quotaExceededMessage — operator-facing text', () => {
   test('does not tell an over-quota org its limit is null', () => {
     const d = checkQuota('starter', 'maxUsers', 3)
     expect(quotaExceededMessage('maxUsers', d)).not.toContain('null')
+  })
+})
+
+/**
+ * The plan string crosses a TRUST BOUNDARY, so it is validated rather than
+ * trusted. These tests pin the behaviour that protects a paying customer.
+ *
+ * WHY THIS MATTERS COMMERCIALLY, not stylistically: `quotaFor` and `hasPlan`
+ * both fall back to `starter` for an unrecognised plan. That fail-closed
+ * direction is right for a QUOTA, but `starter` is also the MOST RESTRICTIVE
+ * tier — 3 users, 1 data source, 25 documents, and 403 on Schedules, MCP and
+ * Agentic. So a validator that renames or drops a plan, or returns a typo,
+ * would silently reduce a paying flat-licence install to the smallest tier,
+ * with a message naming a plan the customer never bought. The e2e mock
+ * defaults an unknown key to `enterprise`, so every green run exercised the
+ * happy path only and nothing could catch it.
+ */
+describe('normalizePlan — an unrecognised plan must not reach the database', () => {
+  test('every known plan round-trips', () => {
+    for (const p of KNOWN_PLANS) expect(normalizePlan(p)).toBe(p)
+  })
+
+  test('case and surrounding whitespace are normalised, not downgraded', () => {
+    // `"Pro"` and `" pro "` are the same plan to a human. Treating them as
+    // unknown would downgrade a customer over a capital letter.
+    expect(normalizePlan('Pro')).toBe('pro')
+    expect(normalizePlan('  FLAT  ')).toBe('flat')
+    expect(normalizePlan('Enterprise')).toBe('enterprise')
+  })
+
+  test('an UNKNOWN plan resolves to null — never to a tier', () => {
+    // `null` means "no plan information" so callers leave the stored value
+    // alone. Returning `'starter'` here would BE the downgrade.
+    expect(normalizePlan('platinum')).toBeNull()
+    expect(normalizePlan('pro ')).toBe('pro') // control: this one IS valid
+    expect(normalizePlan('profesional')).toBeNull()
+    expect(normalizePlan('')).toBeNull()
+    expect(normalizePlan(null)).toBeNull()
+    expect(normalizePlan(undefined)).toBeNull()
+    expect(normalizePlan(42)).toBeNull()
+    expect(normalizePlan({ plan: 'flat' })).toBeNull()
+  })
+
+  test('CONTROL: an unrecognised plan still degrades to starter at the QUOTA layer', () => {
+    // The fallback itself is deliberate and stays. This asserts the two layers
+    // disagree on purpose: `quotaFor` fails closed, `normalizePlan` refuses to
+    // persist — which is why validation must happen BEFORE the write, not here.
+    expect(quotaFor('platinum').maxDocuments).toBe(PLAN_FEATURES.starter.maxDocuments)
+    expect(hasPlan('platinum', 'pro')).toBe(false)
   })
 })

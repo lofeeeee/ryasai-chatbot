@@ -22,6 +22,7 @@ import { db } from '@/lib/db'
 import { chatOnce as llmChatOnce, type LlmToolDef } from '@/lib/llm-client'
 import { getLlmRuntimeConfig } from '@/lib/llm-config'
 import { extractJson } from '@/lib/constrained-output'
+import { assertSystemPromptUnderCeiling } from '@/lib/system-message-ceiling'
 import { withToolSandbox } from '@/lib/tool-sandbox'
 import { toolCircuitBreaker } from '@/lib/tool-circuit-breaker'
 import { logSwallowed } from '@/lib/logger'
@@ -69,6 +70,47 @@ const MCP_INSTALL_RULES =
   'dependsOn:["step1"] and "instructions":"{{step1}}" so the fetched page reaches the installer, plus the ' +
   'server name and URL. Leave command/args/envVars out unless you already know them; they are read from the ' +
   'fetched instructions. '
+
+/*
+ * THE RULES BLOCK IS A USER MESSAGE, IN BOTH PLANNERS — and that is a delivery fix, not a style choice.
+ *
+ * MEASURED: the customer's BYOK provider DISCARDS a `role:'system'` message above ~2000 characters whole
+ * rather than truncating it (1800 chars -> prompt_tokens 411; 2100+ -> 44, the user message alone; 3/3
+ * reproducible). The JSON-fallback planner's system message was 3023 characters, so this entire rule set —
+ * web_search vs chat, the dependsOn/{{stepN}} contract, MCP install, translation, calculator, "maximum N
+ * steps" — was discarded on EVERY request that reached this path, while the model took the blame for
+ * ignoring it. That is silent-failure class 11/12; the SQL rules and the memory block were fixed the same
+ * way, and the ceiling guard in `ai.test.ts` for the SQL prompt is the precedent this follows.
+ *
+ * A user message has NO such ceiling. Measured on the same endpoint: 12000 characters reports 1558
+ * prompt_tokens and the instruction is still obeyed.
+ *
+ * Shared between the two planners so they cannot drift apart on either half of the rules.
+ */
+const PLANNER_RULES =
+  'PLANNER RULES:\n' +
+  '- If the user asks to search the web, look up information, find a person/topic, get news, or find latest updates, use the web_search tool — NEVER use chat for these. web_search searches the real internet and returns current results.\n' +
+  '- If the user asks to read/fetch a specific article or URL, use web_fetch.\n' +
+  '- If the user asks to translate text, use plugin:translate.\n' +
+  '- If the user asks for weather, use plugin:weather.\n' +
+  '- If the user asks for calculations, use plugin:calculator.\n' +
+  '- Only use the chat tool for greetings, opinions, or questions that truly need no external data.\n' +
+  '- Only use sql if the question is about structured data in connected databases (sales, inventory, customers).\n' +
+  '- Only use rag if the question is about company documents (SOPs, policies, guidelines).\n' +
+  '- Use web_fetch to read any URL (GitHub repo, docs page, blog post) and get its text content. Useful for reading installation instructions before installing an MCP server.\n' +
+  '- ' + MCP_INSTALL_RULES + '\n' +
+  STEP_DEPENDENCY_RULES + '\n' +
+  'CONFIRMATION FLOW: Tools marked "REQUIRES user confirmation" need a two-turn flow. On the first call, do NOT include confirm in the input. The tool will return a confirmation message — relay it to the user. When the user confirms (says "yes", "confirm", "go ahead"), re-call the same tool with the same input plus "confirm":"yes". Confirmation is per step: only the step the user confirmed may carry "confirm":"yes".'
+
+/** The admin tool ids the planner may name, and what each is for. */
+const PLANNER_MCP_TOOL_RULES =
+  'ADMIN TOOLS:\n' +
+  '- To install a known MCP server by name (filesystem, github, postgres, etc.), use admin:mcp_install directly with the name.\n' +
+  '- To set credentials for an MCP server, use admin:mcp_set_credentials with the server name and credentials.\n' +
+  '- To list MCP servers, use admin:mcp_list.\n' +
+  '- To test an MCP server, use admin:mcp_test.\n' +
+  '- To remove an MCP server, use admin:mcp_remove.\n' +
+  '- To seed/restore prebuilt plugins, use admin:seed_plugins.'
 
 // ---------------------------------------------------------------------------
 // Plan query — ask the LLM to produce a multi-step plan
@@ -135,16 +177,10 @@ export async function planQueryWithTools(args: {
       : ''
 
     const systemPrompt =
-      'You are an enterprise AI planner. Create a plan to answer the user\'s question. ' +
-      `Select tools from the available list. Maximum ${MAX_STEPS} steps. ` +
-      'Call the execute_plan function with the full list of steps and whether synthesis is needed. ' +
-      STEP_DEPENDENCY_RULES +
-      'CONFIRMATION FLOW: Some tools (admin:mcp_install, admin:mcp_remove, admin:set_prompt, admin:toggle_*) ' +
-      'require confirmation. On the first call, do NOT include confirm in the input — the tool will ask the user to confirm. ' +
-      'When the user confirms (says "yes", "confirm", "go ahead"), re-call the same tool with the same input plus "confirm":"yes". ' +
-      'Confirmation is per step: only the step the user confirmed may carry "confirm":"yes". ' +
-      MCP_INSTALL_RULES +
-      'WEB SEARCH: Use web_search for any request about current events, news, or searching the internet — NEVER use chat for these.'
+      'You are an enterprise AI planner. Create a plan to answer the user\'s question, following the RULES given ' +
+      `in the next message. Maximum ${MAX_STEPS} steps. ` +
+      'Call the execute_plan function with the full list of steps and whether synthesis is needed.'
+    assertSystemPromptUnderCeiling(systemPrompt, 'planner:tool-calling')
 
     // FRAMED. This is a DECISION prompt — it chooses which tools to run and in what order —
     // so recalled memory must not read as an answer already in hand. A planner that believes
@@ -152,6 +188,12 @@ export async function planQueryWithTools(args: {
     // selector (CHAT chosen 10/14 times on a question whose answer was in a document).
     // Filtering and framing are shared with the selector so the two cannot drift.
     const memoryBlock = routingMemoryBlock(memoryContext)
+    // The RULES are a USER message, not part of the system message. MEASURED: the provider
+    // DISCARDS a system message above ~2000 characters whole — see `system-message-ceiling.ts`
+    // for the sweep and `docs/silent-failure-classes.md` #11/#12 for the two earlier incidents.
+    // The rule block is ~1550 characters on its own, and on the wire the system message shares
+    // the same budget; as a user message it has no ceiling.
+    const rulesMessage = `${PLANNER_RULES}\n\n${PLANNER_MCP_TOOL_RULES}`
     const userMessage =
       `Question: ${args.question}\n\n` +
       `Available tools:\n${toolList}\n\n` +
@@ -174,6 +216,7 @@ export async function planQueryWithTools(args: {
       cfg,
       [
         { role: 'system', content: systemPrompt },
+        { role: 'user', content: rulesMessage },
         { role: 'user', content: userMessage },
       ],
       0,
@@ -212,33 +255,35 @@ export async function planQuery(args: {
     sessionId: args.sessionId,
   })
 
-    const systemPrompt =
-      'You are an enterprise AI planner. Create a multi-step plan to answer the user\'s question. ' +
-      'Select tools from the available list. Each step may depend on a prior step via dependsOn. ' +
-      `Maximum ${MAX_STEPS} steps. For simple questions, 1 step is enough. ` +
-      'needsSynthesis=true if results from multiple steps need to be combined into one answer. ' +
-      'needsSynthesis=false if one step is enough to answer. ' +
-      'IMPORTANT RULES:\n' +
-      '- If the user asks to search the web, look up information, find a person/topic, get news, or find latest updates, use the web_search tool — NEVER use chat for these. web_search searches the real internet and returns current results.\n' +
-      '- If the user asks to read/fetch a specific article or URL, use web_fetch.\n' +
-      '- If the user asks to translate text, use plugin:translate.\n' +
-      '- If the user asks for weather, use plugin:weather.\n' +
-      '- If the user asks for calculations, use plugin:calculator.\n' +
-      '- Only use the chat tool for greetings, opinions, or questions that truly need no external data.\n' +
-      '- Only use sql if the question is about structured data in connected databases (sales, inventory, customers).\n' +
-      '- Only use rag if the question is about company documents (SOPs, policies, guidelines).\n' +
-      '- ' + MCP_INSTALL_RULES + '\n' +
-      '- To install a known MCP server by name (filesystem, github, postgres, etc.), use admin:mcp_install directly with the name.\n' +
-      '- To set credentials for an MCP server, use admin:mcp_set_credentials with the server name and credentials.\n' +
-      '- To list MCP servers, use admin:mcp_list.\n' +
-      '- To test an MCP server, use admin:mcp_test.\n' +
-      '- To remove an MCP server, use admin:mcp_remove.\n' +
-      '- To seed/restore prebuilt plugins, use admin:seed_plugins.\n' +
-      '- Use web_fetch to read any URL (GitHub repo, docs page, blog post) and get its text content. Useful for reading installation instructions before installing an MCP server.\n' +
-      STEP_DEPENDENCY_RULES + '\n' +
-      'CONFIRMATION FLOW: Tools marked "REQUIRES user confirmation" need a two-turn flow. On the first call, do NOT include confirm in the input. The tool will return a confirmation message — relay it to the user. When the user confirms (says "yes", "confirm", "go ahead"), re-call the same tool with the same input plus "confirm":"yes". Confirmation is per step: only the step the user confirmed may carry "confirm":"yes".\n' +
-      'Answer ONLY with JSON without markdown code fence:\n' +
-      '{"steps":[{"id":"step1","tool":"<tool_id>","input":{...},"dependsOn":[]}],"needsSynthesis":true|false}'
+  /*
+   * SYSTEM STAYS SHORT; THE RULES RIDE IN THE USER MESSAGE.
+   *
+   * MEASURED DEFECT: this system message was 3023 characters and the provider DISCARDS a
+   * `role:'system'` message above ~2000 characters WHOLE, so the ENTIRE rule set below — web
+   * search vs chat, the dependsOn/{{stepN}} contract, MCP install, translation, calculator,
+   * "maximum N steps" — never reached the model on a single request through this path. Every
+   * symptom pointed at the model. See `system-message-ceiling.ts` for the sweep and
+   * `docs/silent-failure-classes.md` #11/#12 for the two earlier incidents of the same shape.
+   *
+   * The split is the one this repo already uses for the Text-to-SQL RULES (`generateSql`) and the
+   * recall memory block: the system message states the ROLE plus the output contract — the part
+   * that must hold even if everything else is long — and the RULES move to a user message, where
+   * there is no ceiling (12000 characters measured delivered and obeyed).
+   *
+   * `generateChat` accepts only one user turn, so the rules sit at the HEAD of it, ahead of the
+   * question and the tool list, for the same reason the SQL path puts the RULES ahead of the
+   * schema: rules read before the material they govern.
+   */
+  const systemPrompt =
+    'You are an enterprise AI planner. Create a multi-step plan to answer the user\'s question, ' +
+    'following the RULES given in the user message. Select tools from the available list. Each step may ' +
+    'depend on a prior step via dependsOn. ' +
+    `Maximum ${MAX_STEPS} steps. For simple questions, 1 step is enough. ` +
+    'needsSynthesis=true if results from multiple steps need to be combined into one answer. ' +
+    'needsSynthesis=false if one step is enough to answer. ' +
+    'Answer ONLY with JSON without markdown code fence:\n' +
+    '{"steps":[{"id":"step1","tool":"<tool_id>","input":{...},"dependsOn":[]}],"needsSynthesis":true|false}'
+  assertSystemPromptUnderCeiling(systemPrompt, 'planner:json-fallback')
 
   const historyText = args.chatHistory && args.chatHistory.length > 0
     ? args.chatHistory.slice(-10).map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content.slice(0, 2000)}`).join('\n')
@@ -247,6 +292,7 @@ export async function planQuery(args: {
   // FRAMED — see the note on the other planner prompt above.
   const memoryBlock = routingMemoryBlock(memoryContext)
   const userMessage =
+    `${PLANNER_RULES}\n\n${PLANNER_MCP_TOOL_RULES}\n\n` +
     `Question: ${args.question}\n\n` +
     `Available tools:\n${toolList}\n\n` +
     (memoryBlock ? `${memoryBlock}\n\n` : '') +

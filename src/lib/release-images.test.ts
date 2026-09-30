@@ -317,6 +317,21 @@ describe('test harness: the runner and the coverage script must collect .tsx tes
    * Two narrow globs in two scripts is why this is guarded at the PATTERN rather than by renaming the file:
    * the same shape had already occurred once in this loop for `benchmark/`, and renaming one file leaves
    * the next `.tsx` to fail identically.
+   *
+   * WHAT THIS GUARD COULD NOT SEE, and the reason it now compares the LIVE patterns. These first two
+   * assertions read each script and checked that BOTH contained the substring `*.test.{ts,tsx}`. That held
+   * while the two patterns were `{src,benchmark}/**\/*.test.{ts,tsx}` (303 files, in `test.ts`) and
+   * `src/**\/*.test.{ts,tsx}` (290, in `coverage.ts`) — a substring match cannot see a missing ROOT. So 13
+   * benchmark test files RAN in CI but were never measured, including
+   * `benchmark/arms/hybrid-fusion.test.ts`, which imports `@/lib/rag-ranking` — a module the gate floors at
+   * 80%. This is silent-failure class 1 ("a guard matching a WORD, not a CALL") inside the guard that was
+   * supposed to catch the `.tsx` hole: the identifier was present, the behaviour was wrong.
+   *
+   * The third assertion below was the other half of the miss: it globbed a HARDCODED copy of the pattern,
+   * so it kept passing while the real script drifted — a test of the string it had just written rather than
+   * of the script. It now extracts each script's declared pattern and globs THAT.
+   *
+   * `src/lib/test-runner-parity.test.ts` carries the stronger, set-equality form of this check.
    */
   const repoRoot = join(import.meta.dir, '..', '..')
 
@@ -330,14 +345,27 @@ describe('test harness: the runner and the coverage script must collect .tsx tes
     expect(cov).toContain('*.test.{ts,tsx}')
   })
 
-  test('the glob actually matches a real .tsx test on disk', async () => {
-    // Behavioural, not textual: the pattern must FIND the file, so a future glob that looks right but
-    // resolves wrong still fails here.
-    const glob = new Bun.Glob('{src,benchmark}/**/*.test.{ts,tsx}')
-    const found: string[] = []
-    for await (const f of glob.scan()) found.push(f)
-    const tsx = found.filter((f) => f.endsWith('.tsx'))
-    expect(tsx.length).toBeGreaterThan(0)
-    expect(tsx.some((f) => f.includes('cognee-diagnostics-render'))).toBe(true)
+  test('the two scripts declare the SAME glob, not merely two globs that both end in {ts,tsx}', () => {
+    // Equivalence is the assertion the substring pair lacked. A root dropped from one side fails here.
+    const pattern = (rel: string) =>
+      readFileSync(join(repoRoot, rel), 'utf-8').match(/const\s+TEST_FILE_GLOB\s*=\s*'([^']+)'/)?.[1] ?? null
+    const runner = pattern(join('scripts', 'test.ts'))
+    const cov = pattern(join('scripts', 'coverage.ts'))
+    expect(runner).not.toBeNull()
+    expect(cov).toBe(runner)
+  })
+
+  test('each script\u2019s OWN declared glob matches a real .tsx test on disk', async () => {
+    // Behavioural, not textual, and globbed from the SOURCE rather than from a copy: a future pattern
+    // that looks right but resolves wrong still fails here, and a drift in either script is caught
+    // against that script's actual value instead of against a literal restated in this test.
+    for (const rel of [join('scripts', 'test.ts'), join('scripts', 'coverage.ts')]) {
+      const declared = readFileSync(join(repoRoot, rel), 'utf-8')
+        .match(/const\s+TEST_FILE_GLOB\s*=\s*'([^']+)'/)?.[1]
+      expect(declared).not.toBeNull()
+      const found: string[] = []
+      for await (const f of new Bun.Glob(declared!).scan()) found.push(f)
+      expect(found.some((f) => f.endsWith('.tsx') && f.includes('cognee-diagnostics-render'))).toBe(true)
+    }
   })
 })

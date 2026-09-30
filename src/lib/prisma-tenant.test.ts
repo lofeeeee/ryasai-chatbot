@@ -30,7 +30,7 @@ mock.module('@prisma/client', () => ({
   },
 }))
 
-const { getOrgContext, enterWithOrg, bypassOrg, createTenantExtension } = await import('./prisma-tenant')
+const { getOrgContext, enterWithOrg, bypassOrg, createTenantExtension, ORG_SCOPED_MODELS } = await import('./prisma-tenant')
 
 // Force the handler to be captured at load.
 createTenantExtension()
@@ -273,20 +273,109 @@ describe('the PASCALCASE normalisation that silently broke scoping', () => {
 
   test('every model listed in ORG_SCOPED_MODELS is actually matched', async () => {
     // The list is the security boundary: a model that has organizationId in the
-    // schema but is MISSING from the set is queried unscoped. This asserts the
-    // normalisation works for all of them rather than a hand-picked few.
-    const models = [
-      'user', 'integration', 'integrationSchema', 'llmConfig', 'document', 'documentChunk',
-      'kgRelation', 'vectorStoreConfig', 'chatSession', 'chatMessage', 'appConfig',
-      'restApiConnector', 'restApiEndpoint', 'restApiRequestLog', 'toolRun', 'apiKey',
-      'apiRequestLog', 'auditLog', 'queryHistory', 'plugin', 'mcpServer', 'scheduledRun',
-      'scheduledRunLog', 'notificationConfig', 'agentRun', 'llmUsageLog', 'documentVersion',
-      'savedPrompt',
-    ]
-    for (const m of models) {
+    // schema but is MISSING from the set is queried unscoped.
+    //
+    // Read from the REAL set rather than a hand-written copy. This test used to
+    // hold its own 28-entry copy of the list — and that copy omitted `order`, so it
+    // could not have caught the omission it exists to catch, in a test whose own
+    // comment says "a model that has organizationId in the schema but is MISSING
+    // from the set is queried unscoped". A duplicated list is not a second check;
+    // it is a second place for the same fact to be wrong.
+    // (Completeness — set vs schema — is `tenant-scope-coverage.test.ts`.)
+    expect(ORG_SCOPED_MODELS.size).toBeGreaterThanOrEqual(29)
+    for (const m of ORG_SCOPED_MODELS) {
       const pascal = m.charAt(0).toUpperCase() + m.slice(1)
       const args = await run({ model: pascal, operation: 'findMany', orgId: 'org-a' })
-      expect(args.where).toEqual({ organizationId: 'org-a' })
+      expect(args.where, `${pascal} (key "${m}") was NOT matched by the extension`).toEqual({
+        organizationId: 'org-a',
+      })
     }
+  })
+})
+
+describe('Order is org-scoped (the measured cross-tenant IDOR)', () => {
+  /**
+   * `Order` carried `organizationId` but was absent from `ORG_SCOPED_MODELS`, so the
+   * extension never fired for it. Measured before the fix, same process, same shape:
+   *
+   *   Document.findFirst -> WHERE (id = $1 AND organizationId = $2)   <- scoped
+   *   Order.findFirst    -> WHERE  id = $1                            <- NOT scoped
+   *
+   * `GET /api/billing/orders/[id]` takes a client-supplied id and returned another
+   * org's `status`, `months`, `amountIdr` and `licenseIssued`.
+   *
+   * These assert on the args the extension FORWARDED, which is the only place the
+   * defect is visible: the route's own test mocks `@/lib/db`, so the tenant
+   * extension never runs there and a mocked `findFirst` returns the row regardless
+   * of the where clause. That is why its "order from another org → 404" case passed
+   * while the leak was live.
+   */
+  test('Order.findFirst receives an injected organizationId', async () => {
+    const args = await run({
+      model: 'Order',
+      operation: 'findFirst',
+      orgId: 'org-a',
+      args: { where: { id: 'attacker-supplied-id' } },
+    })
+    expect(args.where).toEqual({ id: 'attacker-supplied-id', organizationId: 'org-a' })
+  })
+
+  test('every READ operation on Order is scoped, not just findFirst', async () => {
+    // The route happens to use findFirst; a future billing page will use findMany
+    // or count. Asserting the whole FILTER family means the protection does not
+    // depend on which verb the next caller picks.
+    for (const operation of ['findFirst', 'findFirstOrThrow', 'findMany', 'count', 'aggregate', 'groupBy']) {
+      const args = await run({ model: 'Order', operation, orgId: 'org-a', args: { where: { id: 'x' } } })
+      expect(args.where, `${operation} on Order was not scoped`).toEqual({ id: 'x', organizationId: 'org-a' })
+    }
+  })
+
+  test('Order MUTATIONS are scoped (a webhook updateMany cannot cross orgs by accident)', async () => {
+    for (const operation of ['update', 'updateMany', 'delete', 'deleteMany']) {
+      const args = await run({ model: 'Order', operation, orgId: 'org-a', args: { where: { id: 'x' } } })
+      expect(args.where, `${operation} on Order was not scoped`).toEqual({ id: 'x', organizationId: 'org-a' })
+    }
+  })
+
+  test('a cross-org order id is REFUSED by the predicate the DB would apply', async () => {
+    // End-to-end shape of the fix: whatever the caller passes, the forwarded where
+    // requires THIS org, so a foreign row cannot satisfy it. Asserted on the clause
+    // rather than on a row count because there is no live row here -- the point is
+    // that the id alone is no longer sufficient.
+    const args = await run({
+      model: 'Order',
+      operation: 'findFirst',
+      orgId: 'org-victim',
+      args: { where: { id: 'order-of-org-attacker' } },
+    })
+    const where = args.where as Record<string, unknown>
+    expect(where.organizationId).toBe('org-victim')
+    expect(where.id).toBe('order-of-org-attacker')
+    // Both terms present => the row must match BOTH; an id from another org yields null.
+    expect(Object.keys(where).sort()).toEqual(['id', 'organizationId'])
+  })
+
+  test('the BEFORE-load of the order path is wrapped in bypassOrg, so the webhook still works', async () => {
+    // Scoping Order must not break the payment path. The Midtrans webhook has no
+    // session and no org context, and `runOrderReconciliation` is cross-org by
+    // nature, so both MUST read unscoped -- that is what bypassOrg is for, and it
+    // must still defeat the injection. Two directions, because a change that made
+    // bypassOrg stop working would silently break license issuance for every
+    // customer, which is worse than the leak being fixed.
+    const scoped = await run({ model: 'Order', operation: 'findUnique', orgId: 'org-a', args: { where: { midtransOrderId: 'M' } } })
+    // findUnique is never scoped (documented ceiling) -- hence bypassOrg is REQUIRED
+    // here rather than merely convenient: there is no scoped form of this lookup by
+    // a non-unique-pair key.
+    expect(scoped.where).toEqual({ midtransOrderId: 'M' })
+
+    const unscoped = await bypassOrg(async () =>
+      run({ model: 'Order', operation: 'findMany', bypass: true, args: { where: { status: 'settlement' } } }),
+    )
+    expect(unscoped.where).toEqual({ status: 'settlement' })
+
+    // And the two are DIFFERENT: bypassOrg is what suppresses the injection, proving
+    // the suppression is explicit rather than an accident of the operation chosen.
+    const withCtx = await run({ model: 'Order', operation: 'findMany', orgId: 'org-a', args: { where: { status: 'settlement' } } })
+    expect(withCtx.where).toEqual({ status: 'settlement', organizationId: 'org-a' })
   })
 })

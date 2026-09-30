@@ -1,8 +1,18 @@
 /**
  * GET /api/traces and GET /api/traces/stats — the in-memory observability ring buffer's HTTP face.
  *
- * WHY THIS FILE EXISTS. Both handlers are thin, so the ONLY behaviour worth pinning is the LIMIT CLAMP on
- * /traces, which is arithmetic on untrusted query input and has two tempting wrong answers:
+ * WHY THIS FILE EXISTS. These handlers are the ONLY way the ring buffer reaches a browser, so they carry both
+ * halves of the fix for a VERIFIED cross-tenant leak — every one of them is pinned here:
+ *
+ *   1. ADMIN ONLY. Neither route had a role check, so any authenticated viewer/analyst of any tenant could read
+ *      every org's prompt bodies and answers. `requireRole(user, 'admin')` is asserted on the CALL and on the
+ *      OBSERVABLE 403, because a guard asserted only by its presence in the source is a guard that cannot fail.
+ *   2. THE ORG ARGUMENT. `enterWithOrg` only writes AsyncLocalStorage; the buffer is a module global, not a Prisma
+ *      query, so the tenant extension cannot scope it. Each route must PASS its org to the reader. Asserted on the
+ *      ARGUMENT the reader receives, since the return value is mocked here and would prove nothing about scoping
+ *      (the real end-to-end proof, with the real reader, lives in observability-org-scope.test.ts).
+ *
+ * The LIMIT CLAMP is also pinned, which is arithmetic on untrusted query input with two tempting wrong answers:
  *
  *   - `Number(null)` is 0 and `Math.max(0, 1)` is 1, so a MISSING `limit` silently becomes 1 rather than the
  *     documented default of 50. The route avoids that by defaulting the STRING to '50' before coercion.
@@ -13,12 +23,30 @@
  * value is what the buffer receives -- asserted on the ARGUMENT, because asserting on the returned array would
  * pass for any limit above the fixture size and prove nothing.
  *
- * Also pinned: the org context is entered on both routes (session-authenticated even though the buffer is
- * process-local), and the envelopes are `{traces}` / `{stats}` rather than a shared `data` key.
+ * Also pinned: the envelopes are `{traces}` / `{stats}` rather than a shared `data` key.
  */
 import { describe, expect, test, beforeEach, mock } from 'bun:test'
 
-const analystUser = {
+interface TestUser {
+  userId: string
+  name: string
+  email: string
+  role: string
+  organizationId: string
+  plan: string
+}
+
+// The admin persona is the one the routes now admit; the analyst/default persona below exists to prove the refusal.
+const adminUser: TestUser = {
+  userId: 'u0',
+  name: 'Root',
+  email: 'root@t.com',
+  role: 'admin',
+  organizationId: 'org-1',
+  plan: 'pro',
+}
+
+const analystUser: TestUser = {
   userId: 'u1',
   name: 'Ada',
   email: 'a@t.com',
@@ -28,17 +56,42 @@ const analystUser = {
 }
 
 // ---- mutable seams, declared before every mock.module ----
-let user: typeof analystUser = analystUser
+let user: TestUser = adminUser
 let traceRows: unknown[] = [{ id: 't1' }]
 let statsPayload: Record<string, unknown> = { total: 3, errors: 0 }
 let tracesThrow: Error | null = null
 const events: string[] = []
 const limitArgs: number[] = []
+// The org each reader was HANDED. Collected per function so a route that reads the buffer without passing its org
+// is caught even though the mocked reader returns a fixture either way.
+const tracesOrgArgs: Array<string | undefined> = []
+const statsOrgArgs: Array<string | undefined> = []
 
 mock.module('@/lib/session', () => ({
   getActiveUser: async () => user,
-  handleApiError: (_e: unknown, fallback: string, status = 500) =>
-    Response.json({ ok: false, error: { code: 'INTERNAL_ERROR', message: fallback } }, { status }),
+  // Mirrors the real requireRole: rank-based, and it THROWS a ForbiddenError. The mock must be able to fail, or
+  // the 403 tests below would pass for a route that never calls it.
+  requireRole: (u: { role: string }, minRole: 'admin' | 'analyst' | 'viewer') => {
+    events.push(`requireRole:${minRole}`)
+    const rank: Record<string, number> = { viewer: 0, analyst: 1, admin: 2 }
+    if ((rank[u.role] ?? 0) < (rank[minRole] ?? 0)) {
+      throw Object.assign(new Error(`Requires ${minRole} role. You have ${u.role}.`), {
+        name: 'ForbiddenError',
+        code: 'FORBIDDEN',
+      })
+    }
+  },
+  // Mirrors how the REAL mapper branches: on the error CLASS, not the fallback. That is what makes "a refused
+  // analyst is 403, not 500" a real assertion rather than a restatement of the fallback.
+  handleApiError: (e: unknown, fallback: string, status = 500) => {
+    if ((e as { name?: string } | null)?.name === 'ForbiddenError') {
+      return Response.json(
+        { ok: false, error: { code: 'FORBIDDEN', message: (e as Error).message } },
+        { status: 403 },
+      )
+    }
+    return Response.json({ ok: false, error: { code: 'INTERNAL_ERROR', message: fallback } }, { status })
+  },
 }))
 
 mock.module('@/lib/prisma-tenant', () => ({
@@ -48,12 +101,16 @@ mock.module('@/lib/prisma-tenant', () => ({
 }))
 
 mock.module('@/lib/observability', () => ({
-  getRecentTraces: (limit: number) => {
+  getRecentTraces: (limit: number, organizationId?: string) => {
     limitArgs.push(limit)
+    tracesOrgArgs.push(organizationId)
     if (tracesThrow) throw tracesThrow
     return traceRows
   },
-  getTraceStats: () => statsPayload,
+  getTraceStats: (organizationId?: string) => {
+    statsOrgArgs.push(organizationId)
+    return statsPayload
+  },
 }))
 
 // DYNAMIC: a static import would be evaluated before the mocks above and bypass every one of them.
@@ -69,12 +126,16 @@ function get(query = '', which: 'traces' | 'stats' = 'traces') {
 }
 
 beforeEach(() => {
-  user = analystUser
+  // ADMIN by default: the routes are admin-gated now, so the clamp/envelope suites below exercise the admitted
+  // path. The refusal itself is pinned in its own describe block, which sets the other roles explicitly.
+  user = adminUser
   traceRows = [{ id: 't1' }]
   statsPayload = { total: 3, errors: 0 }
   tracesThrow = null
   events.length = 0
   limitArgs.length = 0
+  tracesOrgArgs.length = 0
+  statsOrgArgs.length = 0
 })
 
 describe('/api/traces — the limit clamp', () => {
@@ -149,9 +210,11 @@ describe('/api/traces — envelope and context', () => {
     expect(body.traces).toEqual([])
   })
 
-  test('it enters the session org context', async () => {
+  test('it enters the session org context, then gates on the role', async () => {
     await get('')
-    expect(events).toEqual(['enterWithOrg:org-1'])
+    // ORDER matters and is pinned: the org context is entered BEFORE the role check, so a refused caller is
+    // refused by a check that had the org available (and so the refusal cannot hide an unscoped read).
+    expect(events).toEqual(['enterWithOrg:org-1', 'requireRole:admin'])
   })
 
   test('a buffer read failure is 500 without leaking the error text', async () => {
@@ -159,6 +222,69 @@ describe('/api/traces — envelope and context', () => {
     const res = await get('')
     expect(res.status).toBe(500)
     expect(await res.text()).not.toContain('ring buffer corrupted')
+  })
+})
+
+describe('/api/traces — admin gate (a viewer/analyst must not read any tenant\'s prompts)', () => {
+  // THE VERIFIED DEFECT: neither route had a role check, so any authenticated user of any tenant could read every
+  // org's prompt bodies and answers. These tests fail if requireRole is deleted OR merely moved below the read.
+  test('an ANALYST is refused with 403 FORBIDDEN', async () => {
+    user = analystUser
+    const res = await get('')
+    expect(res.status).toBe(403)
+    const body = (await res.json()) as { error: { code: string } }
+    expect(body.error.code).toBe('FORBIDDEN')
+  })
+
+  test('a VIEWER is refused with 403 FORBIDDEN', async () => {
+    user = { ...analystUser, role: 'viewer' }
+    const res = await get('')
+    expect(res.status).toBe(403)
+  })
+
+  test('the refusal happens BEFORE the buffer is read — a refused caller gets no rows and no clamp', async () => {
+    user = analystUser
+    await get('?limit=7')
+    expect(limitArgs).toHaveLength(0)
+    expect(tracesOrgArgs).toHaveLength(0)
+  })
+
+  test('an ADMIN is admitted and receives the rows', async () => {
+    const res = await get('')
+    expect(res.status).toBe(200)
+  })
+
+  test('/stats carries the SAME gate — an analyst is refused there too', async () => {
+    user = analystUser
+    const res = await get('', 'stats')
+    expect(res.status).toBe(403)
+    expect(statsOrgArgs).toHaveLength(0)
+  })
+
+  test('the gate asks for the literal admin role', async () => {
+    await get('')
+    expect(events).toContain('requireRole:admin')
+  })
+})
+
+describe('/api/traces — the org is PASSED to the reader (enterWithOrg alone does not scope memory)', () => {
+  // The trap: `enterWithOrg` writes AsyncLocalStorage, and the tenant extension — not the buffer — is what turns
+  // that into a `where organizationId`. The buffer is a module global, so each route MUST hand the reader its org.
+  test('/traces passes the session org, not undefined', async () => {
+    await get('')
+    expect(tracesOrgArgs).toEqual(['org-1'])
+  })
+
+  test('/stats passes the session org, not undefined', async () => {
+    await get('', 'stats')
+    expect(statsOrgArgs).toEqual(['org-1'])
+  })
+
+  test('the org passed is the SESSION\'S, followed to a second org rather than a constant', async () => {
+    user = { ...adminUser, organizationId: 'org-2' }
+    await get('')
+    expect(tracesOrgArgs).toEqual(['org-2'])
+    expect(events).toEqual(['enterWithOrg:org-2', 'requireRole:admin'])
   })
 })
 
@@ -170,17 +296,18 @@ describe('/api/traces/stats', () => {
   })
 
   test('it takes NO query parameters (no clamping to pin)', async () => {
-    // Explicitly recorded: /stats reports the whole buffer, so a caller cannot narrow it here. The handler takes
-    // no argument at all, which is why the call site passes none.
+    // Explicitly recorded: /stats reports the WHOLE of THIS ORG's buffer (the org filter is the reader's, passed
+    // below), so a caller cannot narrow it here. The handler takes no argument at all, which is why the call site
+    // passes none.
     const res = await get('?limit=1', 'stats')
     const body = (await res.json()) as { stats: unknown }
     expect(body.stats).toEqual(statsPayload)
     expect(limitArgs).toHaveLength(0)
   })
 
-  test('it enters the session org context', async () => {
+  test('it enters the session org context, then gates on the role', async () => {
     await get('', 'stats')
-    expect(events).toEqual(['enterWithOrg:org-1'])
+    expect(events).toEqual(['enterWithOrg:org-1', 'requireRole:admin'])
   })
 
   test('empty stats are a success, not an error', async () => {

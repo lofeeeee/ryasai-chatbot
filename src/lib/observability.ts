@@ -1,9 +1,28 @@
 /**
  * Lightweight LLM observability — in-memory ring buffer of recent traces,
  * with optional fire-and-forget forwarding to Langfuse / Helicone.
+ *
+ * TENANT SCOPING IS THE READER'S JOB HERE, and that is the trap this file records.
+ * `traces` below is a MODULE GLOBAL shared by every org in the process, and it is
+ * NOT a Prisma query — so `enterWithOrg()` cannot scope it the way the tenant
+ * extension scopes `db.*`. `enterWithOrg` only writes AsyncLocalStorage; THIS module
+ * must read that context and apply the filter itself. Two routes called
+ * `enterWithOrg((await getActiveUser()).organizationId)` and then read the whole
+ * buffer, so `tenant-route-guard.test.ts` passed them while any authenticated user
+ * of any org could read every tenant's prompt bodies and answers.
+ *
+ * The rule: every entry is stamped with an `organizationId` at write time, and every
+ * reader filters on it. A caller's ritual does not scope anything by itself.
  */
 export interface LlmTrace {
   id: string
+  /**
+   * The org this trace belongs to, stamped from `getOrgContext()` inside
+   * `traceLlmCall` — never passed by the caller, so no call site can mislabel a
+   * trace (or hand one org's payload to another). See `NO_ORG_TRACE_SCOPE` for the
+   * value used when there is no org context at all.
+   */
+  organizationId: string
   purpose: string
   provider: string
   model: string
@@ -17,16 +36,57 @@ export interface LlmTrace {
   metadata?: Record<string, unknown>
 }
 
+/**
+ * Stamp for a trace recorded with NO org context (background work outside a job's
+ * `enterWithOrg`, boot-time seeding, unit tests).
+ *
+ * DECISION — record it rather than drop it. Refusing to record would silently discard
+ * the evidence of exactly the calls that run without an org context, which are the
+ * ones an operator most needs to see when debugging an install; the trace also stays
+ * useful for the Langfuse/Helicone forward. The risk of recording is answered by
+ * filtering instead of by refusing: this sentinel is not a real `Organization.id`
+ * (cuid) and the readers only ever return a scope on EQUALITY, so no tenant can
+ * retrieve a sentinel trace. The only reader that can see one is a reader that itself
+ * has no org context — i.e. code that is not acting for any tenant.
+ */
+export const NO_ORG_TRACE_SCOPE = '__no-org-context__'
+
 const RING_MAX = 100
 // ponytail: in-memory ring buffer — lost on restart. Fine for production debugging;
 // persistent storage is the LlmUsageLog table, external tracers cover long-term.
+// Ceiling: the 100 slots are shared by ALL orgs, so a busy org evicts a quiet org's
+// traces. That is a fidelity limit, not a leak — the readers filter by org, so an
+// evicted trace is gone rather than handed to the wrong tenant.
 const traces: LlmTrace[] = []
 
+import { getOrgContext } from './prisma-tenant'
 import { inc, observe, counter } from './metrics'
 counter('llm_errors_total', 'Total LLM call errors')
 
-export function traceLlmCall(trace: Omit<LlmTrace, 'id' | 'timestamp'>): string {
-  const entry: LlmTrace = { ...trace, id: crypto.randomUUID(), timestamp: new Date() }
+/**
+ * Resolve the org a read applies to.
+ *
+ * An explicit argument wins over the ambient context, but a disagreement between the
+ * two is REFUSED rather than honoured: if AsyncLocalStorage says org A and a caller
+ * passes org B, the only way that happens is a caller trusting an org id it did not
+ * derive from the session — the client-supplied-id shape of the 2026-09 IDOR. An
+ * empty result is the fail-closed answer, and it is indistinguishable from a buffer
+ * that holds nothing for that org, which is the point.
+ */
+function traceScopeFor(explicit?: string): string | null {
+  const ambient = getOrgContext()
+  if (explicit !== undefined && ambient !== undefined && explicit !== ambient) return null
+  return explicit ?? ambient ?? NO_ORG_TRACE_SCOPE
+}
+
+export function traceLlmCall(trace: Omit<LlmTrace, 'id' | 'timestamp' | 'organizationId'>): string {
+  const entry: LlmTrace = {
+    ...trace,
+    // Stamped HERE, from the context — the type omits it so a call site cannot set it.
+    organizationId: getOrgContext() ?? NO_ORG_TRACE_SCOPE,
+    id: crypto.randomUUID(),
+    timestamp: new Date(),
+  }
   if (traces.length >= RING_MAX) traces.shift()
   traces.push(entry)
   forwardTrace(entry).catch(() => {})
@@ -41,21 +101,38 @@ export function traceLlmCall(trace: Omit<LlmTrace, 'id' | 'timestamp'>): string 
   return entry.id
 }
 
-export function getRecentTraces(limit: number = 50): LlmTrace[] {
-  return traces.slice(-limit).reverse()
+/**
+ * Recent traces FOR ONE ORG, most-recent-first.
+ *
+ * `organizationId` is optional only so a caller inside an org context (the routes,
+ * via `enterWithOrg`) does not have to repeat what AsyncLocalStorage already holds;
+ * when omitted the scope comes from `getOrgContext()`. It is NOT an unscoped read:
+ * with no org anywhere the scope falls back to the no-org sentinel, which returns
+ * the org-less traces and never another tenant's.
+ */
+export function getRecentTraces(limit: number = 50, organizationId?: string): LlmTrace[] {
+  const scope = traceScopeFor(organizationId)
+  if (scope === null) return []
+  // ponytail: equality against the stamped scope, so a trace is never returned to an
+  // org that did not record it. The no-org sentinel is safe for the same reason: an
+  // org id can never equal it.
+  return traces.filter((t) => t.organizationId === scope).slice(-limit).reverse()
 }
 
-export function getTraceStats(): {
+export function getTraceStats(organizationId?: string): {
   totalCalls: number
   avgLatencyMs: number
   errorRate: number
   totalTokens: number
 } {
-  const n = traces.length
+  const scope = traceScopeFor(organizationId)
+  // Fail closed on a scope disagreement: zeroes, not the whole buffer's numbers.
+  const scoped = scope === null ? [] : traces.filter((t) => t.organizationId === scope)
+  const n = scoped.length
   if (n === 0) return { totalCalls: 0, avgLatencyMs: 0, errorRate: 0, totalTokens: 0 }
-  const totalLatency = traces.reduce((s, t) => s + t.latencyMs, 0)
-  const errors = traces.filter((t) => t.error).length
-  const tokens = traces.reduce((s, t) => s + (t.usage?.totalTokens ?? 0), 0)
+  const totalLatency = scoped.reduce((s, t) => s + t.latencyMs, 0)
+  const errors = scoped.filter((t) => t.error).length
+  const tokens = scoped.reduce((s, t) => s + (t.usage?.totalTokens ?? 0), 0)
   return {
     totalCalls: n,
     avgLatencyMs: Math.round(totalLatency / n),

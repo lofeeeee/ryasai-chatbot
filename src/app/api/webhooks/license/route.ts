@@ -4,6 +4,7 @@ import { db } from '@/lib/db'
 import { bypassOrg } from '@/lib/prisma-tenant'
 import { handleApiError } from '@/lib/session'
 import { scopedLogger } from '@/lib/logger'
+import { normalizePlan, KNOWN_PLANS } from '@/lib/plan-gating'
 
 const log = scopedLogger('license-webhook')
 
@@ -73,12 +74,30 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: `Unknown event: ${event}` }, { status: 400 })
     }
 
+    /*
+     * The plan is validated even though this route is signature-authenticated.
+     *
+     * Defence in depth, and for the same commercial reason as the validator
+     * client: an unrecognised plan string resolves to `starter` in every quota
+     * check, so storing one would silently downgrade the org to the most
+     * restrictive tier and start answering 403 to features it bought. The
+     * signature proves the CALLER, not the vocabulary — a validator that
+     * renames a plan would still sign a request this build cannot interpret.
+     */
+    const normalizedPlan = normalizePlan(plan)
+    if (plan && normalizedPlan === null) {
+      log.warn('Ignoring an unrecognised plan from a signed webhook — keeping the stored plan', {
+        receivedPlan: String(plan),
+        knownPlans: KNOWN_PLANS.join(', '),
+      })
+    }
+
     await bypassOrg(() =>
       db.organization.update({
         where: { id: org.id },
         data: {
           licenseStatus: status,
-          ...(plan ? { licensePlan: plan } : {}),
+          ...(normalizedPlan ? { licensePlan: normalizedPlan } : {}),
           licenseValidatedAt: new Date(),
         },
       }),

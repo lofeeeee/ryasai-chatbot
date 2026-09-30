@@ -77,10 +77,33 @@ async function main() {
   // component test could neither RUN (the same gap in `scripts/test.ts`) nor appear here as a file whose
   // coverage was never measured. Two narrow globs in two scripts left such a file invisible to the whole
   // pipeline rather than merely untested — `cognee-diagnostics-render.test.tsx` was in exactly that state.
-  // `release-images.test.ts` now asserts both globs cover both extensions, because the fix belongs in the
+  // `release-images.test.ts` asserts both globs cover both extensions, because the fix belongs in the
   // pattern rather than in one file's name.
-  for await (const f of new Bun.Glob('src/**/*.test.{ts,tsx}').scan()) {
-    if (f.endsWith('.integration.test.ts') || f.includes('connector-dummy')) continue
+  //
+  // THE GLOB IS THE SAME ONE `scripts/test.ts` USES, and that was not true before. MEASURED divergence
+  // (silent-failure class 20, "two harnesses for one suite, configured differently"): `test.ts` globbed
+  // `{src,benchmark}/**/*.test.{ts,tsx}` (303 files) while this file globbed `src/**/*.test.{ts,tsx}`
+  // (290). So 13 benchmark test files RAN in CI but were never part of the measurement, and one of them,
+  // `benchmark/arms/hybrid-fusion.test.ts`, imports `@/lib/rag-ranking` — a module `scripts/coverage-gate.ts`
+  // floors at 80%. That module was therefore measured WITHOUT the tests that exercise it, so a real
+  // regression there could lower coverage while the file that would have caught it ran somewhere else.
+  //
+  // `scripts/` IS INCLUDED, matching `test.ts`: `scripts/test-runner.test.ts` tests the runner's own
+  // summary parser and was collected by nothing until the two runners were unified.
+  //
+  // IDENTICAL STRING to `scripts/test.ts` — `src/lib/test-runner-parity.test.ts` reads both files and
+  // fails if they ever differ, so the next widening cannot land in only one of them. Widening this glob
+  // is NOT free: the added files change the merged denominator and can move a gated module's percentage,
+  // which is why the parity guard exists and why a floor that breaks is REPORTED, never lowered.
+  const TEST_FILE_GLOB = '{src,benchmark,scripts}/**/*.test.{ts,tsx}'
+  // THE SAME NAMED EXCLUSION `scripts/test.ts` USES, spelled the same way. This was
+  // `f.includes('connector-dummy')` — a SUBSTRING match, which is broader than the set the runner
+  // names and would also exclude a future `connector-dummy-fixtures.test.ts` that the unit runner
+  // still runs. Excluding is the runner's contract, so this file must exclude the same files and
+  // only those; `src/lib/test-runner-parity.test.ts` asserts the two agree.
+  const EXCLUDED_FILES = new Set(['src/lib/connector-dummy.test.ts'])
+  for await (const f of new Bun.Glob(TEST_FILE_GLOB).scan()) {
+    if (f.endsWith('.integration.test.ts') || EXCLUDED_FILES.has(f)) continue
     files.push(f)
   }
   files.sort()
@@ -113,6 +136,13 @@ async function main() {
     ...process.env,
     ENCRYPTION_SECRET_KEY: process.env.ENCRYPTION_SECRET_KEY ?? 'deadbeef'.repeat(8),
     DATABASE_URL: process.env.DATABASE_URL ?? 'postgresql://unit:unit@127.0.0.1:1/unit_test_unreachable',
+    // A SHORT LLM retry backoff, the SAME default `scripts/test.ts` injects and for the same reason:
+    // this runner also spawns one `bun test` per file, so the real ladder costs each retry-exhaustion
+    // test (1+2+4) x 500 ms = 3500 ms of pure `setTimeout`. MEASURED under `bun run test`: 11 tests in
+    // `src/lib/ai.test.ts` paid 3501-3523 ms each. Keeping the two scripts in agreement is the point —
+    // a suite whose timing differs between `test` and `coverage` measures the harness, not the code.
+    // The production default stays 500 in `src/lib/constants.ts`; an explicit ambient value still wins.
+    LLM_RETRY_BACKOFF_BASE_MS: process.env.LLM_RETRY_BACKOFF_BASE_MS ?? '25',
     // Suppressed to the EMPTY STRING, matching scripts/test.ts exactly.
     //
     // MEASURED FAILURE this fixes: `run.ts` set these but `coverage.ts` did not, so every
@@ -368,5 +398,40 @@ async function main() {
   writeFileSync('coverage-summary.json', JSON.stringify(json, null, 2))
   console.log(`\nwrote coverage-summary.json (${failed.length} test files failed)`)
   if (failed.length) console.log('FAILED: ' + failed.join(', '))
+
+  /*
+   * EXIT NON-ZERO WHEN AN INNER TEST FILE FAILED. Layer decision: THIS script owns it, and the reason
+   * is that only this script knows a file failed. It runs the tests itself `--coverage-reporter=lcov`,
+   * discards their stdout (`stdout: 'ignore'`) and records the failures in `failed`, so `coverage-gate.ts`
+   * — which reads only `coverage-summary.json` — cannot distinguish "the suite was green" from "some
+   * files died before emitting lcov".
+   *
+   * WHY IT MATTERS, and why silence here is the worst outcome. A file that fails under `coverage` but
+   * passes under `test` emits NO lcov (a crash before the report) or a PARTIAL one, so its modules lose
+   * hits, the merged percentage drops, and the gate then blames the CODE with a floor breach naming a
+   * module nobody touched. MEASURED precedent in this repo (the shared-`coverage/lcov.info` incident):
+   * `src/lib/planner.ts` was reported at 69/673 (10.3%) while its own suite covers 379/578 (65.6%),
+   * because a report was replaced mid-run. The gate cannot tell that apart from a real regression, and
+   * its stated remedy is "restore the tests, or lower the floor" — which is exactly the wrong action for
+   * a harness failure. Exit non-zero HERE, before the gate is reached, so the failure is reported as a
+   * TEST failure rather than misattributed to coverage.
+   *
+   * `failedTestFiles` is still written to the summary: it is the machine-readable record, and the human
+   * "FAILED: ..." line above names the files. They are read by a person and by the exit code
+   * respectively — the field's own lack of a programmatic consumer is why the exit code carries the
+   * verdict.
+   */
+  if (failed.length) {
+    console.error(
+      `\n[coverage] ${failed.length} test file(s) FAILED during the coverage run: ` + failed.join(', '),
+    )
+    console.error(
+      '[coverage] The merged numbers above are NOT trustworthy for those files (a crash emits no lcov, or a\n' +
+        '[coverage] partial one), so this run is a FAILURE rather than a measurement. Re-run the file with\n' +
+        '[coverage] `bun test <file>` to see the assertion, then re-measure. Do not lower a coverage floor to\n' +
+        '[coverage] absorb this: the gate would be encoding a harness failure as a property of the code.',
+    )
+    process.exit(1)
+  }
 }
 await main()

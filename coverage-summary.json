@@ -1,14 +1,14 @@
 {
-  "linePct": 75.4,
-  "linesHit": 26246,
-  "linesFound": 34810,
-  "reachableLinePct": 86.35,
-  "reachableLinesHit": 22858,
-  "reachableLinesFound": 26472,
-  "fnPct": 88.59,
-  "fnsHit": 2314,
-  "fnsFound": 2612,
-  "filesMeasured": 250,
+  "linePct": 75,
+  "linesHit": 26600,
+  "linesFound": 35468,
+  "reachableLinePct": 86.5,
+  "reachableLinesHit": 23174,
+  "reachableLinesFound": 26792,
+  "fnPct": 88.76,
+  "fnsHit": 2361,
+  "fnsFound": 2660,
+  "filesMeasured": 252,
   "failedTestFiles": [],
   "files": [
     {
@@ -23,8 +23,8 @@
     {
       "file": "src/components/views/ai-configuration-view.tsx",
       "hit": 31,
-      "found": 690,
-      "pct": 4.492753623188406,
+      "found": 681,
+      "pct": 4.552129221732746,
       "fHit": 1,
       "fFound": 2,
       "fPct": 50
@@ -201,6 +201,15 @@
       "fPct": 87.8048780487805
     },
     {
+      "file": "src/lib/system-message-ceiling.ts",
+      "hit": 80,
+      "found": 159,
+      "pct": 50.314465408805034,
+      "fHit": 9,
+      "fFound": 9,
+      "fPct": 100
+    },
+    {
       "file": "src/lib/mcp-client.ts",
       "hit": 325,
       "found": 620,
@@ -248,8 +257,8 @@
     {
       "file": "src/components/views/cognee-card.tsx",
       "hit": 157,
-      "found": 265,
-      "pct": 59.24528301886792,
+      "found": 271,
+      "pct": 57.93357933579336,
       "fHit": 6,
       "fFound": 15,
       "fPct": 40
@@ -264,6 +273,15 @@
       "fPct": 86.11111111111111
     },
     {
+      "file": "src/lib/guardrails.ts",
+      "hit": 259,
+      "found": 431,
+      "pct": 60.092807424593964,
+      "fHit": 16,
+      "fFound": 17,
+      "fPct": 94.11764705882352
+    },
+    {
       "file": "src/lib/cognee-memory.ts",
       "hit": 234,
       "found": 381,
@@ -273,15 +291,6 @@
       "fPct": 96.42857142857143
     },
     {
-      "file": "src/components/views/memory-configuration-panel.tsx",
-      "hit": 387,
-      "found": 626,
-      "pct": 61.82108626198083,
-      "fHit": 16,
-      "fFound": 33,
-      "fPct": 48.484848484848484
-    },
-    {
       "file": "src/lib/rag-retrieval.ts",
       "hit": 387,
       "found": 622,
@@ -289,6 +298,24 @@
       "fHit": 53,
       "fFound": 53,
       "fPct": 100
+    },
+    {
+      "file": "src/components/views/memory-configuration-panel.tsx",
+      "hit": 391,
+      "found": 628,
+      "pct": 62.261146496815286,
+      "fHit": 16,
+      "fFound": 33,
+      "fPct": 48.484848484848484
+    },
+    {
+      "file": "src/components/ui/button.tsx",
+      "hit": 96,
+      "found": 153,
+      "pct": 62.745098039215684,
+      "fHit": 2,
+      "fFound": 3,
+      "fPct": 66.66666666666666
     },
     {
       "file": "src/lib/source-guidance.ts",
@@ -318,13 +345,13 @@
       "fPct": 86.66666666666667
     },
     {
-      "file": "src/components/ui/button.tsx",
-      "hit": 89,
-      "found": 132,
-      "pct": 67.42424242424242,
-      "fHit": 2,
-      "fFound": 3,
-      "fPct": 66.66666666666666
+      "file": "src/lib/ai.ts",
+      "hit": 466,
+      "found": 691,
+      "pct": 67.43849493487699,
+      "fHit": 46,
+      "fFound": 46,
+      "fPct": 100
     },
     {
       "file": "src/lib/cognee-types.ts",
@@ -390,15 +417,6 @@
       "fPct": 45.45454545454545
     },
     {
-      "file": "src/lib/ai.ts",
-      "hit": 467,
-      "found": 678,
-      "pct": 68.87905604719764,
-      "fHit": 48,
-      "fFound": 48,
-      "fPct": 100
-    },
-    {
       "file": "src/lib/rag-fts.ts",
       "hit": 109,
       "found": 157,
@@ -406,6 +424,15 @@
       "fHit": 15,
       "fFound": 15,
       "fPct": 100
+    },
+    {
+      "file": "src/lib/license-client.ts",
+      "hit": 139,
+      "found": 198,
+      "pct": 70.2020202020202,
+      "fHit": 12,
+      "fFound": 14,
+      "fPct": 85.71428571428571
     },
     {
       "file": "src/lib/config.ts",
@@ -480,6 +507,15 @@
       "fPct": 90.9090909090909
     },
     {
+      "file": "src/lib/planner.ts",
+      "hit": 581,
+      "found": 775,
+      "pct": 74.96774193548387,
+      "fHit": 49,
+      "fFound": 49,
+      "fPct": 100
+    },
+    {
       "file": "src/components/ui/card.tsx",
       "hit": 45,
       "found": 60,
@@ -504,15 +540,6 @@
       "pct": 75.55555555555556,
       "fHit": 2,
       "fFound": 2,
-      "fPct": 100
-    },
-    {
-      "file": "src/lib/planner.ts",
-      "hit": 578,
-      "found": 761,
-      "pct": 75.9526938239159,
-      "fHit": 49,
-      "fFound": 49,
       "fPct": 100
     },
     {
@@ -543,15 +570,6 @@
       "fPct": 100
     },
     {
-      "file": "src/lib/guardrails.ts",
-      "hit": 214,
-      "found": 274,
-      "pct": 78.1021897810219,
-      "fHit": 9,
-      "fFound": 9,
-      "fPct": 100
-    },
-    {
       "file": "src/components/views/knowledge-base/doc-card.tsx",
       "hit": 222,
       "found": 282,
@@ -559,6 +577,15 @@
       "fHit": 13,
       "fFound": 15,
       "fPct": 86.66666666666667
+    },
+    {
+      "file": "src/lib/observability.ts",
+      "hit": 146,
+      "found": 185,
+      "pct": 78.91891891891892,
+      "fHit": 14,
+      "fFound": 15,
+      "fPct": 93.33333333333333
     },
     {
       "file": "src/lib/connectors.ts",
@@ -594,15 +621,6 @@
       "pct": 80,
       "fHit": 12,
       "fFound": 12,
-      "fPct": 100
-    },
-    {
-      "file": "src/app/api/traces/stats/route.ts",
-      "hit": 8,
-      "found": 10,
-      "pct": 80,
-      "fHit": 2,
-      "fFound": 2,
       "fPct": 100
     },
     {
@@ -795,21 +813,21 @@
       "fPct": 100
     },
     {
-      "file": "src/lib/license-client.ts",
-      "hit": 129,
-      "found": 152,
-      "pct": 84.86842105263158,
-      "fHit": 12,
-      "fFound": 14,
-      "fPct": 85.71428571428571
-    },
-    {
       "file": "src/lib/errors.ts",
       "hit": 53,
       "found": 62,
       "pct": 85.48387096774194,
       "fHit": 4,
       "fFound": 4,
+      "fPct": 100
+    },
+    {
+      "file": "src/lib/health-status.ts",
+      "hit": 76,
+      "found": 88,
+      "pct": 86.36363636363636,
+      "fHit": 19,
+      "fFound": 19,
       "fPct": 100
     },
     {
@@ -850,21 +868,12 @@
     },
     {
       "file": "src/lib/prisma-tenant.ts",
-      "hit": 90,
-      "found": 103,
-      "pct": 87.37864077669903,
+      "hit": 94,
+      "found": 107,
+      "pct": 87.85046728971963,
       "fHit": 8,
       "fFound": 8,
       "fPct": 100
-    },
-    {
-      "file": "src/lib/observability.ts",
-      "hit": 131,
-      "found": 149,
-      "pct": 87.91946308724832,
-      "fHit": 11,
-      "fFound": 12,
-      "fPct": 91.66666666666666
     },
     {
       "file": "src/lib/smart-router-helpers.ts",
@@ -883,15 +892,6 @@
       "fHit": 5,
       "fFound": 6,
       "fPct": 83.33333333333334
-    },
-    {
-      "file": "src/lib/session.ts",
-      "hit": 163,
-      "found": 182,
-      "pct": 89.56043956043956,
-      "fHit": 15,
-      "fFound": 17,
-      "fPct": 88.23529411764706
     },
     {
       "file": "src/lib/tool-utils.ts",
@@ -921,6 +921,15 @@
       "fPct": 100
     },
     {
+      "file": "src/lib/session.ts",
+      "hit": 165,
+      "found": 182,
+      "pct": 90.65934065934066,
+      "fHit": 15,
+      "fFound": 17,
+      "fPct": 88.23529411764706
+    },
+    {
       "file": "src/lib/metrics.ts",
       "hit": 163,
       "found": 179,
@@ -937,6 +946,15 @@
       "fHit": 15,
       "fFound": 16,
       "fPct": 93.75
+    },
+    {
+      "file": "src/app/api/health/route.ts",
+      "hit": 108,
+      "found": 118,
+      "pct": 91.52542372881356,
+      "fHit": 12,
+      "fFound": 12,
+      "fPct": 100
     },
     {
       "file": "src/lib/crypto.ts",
@@ -1047,21 +1065,21 @@
       "fPct": 83.33333333333334
     },
     {
+      "file": "src/app/api/webhooks/license/route.ts",
+      "hit": 68,
+      "found": 72,
+      "pct": 94.44444444444444,
+      "fHit": 6,
+      "fFound": 6,
+      "fPct": 100
+    },
+    {
       "file": "src/app/api/mcp/servers/route.ts",
       "hit": 142,
       "found": 150,
       "pct": 94.66666666666667,
       "fHit": 10,
       "fFound": 10,
-      "fPct": 100
-    },
-    {
-      "file": "src/lib/plan-gating.ts",
-      "hit": 37,
-      "found": 39,
-      "pct": 94.87179487179486,
-      "fHit": 4,
-      "fFound": 4,
       "fPct": 100
     },
     {
@@ -1072,6 +1090,15 @@
       "fHit": 7,
       "fFound": 9,
       "fPct": 77.77777777777779
+    },
+    {
+      "file": "src/lib/plan-gating.ts",
+      "hit": 42,
+      "found": 44,
+      "pct": 95.45454545454545,
+      "fHit": 5,
+      "fFound": 5,
+      "fPct": 100
     },
     {
       "file": "src/components/ui/badge.tsx",
@@ -1245,18 +1272,18 @@
       "fPct": 90
     },
     {
-      "file": "src/app/api/agent/dashboard/sessions/route.ts",
-      "hit": 58,
-      "found": 58,
-      "pct": 100,
-      "fHit": 5,
-      "fFound": 5,
-      "fPct": 100
-    },
-    {
       "file": "src/lib/constants.ts",
       "hit": 41,
       "found": 41,
+      "pct": 100,
+      "fHit": 1,
+      "fFound": 1,
+      "fPct": 100
+    },
+    {
+      "file": "src/lib/db-provider.ts",
+      "hit": 3,
+      "found": 3,
       "pct": 100,
       "fHit": 1,
       "fFound": 1,
@@ -1269,6 +1296,24 @@
       "pct": 100,
       "fHit": 1,
       "fFound": 1,
+      "fPct": 100
+    },
+    {
+      "file": "src/lib/retrieval-rank.ts",
+      "hit": 5,
+      "found": 5,
+      "pct": 100,
+      "fHit": 2,
+      "fFound": 2,
+      "fPct": 100
+    },
+    {
+      "file": "src/app/api/agent/dashboard/sessions/route.ts",
+      "hit": 58,
+      "found": 58,
+      "pct": 100,
+      "fHit": 5,
+      "fFound": 5,
       "fPct": 100
     },
     {
@@ -1488,30 +1533,12 @@
       "fPct": 100
     },
     {
-      "file": "src/lib/db-provider.ts",
-      "hit": 3,
-      "found": 3,
-      "pct": 100,
-      "fHit": 1,
-      "fFound": 1,
-      "fPct": 100
-    },
-    {
       "file": "src/lib/public-config.ts",
       "hit": 10,
       "found": 10,
       "pct": 100,
       "fHit": 1,
       "fFound": 1,
-      "fPct": 100
-    },
-    {
-      "file": "src/lib/retrieval-rank.ts",
-      "hit": 5,
-      "found": 5,
-      "pct": 100,
-      "fHit": 2,
-      "fFound": 2,
       "fPct": 100
     },
     {
@@ -1930,8 +1957,17 @@
     },
     {
       "file": "src/app/api/traces/route.ts",
-      "hit": 11,
-      "found": 11,
+      "hit": 13,
+      "found": 13,
+      "pct": 100,
+      "fHit": 2,
+      "fFound": 2,
+      "fPct": 100
+    },
+    {
+      "file": "src/app/api/traces/stats/route.ts",
+      "hit": 12,
+      "found": 12,
       "pct": 100,
       "fHit": 2,
       "fFound": 2,
@@ -1998,15 +2034,6 @@
       "pct": 100,
       "fHit": 2,
       "fFound": 2,
-      "fPct": 100
-    },
-    {
-      "file": "src/app/api/webhooks/license/route.ts",
-      "hit": 64,
-      "found": 64,
-      "pct": 100,
-      "fHit": 6,
-      "fFound": 6,
       "fPct": 100
     },
     {
@@ -2125,15 +2152,6 @@
       "fHit": 5,
       "fFound": 7,
       "fPct": 71.42857142857143
-    },
-    {
-      "file": "src/lib/health-status.ts",
-      "hit": 14,
-      "found": 14,
-      "pct": 100,
-      "fHit": 2,
-      "fFound": 2,
-      "fPct": 100
     },
     {
       "file": "src/lib/job-processor.ts",

@@ -6,12 +6,25 @@
  * `PUBLIC_API_PATHS`, and the handler itself calls nothing that could authenticate. Three
  * consequences make it worth pinning rather than leaving as a trivial "returns ok" test:
  *
- *   1. ITS ONLY JOB IS LIVENESS — IT MUST TOUCH NOTHING. The sibling `/api/health` route documents
- *      this one as the "lightweight liveness probe (no DB hit)". The whole reason a second health
- *      route exists is that the detailed one queries Postgres, Redis and the license validator. If
- *      a DB/Redis/session call is ever added here, the probe starts failing for reasons that have
- *      nothing to do with the process being alive, and it is no longer a liveness signal. Asserted
- *      by COUNTING calls into every such seam (throwing mocks), not by reading the source.
+ *   1. ITS ONLY JOB IS LIVENESS — IT MUST TOUCH NOTHING. This is the point that a
+ *      measured production defect put under pressure, so the reasoning is recorded here rather
+ *      than left implicit: the compose healthcheck used to probe THIS route and decide on
+ *      `r.ok`, and because the route touches nothing, a container with a DEAD POSTGRES still
+ *      reported `healthy` and was never restarted (silent-failure class #14). The fix was NOT
+ *      to give this route a dependency check — it was to point the healthcheck at the deep
+ *      `/api/health`, which returns 503 when the critical `db` check fails. Liveness and
+ *      readiness are different questions: liveness asks "is this process wedged?" (a process
+ *      answering an HTTP request is not, whatever its database is doing), while readiness asks
+ *      "should traffic / a restart go here?". A liveness probe that failed on a DB outage would
+ *      ask an orchestrator to KILL a correctly-running process, turning a database outage into
+ *      a restart loop that fixes nothing. The whole reason a second health route exists is
+ *      that the detailed one queries Postgres, Redis, the validator and the optional sidecars.
+ *      IF a DB/Redis/session call is ever added here the probe starts failing for reasons that
+ *      have nothing to do with the process being alive. Asserted by COUNTING calls into every
+ *      such seam (throwing mocks), not by reading the source. That the CONTAINER healthcheck
+ *      targets the deep route instead is asserted in the sibling
+ *      `src/app/api/health/route.test.ts`, reading both compose files — the two ends of the
+ *      wiring are pinned in two places so neither can drift back alone.
  *   2. THE RESPONSE IS ANONYMOUSLY READABLE, SO IT IS AN ATTACKER'S FIRST FREE LOOK. The one value
  *      that is genuinely derived from configuration is `version`, sourced from
  *      `publicConfig.appVersion` (`NEXT_PUBLIC_APP_VERSION`). It is therefore asserted positively
@@ -33,6 +46,8 @@
  * with the reasoning, rather than being written up as bugs.
  */
 import { describe, expect, test, beforeEach, mock } from 'bun:test'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 // ---- mutable seams, declared at the TOP, ABOVE every mock.module ----
 //
@@ -257,8 +272,10 @@ describe('GET /api/v1/health — needs NO session and no tenant context', () => 
     expect(tenantTouches).toBe(0)
   })
 
-  test('it makes no outbound requests (no validator/Redis probe)', async () => {
-    // This is the specific difference from the sibling /api/health route, which does all three.
+  test('it makes no outbound requests (no validator/sidecar probe)', async () => {
+    // This is the specific difference from the sibling /api/health route, which probes the DB,
+    // Redis, the validator and both optional sidecars — and is why the container healthcheck
+    // reads THAT route and not this one.
     await call()
     expect(outboundFetches).toBe(0)
     expect(realFetch).toBeDefined()
@@ -270,6 +287,46 @@ describe('GET /api/v1/health — needs NO session and no tenant context', () => 
     await call()
     expect(events).toEqual(['publicConfig.appVersion'])
   })
+})
+
+describe('GET /api/v1/health — the OTHER end of the healthcheck wiring', () => {
+  /**
+   * A PASS-ONLY GUARD CAN LOOK LIKE COVERAGE WHILE THE DEPLOYMENT STILL LIES, so the
+   * configuration that makes this route's honesty MATTER is pinned here, beside the route.
+   *
+   * THE DEFECT: the container healthcheck probed THIS route and decided on `r.ok`. Because this
+   * route touches nothing, a container with a dead Postgres reported `healthy` forever. Fixing
+   * the route is impossible without destroying liveness (see this file's header), so the fix is
+   * the WIRING — and the wiring is exactly the thing that silently reverts. `route.test.ts` of
+   * the deep endpoint asserts the same property from its side; both ends are guarded because a
+   * future edit may touch only one.
+   *
+   * The assertion is deliberately narrow: the app service's healthcheck must NAME the deep
+   * route. It is not a general YAML check — that would be a guard that cannot fail.
+   */
+  const root = join(import.meta.dir, '..', '..', '..', '..', '..')
+
+  /** The `app:` service block, comments stripped so prose cannot satisfy the assertion. */
+  function appBlock(src: string): string {
+    const start = src.search(/^\s{2}app:\s*$/m)
+    expect(start).toBeGreaterThan(-1)
+    const rest = src.slice(start)
+    const end = rest.slice(1).search(/^\s{2}[a-z][a-z0-9_-]*:\s*$/m)
+    const block = end === -1 ? rest : rest.slice(0, end + 1)
+    return block
+      .split('\n')
+      .map((l) => (l.trimStart().startsWith('#') ? '' : l))
+      .join('\n')
+  }
+
+  for (const file of ['docker-compose.yml', 'install.sh']) {
+    test(`${file} probes the DEEP route from the app healthcheck, not this one`, () => {
+      const block = appBlock(readFileSync(join(root, file), 'utf-8'))
+      const test = block.match(/test:\s*\[[^\]]*\]/)?.[0] ?? ''
+      expect(test).toContain('/api/health')
+      expect(test).not.toContain('/api/v1/health')
+    })
+  }
 })
 
 describe('GET /api/v1/health — no secret is disclosed to an anonymous caller', () => {

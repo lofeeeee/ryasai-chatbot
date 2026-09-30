@@ -393,3 +393,70 @@ describe('validateLicense — fail closed on an unusable signing key', () => {
     expect(r.signatureVerified).toBe(false)
   })
 })
+
+/**
+ * The plan must never be DOWNGRADED by a validator that disagrees with this
+ * build about the plan vocabulary.
+ *
+ * `licenseUpdateFromResult` is the one place a validated plan reaches the
+ * `Organization` row, so it is the last line of defence before a paying
+ * customer's entitlement is written down. If an unrecognised string slipped
+ * through unmapped, `quotaFor`/`hasPlan` would resolve it to `starter` (3
+ * users, 1 data source, 25 documents, 403 on Schedules/MCP/Agentic) and the
+ * customer would see a limit nobody sold them.
+ */
+describe('licenseUpdateFromResult — an unrecognised plan cannot downgrade a paying install', () => {
+  test('an UNKNOWN plan from the validator is DROPPED, not stored', () => {
+    const out = licenseUpdateFromResult(result({ plan: 'platinum' }))
+    // Dropped means the key is ABSENT, so Prisma leaves the stored value alone.
+    expect('licensePlan' in out).toBe(false)
+  })
+
+  test('an unknown plan does not resurrect a fallback either', () => {
+    const out = licenseUpdateFromResult(result({ plan: 'platinum' }), { planFallback: 'flat' })
+    // The validator SAID something, so we do not silently promote it to the
+    // fallback — that would invent an entitlement. Absent is the honest answer.
+    expect('licensePlan' in out).toBe(false)
+  })
+
+  test('a KNOWN plan is still written, and normalised', () => {
+    // Control, so the assertions above cannot pass on a function that never
+    // writes a plan at all.
+    //
+    // `signatureVerified: true` is REQUIRED here, and discovering that is the
+    // point: the helper defaults it to `false` and the whole payload is gated
+    // on verification. So "nothing was written" has TWO legitimate causes, and
+    // the unknown-plan tests above isolate the vocabulary one by passing a
+    // VERIFIED result.
+    expect(licenseUpdateFromResult(result({ signatureVerified: true, plan: 'flat' })).licensePlan).toBe('flat')
+    expect(
+      licenseUpdateFromResult(result({ signatureVerified: true, plan: 'Enterprise' })).licensePlan,
+    ).toBe('enterprise')
+  })
+
+  test('a missing plan keeps the stored value while still advancing the valid timestamp', () => {
+    const out = licenseUpdateFromResult(
+      result({ valid: true, signatureVerified: true, plan: null, expiresAt: '2030-01-01T00:00:00.000Z' }),
+    )
+    expect('licensePlan' in out).toBe(false)
+    expect(out.licenseValidatedAt).toBeInstanceOf(Date)
+    expect(out.licenseStatus).toBe('valid')
+  })
+
+  test('an UNSIGNED response can never set a plan, whatever it claims', () => {
+    // The other half of the gating, and not about the plan vocabulary at all.
+    const out = licenseUpdateFromResult(result({ signatureVerified: false, plan: 'flat' }))
+    expect('licensePlan' in out).toBe(false)
+  })
+
+  test('an unrecognised FALLBACK literal is refused too', () => {
+    // `planFallback` is a caller-supplied literal ('flat' today). A typed
+    // fallback that drifts would be stored verbatim and then resolve to
+    // `starter` — the same downgrade by a different door.
+    const out = licenseUpdateFromResult(
+      result({ signatureVerified: true, plan: null }),
+      { planFallback: 'flatty' },
+    )
+    expect('licensePlan' in out).toBe(false)
+  })
+})
