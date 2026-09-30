@@ -96,6 +96,16 @@ bun run prepare          # install pre-commit hook (.git/hooks/pre-commit)
 ### Testing quirks (important)
 
 - `bun run test` runs `scripts/test.ts`, NOT `bun test src/`. Bun's `mock.module` leaks state across test files in a single process, so each `*.test.ts` gets its own `bun test` subprocess (8-way parallel). Do not switch to `bun test src/` — it will fail with stale-mock errors.
+  - **MEASURED 2026-09-30, so nobody re-opens this as a code defect.** A named PAIR that leaks is
+    `bun test src/lib/tool-branches.test.ts src/lib/stream-preparers.test.ts` → **106 pass / 4 fail**,
+    while each file ALONE is green (`tool-branches` 58/0, `stream-preparers` 52/0) and `bun run test`
+    is green as a whole. The four are one RAG-parity test, two SQL repair-loop tests and one guardrail
+    test — all of them assert on a `mock.module` the OTHER file registered first (the partial mock
+    wins and its missing exports are what fails, not the assertions). This is a harness property of
+    running two suites in one Bun process, not a defect in either file, and CI cannot reach it:
+    `scripts/test.ts` spawns `Bun.spawn(['bun','test',path], …)` once PER FILE. Fixing it would mean
+    making each file's mocks complete against consumers it does not own — more coupling, not less.
+
 - Run a single test file: `bun test src/lib/guardrails.test.ts`
 - Tests inject a fallback `ENCRYPTION_SECRET_KEY` if unset, so they run on a fresh checkout without `.env`.
 - Integration tests (`*.integration.test.ts` + `connector-dummy.test.ts`) need a live Postgres (some require seeded demo content — run via `bun run test:integration`).
