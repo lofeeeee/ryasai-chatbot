@@ -1,10 +1,10 @@
 # CLAUDE.md — ryasai Chatbot (Super-App Track)
 
 > Living document. Update the **Progress Log** at the bottom every session.
-> Last updated 2026-09-29. Version 1.1.1. PostgreSQL 16. All PLAN.md phases P0–P5 + S4 + RAG complete. Language standardized to English.
+> Last updated 2026-09-30. Version 1.3.0. PostgreSQL 16. All PLAN.md phases P0–P5 + S4 + RAG complete. Language standardized to English.
 >
 > **Counts and versions in this file drift.** Section 1 and 8 describe CURRENT state and are
-> corrected to 1.1.1; section 9 (Progress Log) is HISTORICAL and its numbers were true when
+> corrected to 1.3.0; section 9 (Progress Log) is HISTORICAL and its numbers were true when
 > written — do not "fix" them. When you need a number, run the command. (Section 2 was three
 > releases stale — it claimed 6825 tests across 265 files when this tree measures 7206 across 289 —
 > which is why it moved to docs/ rather than being re-corrected in place.)
@@ -19,8 +19,8 @@
 | Stack | Next.js 16 (App Router) · React 19 · TypeScript 5 · Prisma 6 · PostgreSQL 16 (pgvector + pg_trgm) · Bun · Tailwind 4 · shadcn/ui |
 | Runtime | Bun for dev/test, Node standalone for prod build |
 | Domain | Multi-tenant AI assistant deployed **on-prem per customer**, licensed with a signed machine-bound key: natural-language → SQL, RAG over company docs, whitelisted REST calls, streaming chat |
-| Status | **Release 1.1.1** (2026-09-29). Verified by execution, not assertion: `tsc` 0 · `lint` 0 · `bun run test` 289/289 files, 7206 pass, 0 fail · `e2e` dev and `e2e:prod` both green in CI |
-| Version | 1.1.1 |
+| Status | **Release 1.3.0** (2026-09-30). Verified by execution, not assertion: `tsc` 0 · `lint` 0 · `bun run test` 299/299 files, 7387 pass, 0 fail · coverage:gate exit 0 · `e2e` dev and `e2e:prod` both 18 passed. Deployed to production and confirmed live (`/api/v1/health` reports 1.3.0) |
+| Version | 1.3.0 |
 | Language | English (standardized — all UI, errors, system prompts, comments in English) |
 
 ---
@@ -440,3 +440,19 @@ and `coverage-floor-consistency.test.ts` now fails when a comment stops matching
 floor sits above its measurement, or when a floor names a file the summary no longer measures.
 
 **Verified:** `tsc` 0 · `lint` 0 · 289/289 files, 7206 pass, 0 fail, 71 skip · coverage:gate exit 0.
+
+### 2026-09-30 — Release 1.3.0: storage becomes a decision, memory moves onto the bundled Postgres, nine silent failures
+
+**Version 1.1.1 → 1.3.0** (minor: two `feat:` commits since 1.2.1). All eight stamped locations bumped, CHANGELOG heading cut, `main` fast-forwarded, tag `v1.3.0` pushed, all six image tags verified published (3 moving + 3 versioned), then **deployed to production and confirmed live** — `/api/v1/health` reports 1.3.0, schema pushed before the new image so `storageChosenAt` existed before the app needed it.
+
+**Knowledge storage is now an explicit, enforced choice.** Until an admin picks, `POST /api/documents` returns 503 `SETUP_REQUIRED` before extraction runs. Recorded as a sticky TIMESTAMP, not a boolean — a `@default(false)` invites a backfill that would delete the gate silently. AI Memory is stated as bundled (no choice to offer); external vector DBs got their own sub-menu; the setup wizard gained a Knowledge Storage step with no Skip.
+
+**Nine defects, all one shape: reporting success for work not done.** Self-role-change (an admin could demote themselves and lock the install out of user management); streaming RAG not delivering the per-source guidance the non-streaming path sent; citation rank being the array index rather than the retrieval rank (wrong precisely because citations are concatenated across tool runs); four 1536-dim fallbacks beside a `vector(384)` column; a 60s agentic deadline wrapping a 120s stream; the login limiter counting SUCCESSES and keying one shared bucket for all anonymous callers (the 11th sign-in in a minute was refused — a NEW finding, not from the UAT report); `db push` wanting to drop the runtime-created GIN index; `VectorStoreConfig.vectorSize` still defaulting to 1536.
+
+**Two guards that could not fail, found by their own controls.** The vector-store ROW payload had no verdict assertion at all — every test ran with `row = null`, so the arm a real install is in was never measured. And the panel's "bogus verdict" test could not fail because the JSX switches on exact literals; the narrowing moved into the leaf (`parseEmbeddingStampVerdict`) where it is observable. Five negative-control harnesses: 6/6, 11/11, 12/12, 9/9, 19/19, each restored byte-identical.
+
+**Production consequence disclosed, not hidden:** cognee's relational/vector/cache stores moved to the bundled PostgreSQL, but the OLD stores are orphaned in the volume and cannot be migrated automatically — measured there: SQLite held 3 datasets / 28 data rows / 236 pipeline runs / 36 queries, LanceDB held 27 chunks / 81 edges / 10 entities. The Kuzu GRAPH survived untouched (98 nodes, 81 edges). A first reading of the graph reported 0 nodes — my query was wrong (`show_tables()` returns id in column 0, name in column 1), which is worth remembering as "check what your probe returns before believing its verdict".
+
+**Verified:** tsc 0 · lint 0 errors (133 pre-existing warnings) · 299/299 files, 7387 pass, 0 fail · coverage:gate exit 0 · e2e dev 18 passed · e2e:prod 18 passed · invariants 52 · benchmark 167 · CI green on `main` and `dev`.
+
+**Recorded rather than fixed:** the `mock.module` cross-file bleed is a property of running two suites in one Bun process, not a defect in either file — measured (`tool-branches` + `stream-preparers` in one process = 106 pass / 4 fail; each alone green; `bun run test` green). Documented with numbers in `AGENTS.md` so it stops being re-opened as a bug.
