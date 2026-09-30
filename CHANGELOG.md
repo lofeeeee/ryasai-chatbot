@@ -5,6 +5,43 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-09-30
+
+### Added
+- **AI Memory can use its own extraction model.** The memory sidecar runs its own entity/relationship extraction
+  against your provider, which is a different job from answering a question: high-volume, structurally
+  repetitive, and tolerant of a smaller model — what matters is the structure it returns, not the prose. You can
+  now point memory at a cheaper or faster model than the one that answers chat, and both keep working. Until
+  this release the only way to do that was editing `.env.cognee` and restarting a container by hand.
+- **A dedicated "AI Memory Configuration" sub-menu**, beside a renamed **Chat Configuration**. The old tab was
+  called "LLM" while two different tabs fed two different consumers with two different credentials, so an
+  operator could not tell which model they were editing. The memory tab now holds the extraction provider,
+  its own Save, and a "Clear, follow chat" action that returns memory to the chat model.
+- **AI memory storage is now visible.** The memory tab reports which relational store, vector store, knowledge
+  graph and file store memory actually uses — as reported by the memory service itself, not inferred — with the
+  status of each. A store that is not reporting shows as unknown rather than as healthy.
+
+### Changed
+- **Memory follows the chat provider until you say otherwise.** This is the default on every install that
+  upgrades into this release, and memory keeps working exactly as before. The screen states that plainly
+  instead of showing an empty form, so nobody goes looking for a problem that does not exist.
+- **The Embedding tab now reports the memory embedder.** AI Memory shares RAG's embedding model, which is fixed
+  by the deployment. It is shown as a fact rather than offered as a field, because the memory service's settings
+  API accepts no embedding parameters — a field there would save, display, and change nothing.
+
+### Fixed
+- **Memory's saved provider is pushed to the memory service immediately** on save and on clear. The service
+  keeps these credentials in memory only, so a change that was not pushed would appear to apply and then stop
+  taking effect at the next container restart.
+
+### Known limits, stated rather than hidden
+- **The provider endpoint cannot be set from this screen.** The memory service's settings API accepts a provider,
+  a model and a key, and has no field for an endpoint — verified by attempting four spellings, all of which
+  stored an empty value. The screen saves the endpoint in this application's own configuration and tells you the
+  exact `.env.cognee` line to add when the two differ.
+- **The memory embedding model is not configurable from the UI**, for the same reason: the service exposes no
+  embedding settings over its API, so it is set by the deployment.
+
 ## [1.3.0] - 2026-09-30
 
 ### Added
