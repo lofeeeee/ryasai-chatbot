@@ -90,6 +90,27 @@ function ButtonWithIcon({
   
   const baseClasses = cn(buttonVariants({ variant, size, className }))
 
+  // If icon prop is not provided but the first child is an icon/SVG element,
+  // extract it into the icon wrapper so flex gap and vertical centering work cleanly.
+  let effectiveIcon = icon
+  let effectiveChildren = children
+
+  if (!isLoading && !effectiveIcon && children) {
+    const childArray = React.Children.toArray(children)
+    if (childArray.length > 1 && React.isValidElement(childArray[0])) {
+      const first = childArray[0]
+      const isIcon =
+        typeof first.type === 'function' ||
+        typeof first.type === 'object' ||
+        (typeof first.type === 'string' && first.type === 'svg')
+
+      if (isIcon) {
+        effectiveIcon = first
+        effectiveChildren = childArray.slice(1)
+      }
+    }
+  }
+
   return (
     <button
       data-slot="button"
@@ -105,12 +126,12 @@ function ButtonWithIcon({
           {children && <span className="max-w-[120px] truncate">{children}</span>}
         </>
       )}
-      {!isLoading && icon && (
+      {!isLoading && effectiveIcon && (
         <span className="flex items-center justify-center">
-          {icon}
+          {effectiveIcon}
         </span>
       )}
-      {!isLoading && children && <span>{children}</span>}
+      {!isLoading && effectiveChildren && <span>{effectiveChildren}</span>}
     </button>
   )
 }

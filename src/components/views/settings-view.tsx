@@ -842,8 +842,12 @@ function OrgTab() {
               <div className="flex gap-2">
                 <Input value={editName} onChange={(e) => setEditName(e.target.value)} disabled={savingName}
                   className="flex-1" />
-                <Button size="sm" onClick={() => void handleSaveName()} disabled={savingName || editName.trim() === org.name}>
-                  {savingName && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
+                <Button
+                  size="sm"
+                  icon={savingName ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : undefined}
+                  onClick={() => void handleSaveName()}
+                  disabled={savingName || editName.trim() === org.name}
+                >
                   Save
                 </Button>
               </div>

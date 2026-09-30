@@ -382,10 +382,10 @@ export function IntegrationsView() {
                   <Button
                     size="sm"
                     variant="outline"
+                    icon={<Eye className="h-3.5 w-3.5" />}
                     onClick={() => setRestTarget(connector)}
-                    className="w-full"
+                    className="w-full text-xs"
                   >
-                    <Eye className="h-3.5 w-3.5" />
                     Manage Endpoints
                   </Button>
                 </div>

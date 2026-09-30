@@ -129,10 +129,10 @@ export function KnowledgeStoragePanel({
             <Button
               size="sm"
               variant="outline"
-              className="h-7 text-xs gap-1.5 shrink-0"
+              className="h-7 text-xs shrink-0"
+              icon={<Brain className="h-3.5 w-3.5" />}
               onClick={() => setShowMemoryDetail((v) => !v)}
             >
-              <Brain className="h-3.5 w-3.5" />
               {showMemoryDetail ? 'Hide Details' : 'Details'}
             </Button>
           </div>

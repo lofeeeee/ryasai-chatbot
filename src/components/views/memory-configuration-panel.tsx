@@ -173,9 +173,9 @@ function CopyLine({ text }: { text: string }) {
       size="sm"
       variant="outline"
       className="h-7 shrink-0 px-2 text-[10px]"
+      icon={copied ? <Check className="h-3 w-3 text-success" /> : <Copy className="h-3 w-3" />}
       onClick={() => void copy()}
     >
-      {copied ? <Check className="h-3 w-3 text-success" /> : <Copy className="h-3 w-3" />}
       {copied ? 'Copied' : 'Copy'}
     </Button>
   )
@@ -384,10 +384,10 @@ export function MemoryConfigurationPanel() {
       size="sm"
       variant="ghost"
       className="h-7 shrink-0 text-xs"
+      icon={<RefreshCw className="h-3.5 w-3.5" />}
       onClick={() => void load()}
       disabled={loading || saving || clearing}
     >
-      <RefreshCw className="h-3 w-3" />
       Reload
     </Button>
   )
@@ -492,9 +492,9 @@ export function MemoryConfigurationPanel() {
                         size="sm"
                         variant="outline"
                         className="h-7 shrink-0 text-xs"
+                        icon={<Sparkles className="h-3.5 w-3.5" />}
                         onClick={() => setDedicatedIntent(true)}
                       >
-                        <Sparkles className="h-3 w-3" />
                         Use a dedicated model
                       </Button>
                     )}
@@ -502,10 +502,10 @@ export function MemoryConfigurationPanel() {
                       size="sm"
                       variant="ghost"
                       className="h-7 shrink-0 text-xs"
+                      icon={<RefreshCw className="h-3.5 w-3.5" />}
                       onClick={() => void load()}
                       disabled={loading}
                     >
-                      <RefreshCw className="h-3 w-3" />
                       Reload
                     </Button>
                   </div>
@@ -598,40 +598,39 @@ export function MemoryConfigurationPanel() {
                   </div>
 
                   <div className="flex flex-wrap items-center gap-2 pt-1">
-                    <Button size="sm" onClick={() => void save()} disabled={saving}>
-                      {saving ? (
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      ) : (
-                        <Save className="h-3.5 w-3.5" />
-                      )}
+                    <Button
+                      size="sm"
+                      className="h-7 text-xs"
+                      icon={saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+                      onClick={() => void save()}
+                      disabled={saving}
+                    >
                       Save and share with memory
                     </Button>
                     {usingOwn && (
                       <Button
                         size="sm"
                         variant="outline"
+                        className="h-7 text-xs"
+                        icon={clearing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
                         onClick={() => void clear()}
                         disabled={clearing || saving}
                       >
-                        {clearing ? (
-                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                        ) : (
-                          <Trash2 className="h-3.5 w-3.5" />
-                        )}
                         Clear, follow chat
                       </Button>
                     )}
                     <Button
                       size="sm"
                       variant="outline"
+                      className="h-7 text-xs"
+                      icon={<RefreshCw className="h-3.5 w-3.5" />}
                       onClick={() => void load()}
                       disabled={loading || saving || clearing}
                     >
-                      <RefreshCw className="h-3.5 w-3.5" />
                       Reload
                     </Button>
                     {!usingOwn && (
-                      <Button size="sm" variant="ghost" onClick={cancelDedicated}>
+                      <Button size="sm" variant="ghost" onClick={cancelDedicated} className="h-7 text-xs">
                         Cancel
                       </Button>
                     )}

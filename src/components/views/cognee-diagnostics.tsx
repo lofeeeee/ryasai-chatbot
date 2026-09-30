@@ -187,9 +187,9 @@ export function CogneeDiagnosticsPanel({ diagnostics }: { diagnostics: CogneeDia
           size="sm"
           variant="ghost"
           className="h-6 px-2 text-[10px]"
+          icon={<Terminal className="h-3 w-3" />}
           onClick={() => setShowSetup(!showSetup)}
         >
-          <Terminal className="mr-1 h-3 w-3" />
           {showSetup ? 'Hide setup' : 'How to fix'}
         </Button>
       </div>
