@@ -92,9 +92,9 @@ describe('sidebar: grouped, and every view appears exactly once', () => {
 })
 
 describe('AI Memory is reachable without guessing its parent menu', () => {
-  test('the AI Configuration view has a memory tab wired to the card', () => {
+  test('the AI Configuration view has a memory tab wired to the configuration panel', () => {
     expect(aiConfigSrc).toContain('TabsTrigger value="memory"')
-    expect(aiConfigSrc).toContain('<CogneeCard />')
+    expect(aiConfigSrc).toContain('<MemoryConfigurationPanel />')
   })
 
   /*
@@ -125,39 +125,29 @@ describe('AI Memory is reachable without guessing its parent menu', () => {
     expect(aiConfigSrc).toContain('<MemoryConfigurationPanel />')
   })
 
-  test('the memory tab keeps the operational memory card', () => {
-    // Both, not either: the new panel configures, the card operates (documents, cognify, re-cognify,
-    // clear graph). Swapping one for the other removes a surface rather than adding one.
-    expect(aiConfigSrc).toContain('<MemoryConfigurationPanel />')
-    expect(aiConfigSrc).toContain('<CogneeCard />')
+  test('AI Memory operations live in Knowledge Storage with a Detail toggle', () => {
+    // Cognee operational card (documents, cognify, re-cognify, clear graph) moved to
+    // Knowledge > Storage > AI Memory per user instruction, while AI Configuration
+    // focuses on dedicated provider credentials and storage backend inspection.
+    expect(storagePanelSrc).toContain('<CogneeCard />')
+    expect(storagePanelSrc).toContain('<MemoryStatusCard />')
+    expect(aiConfigSrc).not.toContain('<CogneeCard />')
   })
 
-  test('the Embedding tab still reports the memory embedder as a FACT, not a second form', () => {
+  test('the Chat Configuration tab integrates RAG embedding and reports the memory embedder as a FACT', () => {
     /*
      * Memory's embedder is fixed by the deployment (`.env.cognee`) and its settings API accepts no
      * embedding parameters, so a form here would be a control that cannot take effect. The tab says
      * so instead. Asserted because "add a memory embedding field" is the obvious-looking next change
      * and it would silently do nothing.
      */
+    expect(aiConfigSrc).toContain('RAG Embedding')
     expect(aiConfigSrc).toContain('AI Memory shares this embedder')
   })
 
-  test('Knowledge does NOT duplicate the memory card — one configuration surface only', () => {
-    // INCIDENT: the full AI Memory card rendered in BOTH Knowledge and AI Configuration, so the same
-    // settings existed in two menus with no way to tell which was authoritative. Knowledge now shows a
-    // status card that LINKS to the editor; the editor exists in exactly one place.
-    //
-    // WHERE the status card lives moved out of the view file and into the Storage panel, because the
-    // storage tab needs it and a panel is where tab-local content belongs. The assertion therefore
-    // names the file that must contain the card rather than the view that must render it — the same
-    // question ("is the status shown, and is the editor NOT shown") asked of the current layout. Left
-    // pointing at the view file it fails while the invariant still holds, and "update the test" then
-    // reads as busywork rather than as a signal.
+  test('Knowledge Storage has the memory status card and Cognee operations detail', () => {
     expect(storagePanelSrc).toContain('<MemoryStatusCard />')
-    // The EDITOR must appear in neither surface: this is the half that caught the original defect, so
-    // it is checked against both the view and the panel rather than just the file that changed.
-    expect(knowledgeSrc).not.toContain('<CogneeCard')
-    expect(storagePanelSrc).not.toContain('<CogneeCard')
+    expect(storagePanelSrc).toContain('<CogneeCard />')
     // The tab is gone too — a tab with no editable content would be a dead end.
     expect(knowledgeSrc).not.toContain('TabsTrigger value="cognee"')
   })

@@ -1,13 +1,13 @@
 {
-  "linePct": 75.1,
-  "linesHit": 26219,
-  "linesFound": 34910,
-  "reachableLinePct": 86.22,
-  "reachableLinesHit": 22835,
-  "reachableLinesFound": 26485,
-  "fnPct": 88.7,
-  "fnsHit": 2308,
-  "fnsFound": 2602,
+  "linePct": 75.4,
+  "linesHit": 26246,
+  "linesFound": 34810,
+  "reachableLinePct": 86.35,
+  "reachableLinesHit": 22858,
+  "reachableLinesFound": 26472,
+  "fnPct": 88.59,
+  "fnsHit": 2314,
+  "fnsFound": 2612,
   "filesMeasured": 250,
   "failedTestFiles": [],
   "files": [
@@ -22,9 +22,9 @@
     },
     {
       "file": "src/components/views/ai-configuration-view.tsx",
-      "hit": 32,
-      "found": 705,
-      "pct": 4.539007092198582,
+      "hit": 31,
+      "found": 690,
+      "pct": 4.492753623188406,
       "fHit": 1,
       "fFound": 2,
       "fPct": 50
@@ -174,15 +174,6 @@
       "fPct": 100
     },
     {
-      "file": "src/components/views/cognee-card.tsx",
-      "hit": 157,
-      "found": 333,
-      "pct": 47.147147147147145,
-      "fHit": 6,
-      "fFound": 15,
-      "fPct": 40
-    },
-    {
       "file": "src/lib/memory-queue.ts",
       "hit": 48,
       "found": 97,
@@ -255,6 +246,15 @@
       "fPct": 90
     },
     {
+      "file": "src/components/views/cognee-card.tsx",
+      "hit": 157,
+      "found": 265,
+      "pct": 59.24528301886792,
+      "fHit": 6,
+      "fFound": 15,
+      "fPct": 40
+    },
+    {
       "file": "src/lib/cognee-knowledge-graph.ts",
       "hit": 275,
       "found": 462,
@@ -264,15 +264,6 @@
       "fPct": 86.11111111111111
     },
     {
-      "file": "src/components/views/memory-configuration-panel.tsx",
-      "hit": 359,
-      "found": 590,
-      "pct": 60.84745762711864,
-      "fHit": 10,
-      "fFound": 23,
-      "fPct": 43.47826086956522
-    },
-    {
       "file": "src/lib/cognee-memory.ts",
       "hit": 234,
       "found": 381,
@@ -280,6 +271,15 @@
       "fHit": 27,
       "fFound": 28,
       "fPct": 96.42857142857143
+    },
+    {
+      "file": "src/components/views/memory-configuration-panel.tsx",
+      "hit": 387,
+      "found": 626,
+      "pct": 61.82108626198083,
+      "fHit": 16,
+      "fFound": 33,
+      "fPct": 48.484848484848484
     },
     {
       "file": "src/lib/rag-retrieval.ts",
@@ -433,15 +433,6 @@
       "fHit": 98,
       "fFound": 103,
       "fPct": 95.14563106796116
-    },
-    {
-      "file": "src/components/views/cognee-diagnostics.tsx",
-      "hit": 171,
-      "found": 238,
-      "pct": 71.84873949579831,
-      "fHit": 6,
-      "fFound": 8,
-      "fPct": 75
     },
     {
       "file": "src/lib/web-fetch.ts",
@@ -957,6 +948,15 @@
       "fPct": 100
     },
     {
+      "file": "src/components/views/cognee-diagnostics.tsx",
+      "hit": 171,
+      "found": 186,
+      "pct": 91.93548387096774,
+      "fHit": 6,
+      "fFound": 8,
+      "fPct": 75
+    },
+    {
       "file": "src/lib/vector-stores.ts",
       "hit": 360,
       "found": 391,
@@ -1078,15 +1078,6 @@
       "hit": 42,
       "found": 44,
       "pct": 95.45454545454545,
-      "fHit": 1,
-      "fFound": 1,
-      "fPct": 100
-    },
-    {
-      "file": "src/components/ui/switch.tsx",
-      "hit": 23,
-      "found": 24,
-      "pct": 95.83333333333334,
       "fHit": 1,
       "fFound": 1,
       "fPct": 100
@@ -2070,6 +2061,15 @@
       "pct": 100,
       "fHit": 4,
       "fFound": 4,
+      "fPct": 100
+    },
+    {
+      "file": "src/components/ui/switch.tsx",
+      "hit": 23,
+      "found": 23,
+      "pct": 100,
+      "fHit": 1,
+      "fFound": 1,
       "fPct": 100
     },
     {

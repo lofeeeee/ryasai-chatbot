@@ -7,6 +7,7 @@ import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { MemoryStatusCard } from '@/components/views/memory-status-card'
+import { CogneeCard } from '@/components/views/cognee-card'
 import { extractError } from '@/lib/extract-error'
 import { getVectorStorePreset } from '@/lib/db-provider-presets'
 import { cn } from '@/lib/utils'
@@ -54,6 +55,7 @@ export function KnowledgeStoragePanel({
   onConfigureExternal: () => void
 }) {
   const [savingInternal, setSavingInternal] = useState(false)
+  const [showMemoryDetail, setShowMemoryDetail] = useState(false)
 
   const provider = choice?.provider ?? 'INTERNAL'
   const backend = getVectorStorePreset(provider)?.backend ?? provider
@@ -111,20 +113,31 @@ export function KnowledgeStoragePanel({
       {/* ---------------------------------------------------------- AI Memory */}
       <Card>
         <CardHeader className="pb-3">
-          <div className="flex items-center gap-2">
-            <div className="h-9 w-9 rounded-lg bg-primary/10 text-primary flex items-center justify-center">
-              <Brain className="h-4.5 w-4.5" />
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <div className="h-9 w-9 rounded-lg bg-primary/10 text-primary flex items-center justify-center">
+                <Brain className="h-4.5 w-4.5" />
+              </div>
+              <div>
+                <CardTitle className="text-xs">AI Memory</CardTitle>
+                <p className="text-xs text-muted-foreground">
+                  Bundled PostgreSQL of this install — not configurable, and not affected by the knowledge storage
+                  choice below.
+                </p>
+              </div>
             </div>
-            <div>
-              <CardTitle className="text-xs">AI Memory</CardTitle>
-              <p className="text-xs text-muted-foreground">
-                Bundled PostgreSQL of this install — not configurable, and not affected by the knowledge storage
-                choice below.
-              </p>
-            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs gap-1.5 shrink-0"
+              onClick={() => setShowMemoryDetail((v) => !v)}
+            >
+              <Brain className="h-3.5 w-3.5" />
+              {showMemoryDetail ? 'Hide Details' : 'Details'}
+            </Button>
           </div>
         </CardHeader>
-        <CardContent className="space-y-2">
+        <CardContent className="space-y-3">
           <ul className="text-xs text-muted-foreground space-y-1">
             <li>
               <span className="text-foreground">Conversation memory</span> — stored in this install&apos;s own
@@ -136,11 +149,12 @@ export function KnowledgeStoragePanel({
               deliberately stays on the embedded engine while everything else moved to PostgreSQL.
             </li>
           </ul>
-          {/*
-            Status and a link, NOT a second editable copy of the memory settings. A duplicated card is how two
-            menus drift apart — the very thing this restructure removed.
-          */}
           <MemoryStatusCard />
+          {showMemoryDetail && (
+            <div className="pt-2 border-t border-border/70">
+              <CogneeCard />
+            </div>
+          )}
         </CardContent>
       </Card>
 

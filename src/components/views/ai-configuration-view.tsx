@@ -37,7 +37,6 @@ import { DEFAULT_EMBEDDING_MODEL } from '@/lib/constants'
 import type { PublicLlmConfig } from '@/lib/types'
 import { extractError } from '@/lib/extract-error'
 import { handleSessionFailure } from '@/lib/session-guard'
-import { CogneeCard } from '@/components/views/cognee-card'
 import { MemoryConfigurationPanel } from '@/components/views/memory-configuration-panel'
 
 /**
@@ -199,7 +198,9 @@ export function AIConfigurationView() {
    */
   useEffect(() => {
     const applyTab = (raw: string | null | undefined) => {
-      if (raw === 'llm' || raw === 'embedding' || raw === 'memory') setTab(raw)
+      if (raw === 'llm' || raw === 'embedding' || raw === 'memory') {
+        setTab(raw === 'embedding' ? 'llm' : raw)
+      }
     }
     applyTab(new URLSearchParams(window.location.search).get('tab'))
     const onNavigate = (e: Event) => {
@@ -414,18 +415,14 @@ export function AIConfigurationView() {
             <Brain className="h-3.5 w-3.5" />
             AI Memory Configuration
           </TabsTrigger>
-          <TabsTrigger value="embedding" className="gap-1.5 text-xs">
-            <Server className="h-3.5 w-3.5" />
-            Embedding
-          </TabsTrigger>
         </TabsList>
 
-        <TabsContent value="llm" className="mt-2">
+        <TabsContent value="llm" className="mt-2 space-y-4">
           <Card>
             <CardHeader>
               <CardTitle className="text-xs flex items-center gap-2">
                 <Bot className="h-4 w-4" />
-                LLM Configuration
+                Chat LLM Configuration
               </CardTitle>
               <CardDescription className="text-xs">
                 Connect an LLM provider. Choose OpenAI-Compatible or Anthropic-Compatible.
@@ -591,9 +588,7 @@ export function AIConfigurationView() {
               </div>
             </CardContent>
           </Card>
-        </TabsContent>
 
-        <TabsContent value="embedding" className="mt-2">
           <Card>
             <CardHeader>
               <CardTitle className="text-xs flex items-center gap-2">
@@ -745,17 +740,7 @@ export function AIConfigurationView() {
         </TabsContent>
 
         <TabsContent value="memory" className="mt-2 space-y-3">
-          {/*
-            The dedicated provider + the storage facts first, then the operational card.
-
-            ORDER IS THE POINT. `CogneeCard` is the memory OPERATIONS surface — documents, cognify
-            status, re-cognify, clear graph. An operator arriving to answer "what model extracts for
-            me, and where does it keep the result?" had to read past all of that to find out, and the
-            answer to the storage half was not on this screen at all. Configuring comes before
-            operating.
-          */}
           <MemoryConfigurationPanel />
-          <CogneeCard />
         </TabsContent>
       </Tabs>
     </div>

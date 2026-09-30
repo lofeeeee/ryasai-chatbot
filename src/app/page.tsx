@@ -756,22 +756,43 @@ function SidebarContent({
      */
     <div className="flex flex-col flex-1 min-h-0">
       <nav className="flex-1 min-h-0 px-2 py-1 overflow-y-auto">
-        {groups.map((group, gi) => (
-          <div key={group.title} className={gi > 0 ? 'mt-0.5' : undefined}>
-            {collapsed ? (
-              // Collapsed: a hairline separator. A text header cannot fit in 72px, and dropping the
-              // grouping entirely would make collapsing the sidebar also collapse the information
-              // architecture — the grouping is the point, not decoration.
-              gi > 0 && <div className="mx-2 mb-1.5 border-t border-border/60" />
-            ) : (
-              // pt-0.5 instead of pt-1: with FOUR groups this is 8px, and it is spacing no one reads as structure.
-              <div className="px-3 pb-0.5 pt-1 text-[10px] leading-none font-semibold uppercase tracking-wider text-muted-foreground/70">
-                {group.title}
+        <div className="flex flex-col [@media(min-height:640px)]:min-h-full [@media(min-height:640px)]:justify-between">
+          <div className="space-y-1">
+            {groups.slice(0, -1).map((group, gi) => (
+              <div key={group.title} className={gi > 0 ? 'mt-0.5' : undefined}>
+                {collapsed ? (
+                  // Collapsed: a hairline separator. A text header cannot fit in 72px, and dropping the
+                  // grouping entirely would make collapsing the sidebar also collapse the information
+                  // architecture — the grouping is the point, not decoration.
+                  gi > 0 && <div className="mx-2 mb-1.5 border-t border-border/60" />
+                ) : (
+                  // pt-0.5 instead of pt-1: with FOUR groups this is 8px, and it is spacing no one reads as structure.
+                  <div className="px-3 pb-0.5 pt-1 text-[10px] leading-none font-semibold uppercase tracking-wider text-muted-foreground/70">
+                    {group.title}
+                  </div>
+                )}
+                <div className="space-y-px">{group.items.map(renderItem)}</div>
               </div>
-            )}
-            <div className="space-y-px">{group.items.map(renderItem)}</div>
+            ))}
           </div>
-        ))}
+
+          {groups.length > 0 && (
+            <div className="[@media(min-height:640px)]:mt-auto [@media(min-height:640px)]:pt-1">
+              {groups.slice(-1).map((group) => (
+                <div key={group.title}>
+                  {collapsed ? (
+                    <div className="mx-2 mb-1.5 border-t border-border/60" />
+                  ) : (
+                    <div className="px-3 pb-0.5 pt-1 text-[10px] leading-none font-semibold uppercase tracking-wider text-muted-foreground/70">
+                      {group.title}
+                    </div>
+                  )}
+                  <div className="space-y-px">{group.items.map(renderItem)}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </nav>
     </div>
   )

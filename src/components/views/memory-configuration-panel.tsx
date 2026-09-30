@@ -217,6 +217,7 @@ function EndpointStep({ value, warning }: { value: string; warning?: string }) {
 
 export function MemoryConfigurationPanel() {
   const [loading, setLoading] = useState(true)
+  const [loadingStorage, setLoadingStorage] = useState(true)
   const [saving, setSaving] = useState(false)
   const [clearing, setClearing] = useState(false)
   const [state, setState] = useState<MemoryProviderState | null>(null)
@@ -241,34 +242,47 @@ export function MemoryConfigurationPanel() {
 
   const load = useCallback(async () => {
     setLoading(true)
-    try {
-      const [cfgRes, cogneeRes] = await Promise.all([
-        fetch('/api/llm-config/memory', { cache: 'no-store' }),
-        // The storage facts come from the SAME endpoint the memory card uses: the sidecar's own
-        // `/health/detailed`, surfaced by this route. Deliberately not a new probe — a second reader
-        // of the same fact is how two screens end up disagreeing about where memory lives.
-        fetch('/api/cognee', { cache: 'no-store' }),
-      ])
-      const cfg = await cfgRes.json()
-      if (cfg?.ok) {
-        setState(cfg.data)
-        setProvider(cfg.data?.memory?.provider ?? 'OPENAI_COMPATIBLE')
-        setBaseUrl(cfg.data?.memory?.baseUrl ?? '')
-        setModel(cfg.data?.memory?.model ?? '')
-        setApiKey('')
-      }
-      const cog = await cogneeRes.json()
-      if (cog?.ok) {
-        const components = cog.data?.diagnostics?.components
-        setStorage(Array.isArray(components) ? components : null)
-        setSidecar(readSidecarState(cog.data))
-      }
-    } catch {
-      // A failed load must not paint an empty form: the section below renders "unknown".
-      setState(null)
-    } finally {
-      setLoading(false)
-    }
+    setLoadingStorage(true)
+
+    // Decoupled loading: Load memory LLM config fast so the model card renders immediately
+    const cfgPromise = fetch('/api/llm-config/memory', { cache: 'no-store' })
+      .then(async (cfgRes) => {
+        const cfg = await cfgRes.json()
+        if (cfg?.ok) {
+          setState(cfg.data)
+          setProvider(cfg.data?.memory?.provider ?? 'OPENAI_COMPATIBLE')
+          setBaseUrl(cfg.data?.memory?.baseUrl ?? '')
+          setModel(cfg.data?.memory?.model ?? '')
+          setApiKey('')
+        } else {
+          setState(null)
+        }
+      })
+      .catch(() => {
+        setState(null)
+      })
+      .finally(() => {
+        setLoading(false)
+      })
+
+    // Load storage facts independently so sidecar health & embed tests don't delay the model form
+    const cogneePromise = fetch('/api/cognee', { cache: 'no-store' })
+      .then(async (cogRes) => {
+        const cog = await cogRes.json()
+        if (cog?.ok) {
+          const components = cog.data?.diagnostics?.components
+          setStorage(Array.isArray(components) ? components : null)
+          setSidecar(readSidecarState(cog.data))
+        }
+      })
+      .catch(() => {
+        // storage facts unavailable
+      })
+      .finally(() => {
+        setLoadingStorage(false)
+      })
+
+    await Promise.allSettled([cfgPromise, cogneePromise])
   }, [])
 
   useEffect(() => {
@@ -459,20 +473,6 @@ export function MemoryConfigurationPanel() {
                       — memory extracts with these credentials rather than with the chat model.
                     </p>
                   </div>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="h-7 shrink-0 text-xs"
-                    onClick={() => void clear()}
-                    disabled={clearing || saving}
-                  >
-                    {clearing ? (
-                      <Loader2 className="h-3 w-3 animate-spin" />
-                    ) : (
-                      <Trash2 className="h-3 w-3" />
-                    )}
-                    Clear, follow chat
-                  </Button>
                 </div>
               ) : (
                 <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border/70 bg-muted/20 p-2.5">
@@ -486,17 +486,29 @@ export function MemoryConfigurationPanel() {
                       working setup — there is nothing to fill in here.
                     </p>
                   </div>
-                  {!dedicatedIntent && (
+                  <div className="flex items-center gap-2">
+                    {!dedicatedIntent && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 shrink-0 text-xs"
+                        onClick={() => setDedicatedIntent(true)}
+                      >
+                        <Sparkles className="h-3 w-3" />
+                        Use a dedicated model
+                      </Button>
+                    )}
                     <Button
                       size="sm"
-                      variant="outline"
+                      variant="ghost"
                       className="h-7 shrink-0 text-xs"
-                      onClick={() => setDedicatedIntent(true)}
+                      onClick={() => void load()}
+                      disabled={loading}
                     >
-                      <Sparkles className="h-3 w-3" />
-                      Use a dedicated model
+                      <RefreshCw className="h-3 w-3" />
+                      Reload
                     </Button>
-                  )}
+                  </div>
                 </div>
               )}
 
@@ -585,7 +597,7 @@ export function MemoryConfigurationPanel() {
                     </div>
                   </div>
 
-                  <div className="flex flex-wrap items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
                     <Button size="sm" onClick={() => void save()} disabled={saving}>
                       {saving ? (
                         <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -593,6 +605,30 @@ export function MemoryConfigurationPanel() {
                         <Save className="h-3.5 w-3.5" />
                       )}
                       Save and share with memory
+                    </Button>
+                    {usingOwn && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => void clear()}
+                        disabled={clearing || saving}
+                      >
+                        {clearing ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Trash2 className="h-3.5 w-3.5" />
+                        )}
+                        Clear, follow chat
+                      </Button>
+                    )}
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => void load()}
+                      disabled={loading || saving || clearing}
+                    >
+                      <RefreshCw className="h-3.5 w-3.5" />
+                      Reload
                     </Button>
                     {!usingOwn && (
                       <Button size="sm" variant="ghost" onClick={cancelDedicated}>
@@ -635,6 +671,9 @@ export function MemoryConfigurationPanel() {
               <sidecarBadge.Icon className="h-2.5 w-2.5" />
               {sidecarBadge.label}
             </Badge>
+            {loadingStorage && (
+              <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
+            )}
           </CardTitle>
           <CardDescription className="text-xs">
             Where memory actually lives. These are measured facts from the sidecar's own report, not
