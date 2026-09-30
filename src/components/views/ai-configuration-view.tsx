@@ -574,18 +574,6 @@ export function AIConfigurationView() {
                   )}
                 </div>
               </div>
-
-              <div className="flex justify-end gap-2 pt-2">
-                <Button
-                  size="sm"
-                  className="h-7 text-xs"
-                  icon={saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-                  onClick={handleSave}
-                  disabled={saving || !baseUrl}
-                >
-                  Save Configuration
-                </Button>
-              </div>
             </CardContent>
           </Card>
 
@@ -723,20 +711,23 @@ export function AIConfigurationView() {
                   </div>
                 </div>
               </div>
-
-              <div className="flex justify-end gap-2 pt-2">
-                <Button
-                  size="sm"
-                  className="h-7 text-xs"
-                  icon={saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-                  onClick={handleSave}
-                  disabled={saving || !embeddingBaseUrl}
-                >
-                  Save Configuration
-                </Button>
-              </div>
             </CardContent>
           </Card>
+
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border/70 bg-card p-3 shadow-xs">
+            <div className="text-xs text-muted-foreground">
+              Save both Chat LLM and RAG Embedding settings for this organization.
+            </div>
+            <Button
+              size="sm"
+              className="h-8 text-xs font-medium gap-1.5"
+              icon={saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+              onClick={handleSave}
+              disabled={saving || !baseUrl}
+            >
+              Save Configuration
+            </Button>
+          </div>
         </TabsContent>
 
         <TabsContent value="memory" className="mt-2 space-y-3">

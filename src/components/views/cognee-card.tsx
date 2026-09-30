@@ -155,7 +155,7 @@ export function CogneeCard() {
   }
 
   return (
-    <Card>
+    <Card className="shadow-none border-border/70 bg-muted/20">
       <CardHeader className="pb-2">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -330,9 +330,13 @@ export function CogneeCard() {
               <Button
                 size="sm"
                 variant="outline"
-                className="h-7 text-xs"
+                className="h-7 text-xs text-destructive border-destructive/30 hover:bg-destructive/10 hover:text-destructive"
                 icon={actionLoading === 'forget_kb' ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
-                onClick={() => handleAction('forget_kb')}
+                onClick={() => {
+                  if (typeof window !== 'undefined' && window.confirm('Clear the Cognee knowledge graph? All extracted entities and relationships will be wiped.')) {
+                    handleAction('forget_kb')
+                  }
+                }}
                 disabled={actionLoading !== null}
               >
                 Clear Graph
@@ -340,9 +344,13 @@ export function CogneeCard() {
               <Button
                 size="sm"
                 variant="outline"
-                className="h-7 text-xs"
+                className="h-7 text-xs text-destructive border-destructive/30 hover:bg-destructive/10 hover:text-destructive"
                 icon={actionLoading === 'reset' ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
-                onClick={() => handleAction('reset')}
+                onClick={() => {
+                  if (typeof window !== 'undefined' && window.confirm('Full reset Cognee memory? All memory and knowledge graph data will be completely deleted.')) {
+                    handleAction('reset')
+                  }
+                }}
                 disabled={actionLoading !== null}
               >
                 Full Reset

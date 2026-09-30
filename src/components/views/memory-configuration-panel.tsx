@@ -686,21 +686,21 @@ export function MemoryConfigurationPanel() {
             which is a state an operator can read at a glance; collapsing the block into a sentence made
             "nothing was measured" indistinguishable from "this screen has nothing to show".
           */}
-          <div className="grid gap-1.5 sm:grid-cols-2">
+          <div className="grid gap-2 grid-cols-2 lg:grid-cols-4">
             {MEMORY_STORES.map(({ name, label }) => {
               const fact = facts.get(name)
               return (
                 <div
                   key={name}
                   className={cn(
-                    'flex items-center justify-between gap-2 rounded-md border px-2.5 py-1.5',
-                    fact ? 'border-border/70 bg-muted/20' : 'border-dashed border-border/70',
+                    'flex items-center justify-between gap-2 rounded-md border px-2.5 py-2 transition-colors',
+                    fact ? 'border-border/70 bg-muted/20' : 'border-dashed border-border/70 bg-muted/5',
                   )}
                 >
-                  <span className="min-w-0 truncate text-xs">{label}</span>
+                  <span className="min-w-0 truncate text-xs font-medium">{label}</span>
                   {fact ? (
                     <span className="flex shrink-0 items-center gap-1.5">
-                      <span className="max-w-[8rem] truncate font-mono text-[11px] text-muted-foreground">
+                      <span className="max-w-[6rem] truncate font-mono text-[11px] text-muted-foreground">
                         {fact.provider || '—'}
                       </span>
                       {fact.status === 'healthy' ? (
