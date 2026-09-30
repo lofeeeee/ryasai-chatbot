@@ -5,6 +5,55 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] - 2026-10-01
+
+A security release. Every fix below was found by an audit of this codebase, reproduced before being
+accepted, and left with a regression test.
+
+### Security
+- **A tenant could read another tenant's billing order state.** `Order` was missing from the list of
+  models the database layer scopes to the organization, so a request naming an order id returned
+  whatever order that id belonged to — across tenants. The route's own comment asserted the opposite,
+  which is why it had gone unnoticed. Fixed, and a new guard now fails the build if any future model
+  with an organization column is left unscoped.
+- **A signed-in user could read every tenant's prompts and answers.** The recent-call trace list is
+  held in the server's memory rather than in the database, and it carried no record of which
+  organization each call belonged to; the endpoint that served it only required a signed-in session.
+  It is now recorded per organization, filtered on read, and restricted to administrators.
+- **Six ways around the 100-row limit on generated SQL.** The row limit is the only thing bounding how
+  much data a model-written query can return, and `LIMIT ALL`, `LIMIT NULL`, MySQL's two-number
+  form, `FETCH FIRST`, SQL Server's `TOP`, and digit separators such as `1_000_000` each slipped past
+  it. All now clamp correctly. Two long-standing corruptions were fixed alongside them: a value inside
+  a string literal or a bracketed column name could be rewritten (`WHERE note = 'LIMIT 999999'` became
+  `WHERE note = 'LIMIT 100'`, and `[Credit Limit 5000]` became a different column).
+
+### Fixed
+- **The planner's instructions were never reaching the model.** They were sent as a system message of
+  3023 characters, and the provider discards a system message above roughly 2000 in one piece — so
+  the entire rule set was being thrown away before the model saw it. Moved to a message role that has
+  no such limit, as this codebase already does elsewhere.
+- **Long conversations lost part of their context.** The signpost that introduces prior turns repeated
+  the whole history inside a system message, reaching 20,116 characters on a ten-turn conversation and
+  being discarded every time — with the same text also sent, and paid for, twice.
+- **The container reported itself healthy with the database down.** The health probe the container
+  checked touched no dependency and always answered "ok", so an orchestrator would never restart a
+  broken install. It now checks the database, and reports the memory service and local embeddings
+  too, while treating only the database as fatal — the rest are optional by design and a blip must not
+  restart a healthy container.
+- **A license could silently reduce a paying customer's limits.** An unrecognised plan name from the
+  license server was stored as-is and then interpreted as the most restrictive tier: 3 users, one data
+  source, 25 documents, and refusals on scheduled runs, tools and the agentic console. Unrecognised
+  plan names are now rejected and logged instead of being applied.
+
+### Changed
+- **The test suite runs twice as fast** (about 40s to about 20s) by making the retry delay the suite
+  waits on configurable. Production timing is unchanged.
+- **Coverage now measures the same files the tests run.** The coverage runner and the unit runner were
+  collecting different sets, so thirteen benchmark suites ran but were never counted. Both now derive
+  from one definition, and a guard fails the build if they diverge again.
+- **Two ways a broken test run could look like a passing one are closed:** a coverage run that failed
+  internally no longer reports success, and a missing coverage report is a failure rather than a pass.
+
 ## [1.5.0] - 2026-09-30
 
 ### Changed

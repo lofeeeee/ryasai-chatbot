@@ -694,3 +694,69 @@ worse than no test, because it reports safety.
 extraction call vs 1.3s for "Say OK"), all write sites are fire-and-forget so answers are never
 blocked; memory FRAMING shows no measurable effect (14/15 vs 14/15, unproven); the provider
 occasionally returns an empty body and retries recover it.
+
+---
+
+## Moved 2026-10-01 (third trim)
+
+> Same MEASURED reason and same rule as the two earlier trims. The 1.6.0 entry (5,545 bytes,
+> the largest yet) pushed the combined instruction files to 68,581 against the 65,536-byte read
+> budget, and truncation keeps the HEAD — so the tail of `AGENTS.md`, which holds the RULE
+> sections, is what would stop loading. The two oldest entries moved out; the newest stay in
+> place. Both were true when written; where they disagree with the code, the code wins.
+
+### 2026-09-29 — Repo cleanup: 63 dead files, a duplicated implementation, and a truncated instruction file
+
+**The instruction budget was the real defect.** `AGENTS.md` (59,565 B) plus this file (37,433 B) came to 97 KB against
+a 65,536-byte read budget, and truncation keeps the HEAD — so everything in `AGENTS.md` past byte ~28,000 was
+silently dropped, including `## Cross-tenant IDOR` (a real IDOR incident) and `## Silent-failure classes` (20 defect
+patterns). The rules an agent most needs were the ones not being delivered. Fixed by MOVING reference out, not by
+deleting content: `docs/architecture-reference.md` (pipeline internals + this file's audit summary and algorithm
+sketches), `docs/billing-and-prompts-reference.md`, `docs/build-and-deploy-reference.md`. Now 55,084 B total, every
+rule section inside the budget, and each moved section left a pointer that states why it moved.
+
+**Dead files, found by measurement after a wrong first answer.** `grep -r` claimed 46 orphan modules including
+`chat-view.tsx` — obviously false, because a recursive grep matches a file's own contents and matches SUBSTRINGS (it
+"found" a consumer for an unused `toggle.tsx` via the local `toggleSidebar`). Replaced with specifier resolution,
+kept as `scripts/audit/dead-modules.mjs`. Real result: 2 shadcn components (`toggle.tsx`, `use-mobile.ts`) and
+`__connector-mocks.ts` — the last a FAILED EXTRACTION whose richer mocks nobody imports while `rag-fts.test.ts`
+defines its own inline.
+
+**61 files at the repo root (6.2 MB)** — screenshots, DOM dumps, probe JSON — had all landed in ONE commit whose
+message is about a guardrail fix, because nothing ignored them. Removed after verifying each was unreferenced (which
+is how `views.json` was caught as a false positive rather than reported live). `.gitignore` now blocks the SHAPES
+they take, scoped to the root: a global `*.png`/`*.txt` would silently hide the next asset in `docs/screenshots/` or
+`test-data/wikipedia/` (24 such files are tracked today). `coverage-summary.json` is deliberately NOT ignored — it
+looks like a build artifact and is an INPUT the gate reads.
+
+**`dedupeByPrefix` existed twice**, as `dedupeByPrefix` and `dedupeJoin`, differing only in whether they joined the
+result. The memory copy's comment said "mirrors the KB recall path" — a note documenting duplication instead of
+removing it. Consolidated into `cognee-core.ts` ("shared helpers", imports neither caller, so no cycle).
+
+**Consolidating it exposed a vacuous guard.** The dedupe test used `'P'.repeat(100)` for both hits, so changing
+`slice(0, 100)` to `slice(0, 50)` left the file at 45 pass / 0 fail. It now pins the boundary from both sides and
+fails in both directions. Building it also required measuring that one call issues FOUR HTTP recalls, not two.
+
+**Eight coverage floors quoted a stale measurement**, and the gate surfaced it (`cognee-memory` floored at 62 against
+a real 61.42%). `rag-retrieval.ts` claimed 70.79% against 62.72%; `tool-router.ts` claimed 62.62% against 54.44%. A
+stale number there is worse than none — it looks like evidence and answers the question wrongly. All 11 refreshed,
+and `coverage-floor-consistency.test.ts` now fails when a comment stops matching `coverage-summary.json`, when a
+floor sits above its measurement, or when a floor names a file the summary no longer measures.
+
+**Verified:** `tsc` 0 · `lint` 0 · 289/289 files, 7206 pass, 0 fail, 71 skip · coverage:gate exit 0.
+
+### 2026-09-30 — Release 1.3.0: storage becomes a decision, memory moves onto the bundled Postgres, nine silent failures
+
+**Version 1.1.1 → 1.3.0** (minor: two `feat:` commits since 1.2.1). All eight stamped locations bumped, CHANGELOG heading cut, `main` fast-forwarded, tag `v1.3.0` pushed, all six image tags verified published (3 moving + 3 versioned), then **deployed to production and confirmed live** — `/api/v1/health` reports 1.3.0, schema pushed before the new image so `storageChosenAt` existed before the app needed it.
+
+**Knowledge storage is now an explicit, enforced choice.** Until an admin picks, `POST /api/documents` returns 503 `SETUP_REQUIRED` before extraction runs. Recorded as a sticky TIMESTAMP, not a boolean — a `@default(false)` invites a backfill that would delete the gate silently. AI Memory is stated as bundled (no choice to offer); external vector DBs got their own sub-menu; the setup wizard gained a Knowledge Storage step with no Skip.
+
+**Nine defects, all one shape: reporting success for work not done.** Self-role-change (an admin could demote themselves and lock the install out of user management); streaming RAG not delivering the per-source guidance the non-streaming path sent; citation rank being the array index rather than the retrieval rank (wrong precisely because citations are concatenated across tool runs); four 1536-dim fallbacks beside a `vector(384)` column; a 60s agentic deadline wrapping a 120s stream; the login limiter counting SUCCESSES and keying one shared bucket for all anonymous callers (the 11th sign-in in a minute was refused — a NEW finding, not from the UAT report); `db push` wanting to drop the runtime-created GIN index; `VectorStoreConfig.vectorSize` still defaulting to 1536.
+
+**Two guards that could not fail, found by their own controls.** The vector-store ROW payload had no verdict assertion at all — every test ran with `row = null`, so the arm a real install is in was never measured. And the panel's "bogus verdict" test could not fail because the JSX switches on exact literals; the narrowing moved into the leaf (`parseEmbeddingStampVerdict`) where it is observable. Five negative-control harnesses: 6/6, 11/11, 12/12, 9/9, 19/19, each restored byte-identical.
+
+**Production consequence disclosed, not hidden:** cognee's relational/vector/cache stores moved to the bundled PostgreSQL, but the OLD stores are orphaned in the volume and cannot be migrated automatically — measured there: SQLite held 3 datasets / 28 data rows / 236 pipeline runs / 36 queries, LanceDB held 27 chunks / 81 edges / 10 entities. The Kuzu GRAPH survived untouched (98 nodes, 81 edges). A first reading of the graph reported 0 nodes — my query was wrong (`show_tables()` returns id in column 0, name in column 1), which is worth remembering as "check what your probe returns before believing its verdict".
+
+**Verified:** tsc 0 · lint 0 errors (133 pre-existing warnings) · 299/299 files, 7387 pass, 0 fail · coverage:gate exit 0 · e2e dev 18 passed · e2e:prod 18 passed · invariants 52 · benchmark 167 · CI green on `main` and `dev`.
+
+**Recorded rather than fixed:** the `mock.module` cross-file bleed is a property of running two suites in one Bun process, not a defect in either file — measured (`tool-branches` + `stream-preparers` in one process = 106 pass / 4 fail; each alone green; `bun run test` green). Documented with numbers in `AGENTS.md` so it stops being re-opened as a bug.

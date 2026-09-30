@@ -1,10 +1,10 @@
 # CLAUDE.md — ryasai Chatbot (Super-App Track)
 
 > Living document. Update the **Progress Log** at the bottom every session.
-> Last updated 2026-09-30. Version 1.5.0. PostgreSQL 16. All PLAN.md phases P0–P5 + S4 + RAG complete. Language standardized to English.
+> Last updated 2026-10-01. Version 1.6.0. PostgreSQL 16. All PLAN.md phases P0–P5 + S4 + RAG complete. Language standardized to English.
 >
 > **Counts and versions in this file drift.** Section 1 and 8 describe CURRENT state and are
-> corrected to 1.5.0; section 9 (Progress Log) is HISTORICAL and its numbers were true when
+> corrected to 1.6.0; section 9 (Progress Log) is HISTORICAL and its numbers were true when
 > written — do not "fix" them. When you need a number, run the command. (Section 2 was three
 > releases stale — it claimed 6825 tests across 265 files when this tree measures 7206 across 289 —
 > which is why it moved to docs/ rather than being re-corrected in place.)
@@ -19,8 +19,8 @@
 | Stack | Next.js 16 (App Router) · React 19 · TypeScript 5 · Prisma 6 · PostgreSQL 16 (pgvector + pg_trgm) · Bun · Tailwind 4 · shadcn/ui |
 | Runtime | Bun for dev/test, Node standalone for prod build |
 | Domain | Multi-tenant AI assistant deployed **on-prem per customer**, licensed with a signed machine-bound key: natural-language → SQL, RAG over company docs, whitelisted REST calls, streaming chat |
-| Status | **Release 1.5.0** (2026-09-30). Verified by execution, not assertion: `tsc` 0 · `lint` 0 · `bun run test` 300/300 files, 7441 pass, 0 fail · coverage:gate exit 0 · `e2e` dev and `e2e:prod` both 18 passed. Deployed to production and confirmed live (`/api/v1/health` reports 1.4.0) |
-| Version | 1.5.0 |
+| Status | **Release 1.6.0** (2026-10-01). Security release. Verified by execution, not assertion: `tsc` 0 · `lint` 0 · `bun run test` 307/307 files, 7599 pass, 0 fail · coverage:gate exit 0 · `e2e` dev and `e2e:prod` both 18 passed |
+| Version | 1.6.0 |
 | Language | English (standardized — all UI, errors, system prompts, comments in English) |
 
 ---
@@ -307,62 +307,6 @@ implementasi (planner, cognee, plugin, scheduler, Postgres) → perombakan UI/UX
 nyata + typed errors → arsitektur RAG produksi + migrasi Postgres → perbaikan isolasi tes →
 pemecahan `tool-router.ts` → algoritma kualitas P1 (pola LightRAG) → verifikasi UI + audit kontras.
 
-### 2026-09-29 — Repo cleanup: 63 dead files, a duplicated implementation, and a truncated instruction file
-
-**The instruction budget was the real defect.** `AGENTS.md` (59,565 B) plus this file (37,433 B) came to 97 KB against
-a 65,536-byte read budget, and truncation keeps the HEAD — so everything in `AGENTS.md` past byte ~28,000 was
-silently dropped, including `## Cross-tenant IDOR` (a real IDOR incident) and `## Silent-failure classes` (20 defect
-patterns). The rules an agent most needs were the ones not being delivered. Fixed by MOVING reference out, not by
-deleting content: `docs/architecture-reference.md` (pipeline internals + this file's audit summary and algorithm
-sketches), `docs/billing-and-prompts-reference.md`, `docs/build-and-deploy-reference.md`. Now 55,084 B total, every
-rule section inside the budget, and each moved section left a pointer that states why it moved.
-
-**Dead files, found by measurement after a wrong first answer.** `grep -r` claimed 46 orphan modules including
-`chat-view.tsx` — obviously false, because a recursive grep matches a file's own contents and matches SUBSTRINGS (it
-"found" a consumer for an unused `toggle.tsx` via the local `toggleSidebar`). Replaced with specifier resolution,
-kept as `scripts/audit/dead-modules.mjs`. Real result: 2 shadcn components (`toggle.tsx`, `use-mobile.ts`) and
-`__connector-mocks.ts` — the last a FAILED EXTRACTION whose richer mocks nobody imports while `rag-fts.test.ts`
-defines its own inline.
-
-**61 files at the repo root (6.2 MB)** — screenshots, DOM dumps, probe JSON — had all landed in ONE commit whose
-message is about a guardrail fix, because nothing ignored them. Removed after verifying each was unreferenced (which
-is how `views.json` was caught as a false positive rather than reported live). `.gitignore` now blocks the SHAPES
-they take, scoped to the root: a global `*.png`/`*.txt` would silently hide the next asset in `docs/screenshots/` or
-`test-data/wikipedia/` (24 such files are tracked today). `coverage-summary.json` is deliberately NOT ignored — it
-looks like a build artifact and is an INPUT the gate reads.
-
-**`dedupeByPrefix` existed twice**, as `dedupeByPrefix` and `dedupeJoin`, differing only in whether they joined the
-result. The memory copy's comment said "mirrors the KB recall path" — a note documenting duplication instead of
-removing it. Consolidated into `cognee-core.ts` ("shared helpers", imports neither caller, so no cycle).
-
-**Consolidating it exposed a vacuous guard.** The dedupe test used `'P'.repeat(100)` for both hits, so changing
-`slice(0, 100)` to `slice(0, 50)` left the file at 45 pass / 0 fail. It now pins the boundary from both sides and
-fails in both directions. Building it also required measuring that one call issues FOUR HTTP recalls, not two.
-
-**Eight coverage floors quoted a stale measurement**, and the gate surfaced it (`cognee-memory` floored at 62 against
-a real 61.42%). `rag-retrieval.ts` claimed 70.79% against 62.72%; `tool-router.ts` claimed 62.62% against 54.44%. A
-stale number there is worse than none — it looks like evidence and answers the question wrongly. All 11 refreshed,
-and `coverage-floor-consistency.test.ts` now fails when a comment stops matching `coverage-summary.json`, when a
-floor sits above its measurement, or when a floor names a file the summary no longer measures.
-
-**Verified:** `tsc` 0 · `lint` 0 · 289/289 files, 7206 pass, 0 fail, 71 skip · coverage:gate exit 0.
-
-### 2026-09-30 — Release 1.3.0: storage becomes a decision, memory moves onto the bundled Postgres, nine silent failures
-
-**Version 1.1.1 → 1.3.0** (minor: two `feat:` commits since 1.2.1). All eight stamped locations bumped, CHANGELOG heading cut, `main` fast-forwarded, tag `v1.3.0` pushed, all six image tags verified published (3 moving + 3 versioned), then **deployed to production and confirmed live** — `/api/v1/health` reports 1.3.0, schema pushed before the new image so `storageChosenAt` existed before the app needed it.
-
-**Knowledge storage is now an explicit, enforced choice.** Until an admin picks, `POST /api/documents` returns 503 `SETUP_REQUIRED` before extraction runs. Recorded as a sticky TIMESTAMP, not a boolean — a `@default(false)` invites a backfill that would delete the gate silently. AI Memory is stated as bundled (no choice to offer); external vector DBs got their own sub-menu; the setup wizard gained a Knowledge Storage step with no Skip.
-
-**Nine defects, all one shape: reporting success for work not done.** Self-role-change (an admin could demote themselves and lock the install out of user management); streaming RAG not delivering the per-source guidance the non-streaming path sent; citation rank being the array index rather than the retrieval rank (wrong precisely because citations are concatenated across tool runs); four 1536-dim fallbacks beside a `vector(384)` column; a 60s agentic deadline wrapping a 120s stream; the login limiter counting SUCCESSES and keying one shared bucket for all anonymous callers (the 11th sign-in in a minute was refused — a NEW finding, not from the UAT report); `db push` wanting to drop the runtime-created GIN index; `VectorStoreConfig.vectorSize` still defaulting to 1536.
-
-**Two guards that could not fail, found by their own controls.** The vector-store ROW payload had no verdict assertion at all — every test ran with `row = null`, so the arm a real install is in was never measured. And the panel's "bogus verdict" test could not fail because the JSX switches on exact literals; the narrowing moved into the leaf (`parseEmbeddingStampVerdict`) where it is observable. Five negative-control harnesses: 6/6, 11/11, 12/12, 9/9, 19/19, each restored byte-identical.
-
-**Production consequence disclosed, not hidden:** cognee's relational/vector/cache stores moved to the bundled PostgreSQL, but the OLD stores are orphaned in the volume and cannot be migrated automatically — measured there: SQLite held 3 datasets / 28 data rows / 236 pipeline runs / 36 queries, LanceDB held 27 chunks / 81 edges / 10 entities. The Kuzu GRAPH survived untouched (98 nodes, 81 edges). A first reading of the graph reported 0 nodes — my query was wrong (`show_tables()` returns id in column 0, name in column 1), which is worth remembering as "check what your probe returns before believing its verdict".
-
-**Verified:** tsc 0 · lint 0 errors (133 pre-existing warnings) · 299/299 files, 7387 pass, 0 fail · coverage:gate exit 0 · e2e dev 18 passed · e2e:prod 18 passed · invariants 52 · benchmark 167 · CI green on `main` and `dev`.
-
-**Recorded rather than fixed:** the `mock.module` cross-file bleed is a property of running two suites in one Bun process, not a defect in either file — measured (`tool-branches` + `stream-preparers` in one process = 106 pass / 4 fail; each alone green; `bun run test` green). Documented with numbers in `AGENTS.md` so it stops being re-opened as a bug.
-
 ### 2026-09-30 (b) — Release 1.4.0: AI Memory gets its own extraction model, and the sub-menu names its consumer
 
 **Version 1.3.0 → 1.4.0** (minor: a new user-facing capability, no breaking change). Eight stamped locations bumped, CHANGELOG heading cut, `main` fast-forwarded, tag `v1.4.0` pushed, all six image tags verified published, then **deployed and confirmed live** — `/api/v1/health` reports 1.4.0, all six services healthy, and the served `install.sh` updated to 1.4.0 (sha256 identical to the tested copy).
@@ -392,3 +336,25 @@ floor sits above its measurement, or when a floor names a file the summary no lo
 **Verified on the frozen hash:** tsc 0 · lint 0 errors · 300/300 files, 7441 pass, 0 fail · coverage:gate exit 0 (203 modules) · e2e dev 18 · build · e2e:prod 18. Rendered in a real browser at 1440px and 390px: no horizontal overflow at either width, no console errors, the four store rows render, mobile stacks to one column.
 
 **A process note worth keeping.** The e2e modes were NOT re-run by the implementer after its final edit, and it said so rather than implying otherwise — which is why the two runs above were measured by a second party on the frozen file. An unverified claim flagged as unverified costs nothing; the same claim left implicit would have shipped.
+
+### 2026-10-01 — Release 1.6.0: a live IDOR, a cross-tenant PII leak, six row-cap bypasses, and three silent-failure classes
+
+**Found by a 10-agent read-only audit, each finding then reproduced by hand before it was accepted.** Two of the agents were wrong in ways worth recording: one asserted a guard's content from its comment without reading the assertion (it withdrew the claim), and one reported "both runners agree" when their globs differed 303 vs 290 — the correction came from the Lead's own check.
+
+**A live cross-tenant IDOR.** `Order` carries `organizationId` but was missing from `ORG_SCOPED_MODELS` (30 models have the column, 28 were scoped). Proved by driving the real extension handler: `Document.findFirst` forwarded `{"where":{"id":"x","organizationId":"org-PROBE"}}`, `Order.findFirst` forwarded `{"where":{"id":"x"}}`. `GET /api/billing/orders/[id]` therefore served any org's order from a client id — while its docstring claimed the extension scoped it, which is why nobody re-checked. Fixed, docstring corrected, and `tenant-scope-coverage.test.ts` now PARSES the schema and asserts the set equals the scoped list plus an explicit justified exception (`invitation`), so a new unscoped model fails the build naming itself.
+
+**A cross-tenant PII leak.** The LLM trace ring buffer is a module-global with NO org field, and `/api/traces` called `enterWithOrg(...)` then never used it — passing the static tenant-route guard while being effectively unscoped, with no `requireRole`. Any authenticated user read the last 20 prompt bodies of EVERY tenant. Now stamped per org, filtered on read, admin-gated. The trap is documented in both routes: **`enterWithOrg` alone is NOT scoping when the data is in-process memory rather than a Prisma query.**
+
+**Six row-cap bypasses, and two corruptions introduced while fixing them.** `LIMIT ALL`/`NULL` returned byte-identical SQL; MySQL's `LIMIT a, b` clamped the OFFSET and left the COUNT at a million; `FETCH FIRST`/`TOP` got a second invalid `LIMIT` appended (a syntax error on MSSQL); `1_000_000`/`1e10` matched nothing. All clamp correctly now. The first fix then corrupted a STRING LITERAL (`'LIMIT 999999'` → `'LIMIT 100'`) and a DELIMITED IDENTIFIER (`[Credit Limit 5000]` → a different column; an aliased form changed the result set's field names while the query still succeeded) — caught by a second reader, fixed by clamping over masked SQL and splicing by offset, with masking extended to backtick/bracket identifiers keyed on bracket CONTENT so a PG array subscript stays visible.
+
+**A 631-line rewrite was DISCARDED rather than wired in.** It had zero callers (`grep enforceRowCap` → one comment): a fix in a place that could never run (class 9). Direct measurement showed it produced invalid syntax on `FETCH`/`TOP` and never applied `Math.min`. Deleting it and fixing the shipped 12-line clamp was the smaller, safer change.
+
+**Three silent-failure classes.** (11) The planner's system prompt measured 3023 chars against a ~2000 ceiling and was discarded whole — the rules MOVED to a `user` role (moved, not deleted; a test asserts every rule still arrives), 3023 → 579. The same guard then found a THIRD instance: `historyToMessages` embedded the entire history a second time, 20,116 chars on ten turns, discarded every time and paid for twice. (14) The container healthcheck probed `/api/v1/health`, which touches nothing and always answers ok — so a dead Postgres still reported `healthy`. Now probes `/api/health`; only `db` is CRITICAL, the other four are reported so an optional blip cannot restart-loop a healthy container. (13) `license-client.ts` stored `data.plan` verbatim, and an unrecognised plan resolves to `starter` — the MOST restrictive tier — so a renamed plan would cripple a flat-licence install with no test able to catch it (the e2e mock defaults unknown keys to `enterprise`). Now normalised at the boundary, unrecognised values dropped and logged.
+
+**Suite 40s → 20s, and two fail-open gates closed.** The wall time was ONE file: `ai.test.ts` 38.8s, of which 11 tests × 3.5s was pure backoff `setTimeout` (concurrency 8→32 moved it <0.8s, proving a critical path). `LLM_RETRY_BACKOFF_BASE_MS` is now env-overridable with the default UNCHANGED. The two runners globbed different sets (303 vs 290), so 13 benchmark suites ran but were never measured; both now share one `TEST_FILE_GLOB` with a parity guard. `coverage.ts` never exited non-zero on an inner failure and wrote a `failedTestFiles` field with no reader; `coverage-gate.ts` exited 0 when its summary was missing.
+
+**Seven floors re-derived, not loosened.** Each sat above its measurement because the files grew (guardrails 454 → 611 lines). Reset to measured-minus-one with the number and reason recorded. The gate's own refusal path was respected rather than bypassed.
+
+**Verified:** tsc 0 · lint 0 errors · 307/307 files, 7599 pass, 0 fail · coverage:gate OK (203 modules) · e2e dev 18 · e2e:prod 18 · `docker compose config` rc=0 on both composes. Negative controls restored byte-identical throughout, including one that reproduced the ORIGINAL leaks (an analyst got HTTP 200 when `requireRole` was deleted).
+
+**Recorded rather than hidden:** arithmetic counts (`LIMIT 1000000*100`) and `TOP n PERCENT` cannot be bounded by a lexical clamp — both pinned as DOCUMENTED GAP tests so the absence stays visible. A deliberately-failing negative-control artifact (`zz-nc-plant.test.ts`) was left in the tree by a subagent and removed; it was the cause of a transient 8-failure suite run.

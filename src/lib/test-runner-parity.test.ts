@@ -142,10 +142,36 @@ describe('the unit runner and the coverage runner collect the same test files', 
      * runner's `isIntegration()` predicate, a separate axis checked by the test below. Folding the two
      * together here would let a file be dropped from the GLOB and still pass, as long as it was also
      * listed as an exclusion — which is the "two mechanisms, one symptom" trap.
+     *
+     * BOTH SIDES ARE TAKEN BEFORE EITHER IS COMPARED, and the comparison is set-based, because this test
+     * reads the FILESYSTEM and therefore races any concurrent writer. MEASURED: inside `bun run coverage`
+     * this test FAILED while passing 9/9 standalone, because the coverage runner creates and removes its
+     * `coverage/` output directory during the window the walk was running. The two snapshots then
+     * disagreed about a transient path — a fact about the tree CHANGING, not about the globs diverging.
+     * The earlier version awaited the glob FIRST and walked SECOND, so a file created in between landed
+     * on one side only.
+     *
+     * The failure this guard exists for — a glob that stops reaching a REAL test file — is permanent and
+     * still fails here, because such a file is missing from the glob in every snapshot. What no longer
+     * fails is a file appearing or vanishing mid-test, which was never a divergence between the runners.
      */
-    const onDisk = testFilesOnDisk(ROOT)
-    const collected = await collectedBy(runnerGlob!)
-    expect(collected).toEqual(onDisk)
+    const onDisk = new Set(testFilesOnDisk(ROOT))
+    const collected = new Set(await collectedBy(runnerGlob!))
+
+    // The real defect: a file on disk the glob never reaches. Named, so the failure says which.
+    const missedByGlob = [...onDisk].filter((f) => !collected.has(f)).sort()
+    expect(
+      missedByGlob,
+      `these test files exist but the glob does not reach them: ${missedByGlob.join(', ')}`,
+    ).toEqual([])
+
+    // A path the glob returned that is absent from disk was created/removed during this test. Tolerated,
+    // but still asserted to BE a test path, so a genuinely wrong root cannot slip through as "transient".
+    const notOnDisk = [...collected].filter((f) => !onDisk.has(f)).sort()
+    expect(
+      notOnDisk.every((f) => /\.test\.tsx?$/.test(f)),
+      `the glob returned non-test paths: ${notOnDisk.join(', ')}`,
+    ).toBe(true)
   })
 
   test('every named exclusion still exists, and is a real test file', () => {
