@@ -589,3 +589,108 @@ All free/open-source stack (no paid subscriptions). Deps pre-installed: `fast-ch
 **Verified**: `tsc --noEmit` 0 errors · `bun run lint` 0 errors (160 pre-existing warnings, mostly in `.github/skills/impeccable`, unrelated to this session) · `bun run test` 1616 pass / 0 fail / 8 skip across 102 files · live e2e re-check (isolated worktree, same Postgres/mock-LLM/mock-license harness as the automated suite) confirms the sidebar tooltip text is now legible and "Add Database" still renders single-line at all tested widths.
 
 **Next**: visual spot-check the other 4 non-default themes (Midnight/Forest/Slate/Sandstone) in a real browser session — the contrast audit computed all 10 combinations mathematically but only Enterprise Blue/dark was screenshotted this session. Consider running `impeccable detect` again once impeccable's ruleset catches structural patterns like the icon-prop bug (currently out of its scope — it's a project-specific `Button` API convention, not a general anti-pattern).
+
+---
+
+## Moved 2026-09-30 (second trim)
+
+> Moved for the same MEASURED reason as the first trim, and by the same rule: keeping the
+> newest entries readable matters more than keeping the oldest in place. The 1.4.0 entry had
+> pushed the combined instruction files to 67,541 bytes against the 65,536-byte budget, so the
+> TAIL of `AGENTS.md` was on course to stop loading — the rule sections, which are the ones an
+> agent needs. Both entries below were true when written; where they disagree with the code,
+> the code wins.
+
+### 2026-09-25 — Release 1.0.0: memory integration replaced, and a guard that proved nothing
+
+**Version aligned to 1.0.0** in all six places it was stamped (package.json, .env.example,
+install.sh, and the two code fallbacks + otel) — they had drifted to FOUR different numbers
+(0.4.0 / 2.0.0 / 0.5.0 / 0.0.0), and the code fallbacks are what the customer's UI actually
+displays (the Dockerfile declares no `ARG`, so `NEXT_PUBLIC_APP_VERSION` from `.env` never
+reaches the bundle). CHANGELOG converted from a two-month-old `[Unreleased]` into `[1.0.0]`.
+
+**Cognee: one backend, one version, one writer.** Removed `@cognee/cognee-ts` entirely and moved
+memory to a pinned **cognee v1.6.0 API server**; with no `COGNEE_SERVER_URL` memory is OFF rather
+than half-wired. Reason is measured, not stylistic: two lineages writing one store produced a
+collection sized 1536 while the embedder returned 384, and a graph with 0 nodes after a write
+that reported success. Cross-session recall now works and is measured (write ~9s warm, recall
+0.21-0.35s from a different session, found by a semantic query too).
+
+**Latency, localized honestly.** Write latency is the CUSTOMER's model, not this code: measured
+on their endpoint, "Say OK" answers in 1.3s while an extraction request takes 23.7s. All four
+write sites are fire-and-forget, so an answer is never blocked — the cost is memory FRESHNESS.
+Two claims I made and then retracted with the refuting numbers are recorded in
+`docs/cognee-http-migration.md`.
+
+**A guard that proved nothing — the most valuable find of the session.** Following the discipline
+of negative-controlling every guard: deleting the real `startJobWorker()` CALL from
+`src/instrumentation.ts` left the suite at **49 pass, 0 fail**, because the assertion was
+`toContain('startJobWorker')` and the name survives in the import one line above (a comment
+satisfied it too). That guard exists for the repo's most expensive known outage (40 document jobs
+stuck 16+ hours). It now strips comments and requires an INVOCATION. Two other guards were
+audited and held (cognee searchTypes; the SQL deny-list, which was already written against a call
+count).
+
+**Also fixed:** the chat UI could drop an in-flight answer and then drop it silently (both fixed);
+e2e now clears the BullMQ queue as well as Postgres (orphaned jobs were leaving a document
+without a vector and failing a citation assertion); `adoptStuckJobs` renamed — it never adopted
+anything.
+
+**Verified by execution, not assertion:** `tsc` 0 · `lint` 0 · `bun run test` 265/265 files,
+6825 pass, 0 fail, 71 skip · `bun run e2e` 16/16 (dev) · `bun run e2e:prod` 16/16 against the
+standalone build, which reports version 1.0.0 and ships no `@cognee`.
+
+**Known and documented, not hidden:** the provider occasionally returns an empty body for an
+extraction call (rare, not reproducible on demand; retries recover it — 184 of 297 first-attempt
+validation failures eventually succeeded). The exact trigger is outside this codebase.
+
+### 2026-09-26 — Real-LLM probing: 12 silent-failure classes, and a prompt that was never delivered
+
+Work this session was driven by one method: run the PRODUCTION pipeline against the customer's real
+provider and real business data, then chase down anything that looked wrong. Twelve defects shared
+one shape — the code reported success for work it had not done, or dropped data on the way out.
+They are catalogued with measurements in `AGENTS.md` ("Silent-failure classes found by probing").
+
+**The two most consequential were both about DELIVERY, not logic:**
+
+- A routing bug sent document questions to SQL. The `datetime` plugin declares the bare keyword
+  "tahun", so 5 of 6 database questions containing a time word were promoted OFF the route the
+  classifier had chosen — and the WRONG answer scored HIGHER ("Tampilkan pesanan per jam." 0.415 vs
+  "Hitung 15% dari 2 juta." 0.383), so no threshold could separate them. A question answerable only
+  from a document had been returning "the data does not contain that". Fixed with a subject-match
+  gate; the same question now returns the planted token `ZQX-4471` with its citation.
+- The intent system prompt was 2872 characters and the Text-to-SQL rules 3033, against a provider
+  ceiling of ~2000 for a SYSTEM message. Measured: 1800 chars reports `prompt_tokens` 411, 2100+
+  reports 44 (the user message alone), 3/3 reproducible. Both prompts were therefore discarded on
+  EVERY request. User messages have no such ceiling. This also explains an earlier round where a
+  prompt rewrite changed behaviour by exactly 0/4 — there was nothing to ignore.
+
+**A ambiguous question was answered with a confident guess.** "Berapa banyak itu?" (a pronoun with
+no antecedent, which the prompt has always listed as needing clarification) produced
+"Jumlahnya 2.405 (total stok)" — picked from one of three connected databases. A downstream guard
+suppressed clarification whenever the question contained "berapa", which is exactly what the
+ambiguous shapes contain. The rule moved into CODE, because two prompt rewrites changed it by 0/4.
+
+**Also fixed:** `extractError` dropped the actionable `hint` on 48 callers; `fetchProviderModels`
+never read the response body so BYOK failures could not be classified; a transport failure surfaced
+to the customer as Bun's raw "Unable to connect" with an empty hint; `resetCognee` reported a
+successful wipe when the forget had failed; `GET /api/documents/[id]` selected `cognifyStatus` and
+never mapped it.
+
+**This file was silently truncating itself.** Measured: `CLAUDE.md` was 90719 bytes against a
+65536-byte read budget, and truncation keeps the HEAD — so the 2026-09-25 entry (starting at byte
+87712) was never read, in a file whose own header calls the Progress Log "the single source of truth
+for cross-session continuity". Entries through 2026-08-14 moved to `docs/progress-log-archive.md`;
+`CLAUDE.md` is now 33584 bytes and the newest entry starts at byte 30577. `AGENTS.md` had the same
+problem at 66057 and a duplicated section; both fixed.
+
+**Verified by execution:** `tsc` 0 · `lint` 0 · `bun run test` 267/267 files, 6858 pass, 0 fail,
+71 skip · benchmark 167 · invariants 49 · e2e dev 16/16 and e2e:prod 16/16. Every fix carries a
+negative-controlled guard: plant the violation, confirm the guard FAILS, restore, confirm it passes.
+One guard written this session survived its control and was rewritten — a test that cannot fail is
+worse than no test, because it reports safety.
+
+**Still open, recorded rather than hidden:** memory-write latency is the customer's model (a 23.7s
+extraction call vs 1.3s for "Say OK"), all write sites are fire-and-forget so answers are never
+blocked; memory FRAMING shows no measurable effect (14/15 vs 14/15, unproven); the provider
+occasionally returns an empty body and retries recover it.

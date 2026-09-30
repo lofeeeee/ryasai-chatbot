@@ -1,10 +1,10 @@
 # CLAUDE.md — ryasai Chatbot (Super-App Track)
 
 > Living document. Update the **Progress Log** at the bottom every session.
-> Last updated 2026-09-30. Version 1.3.0. PostgreSQL 16. All PLAN.md phases P0–P5 + S4 + RAG complete. Language standardized to English.
+> Last updated 2026-09-30. Version 1.4.0. PostgreSQL 16. All PLAN.md phases P0–P5 + S4 + RAG complete. Language standardized to English.
 >
 > **Counts and versions in this file drift.** Section 1 and 8 describe CURRENT state and are
-> corrected to 1.3.0; section 9 (Progress Log) is HISTORICAL and its numbers were true when
+> corrected to 1.4.0; section 9 (Progress Log) is HISTORICAL and its numbers were true when
 > written — do not "fix" them. When you need a number, run the command. (Section 2 was three
 > releases stale — it claimed 6825 tests across 265 files when this tree measures 7206 across 289 —
 > which is why it moved to docs/ rather than being re-corrected in place.)
@@ -19,8 +19,8 @@
 | Stack | Next.js 16 (App Router) · React 19 · TypeScript 5 · Prisma 6 · PostgreSQL 16 (pgvector + pg_trgm) · Bun · Tailwind 4 · shadcn/ui |
 | Runtime | Bun for dev/test, Node standalone for prod build |
 | Domain | Multi-tenant AI assistant deployed **on-prem per customer**, licensed with a signed machine-bound key: natural-language → SQL, RAG over company docs, whitelisted REST calls, streaming chat |
-| Status | **Release 1.3.0** (2026-09-30). Verified by execution, not assertion: `tsc` 0 · `lint` 0 · `bun run test` 299/299 files, 7387 pass, 0 fail · coverage:gate exit 0 · `e2e` dev and `e2e:prod` both 18 passed. Deployed to production and confirmed live (`/api/v1/health` reports 1.3.0) |
-| Version | 1.3.0 |
+| Status | **Release 1.4.0** (2026-09-30). Verified by execution, not assertion: `tsc` 0 · `lint` 0 · `bun run test` 300/300 files, 7431 pass, 0 fail · coverage:gate exit 0 · `e2e` dev and `e2e:prod` both 18 passed. Deployed to production and confirmed live (`/api/v1/health` reports 1.4.0) |
+| Version | 1.4.0 |
 | Language | English (standardized — all UI, errors, system prompts, comments in English) |
 
 ---
@@ -307,100 +307,6 @@ implementasi (planner, cognee, plugin, scheduler, Postgres) → perombakan UI/UX
 nyata + typed errors → arsitektur RAG produksi + migrasi Postgres → perbaikan isolasi tes →
 pemecahan `tool-router.ts` → algoritma kualitas P1 (pola LightRAG) → verifikasi UI + audit kontras.
 
-### 2026-09-25 — Release 1.0.0: memory integration replaced, and a guard that proved nothing
-
-**Version aligned to 1.0.0** in all six places it was stamped (package.json, .env.example,
-install.sh, and the two code fallbacks + otel) — they had drifted to FOUR different numbers
-(0.4.0 / 2.0.0 / 0.5.0 / 0.0.0), and the code fallbacks are what the customer's UI actually
-displays (the Dockerfile declares no `ARG`, so `NEXT_PUBLIC_APP_VERSION` from `.env` never
-reaches the bundle). CHANGELOG converted from a two-month-old `[Unreleased]` into `[1.0.0]`.
-
-**Cognee: one backend, one version, one writer.** Removed `@cognee/cognee-ts` entirely and moved
-memory to a pinned **cognee v1.6.0 API server**; with no `COGNEE_SERVER_URL` memory is OFF rather
-than half-wired. Reason is measured, not stylistic: two lineages writing one store produced a
-collection sized 1536 while the embedder returned 384, and a graph with 0 nodes after a write
-that reported success. Cross-session recall now works and is measured (write ~9s warm, recall
-0.21-0.35s from a different session, found by a semantic query too).
-
-**Latency, localized honestly.** Write latency is the CUSTOMER's model, not this code: measured
-on their endpoint, "Say OK" answers in 1.3s while an extraction request takes 23.7s. All four
-write sites are fire-and-forget, so an answer is never blocked — the cost is memory FRESHNESS.
-Two claims I made and then retracted with the refuting numbers are recorded in
-`docs/cognee-http-migration.md`.
-
-**A guard that proved nothing — the most valuable find of the session.** Following the discipline
-of negative-controlling every guard: deleting the real `startJobWorker()` CALL from
-`src/instrumentation.ts` left the suite at **49 pass, 0 fail**, because the assertion was
-`toContain('startJobWorker')` and the name survives in the import one line above (a comment
-satisfied it too). That guard exists for the repo's most expensive known outage (40 document jobs
-stuck 16+ hours). It now strips comments and requires an INVOCATION. Two other guards were
-audited and held (cognee searchTypes; the SQL deny-list, which was already written against a call
-count).
-
-**Also fixed:** the chat UI could drop an in-flight answer and then drop it silently (both fixed);
-e2e now clears the BullMQ queue as well as Postgres (orphaned jobs were leaving a document
-without a vector and failing a citation assertion); `adoptStuckJobs` renamed — it never adopted
-anything.
-
-**Verified by execution, not assertion:** `tsc` 0 · `lint` 0 · `bun run test` 265/265 files,
-6825 pass, 0 fail, 71 skip · `bun run e2e` 16/16 (dev) · `bun run e2e:prod` 16/16 against the
-standalone build, which reports version 1.0.0 and ships no `@cognee`.
-
-**Known and documented, not hidden:** the provider occasionally returns an empty body for an
-extraction call (rare, not reproducible on demand; retries recover it — 184 of 297 first-attempt
-validation failures eventually succeeded). The exact trigger is outside this codebase.
-
-### 2026-09-26 — Real-LLM probing: 12 silent-failure classes, and a prompt that was never delivered
-
-Work this session was driven by one method: run the PRODUCTION pipeline against the customer's real
-provider and real business data, then chase down anything that looked wrong. Twelve defects shared
-one shape — the code reported success for work it had not done, or dropped data on the way out.
-They are catalogued with measurements in `AGENTS.md` ("Silent-failure classes found by probing").
-
-**The two most consequential were both about DELIVERY, not logic:**
-
-- A routing bug sent document questions to SQL. The `datetime` plugin declares the bare keyword
-  "tahun", so 5 of 6 database questions containing a time word were promoted OFF the route the
-  classifier had chosen — and the WRONG answer scored HIGHER ("Tampilkan pesanan per jam." 0.415 vs
-  "Hitung 15% dari 2 juta." 0.383), so no threshold could separate them. A question answerable only
-  from a document had been returning "the data does not contain that". Fixed with a subject-match
-  gate; the same question now returns the planted token `ZQX-4471` with its citation.
-- The intent system prompt was 2872 characters and the Text-to-SQL rules 3033, against a provider
-  ceiling of ~2000 for a SYSTEM message. Measured: 1800 chars reports `prompt_tokens` 411, 2100+
-  reports 44 (the user message alone), 3/3 reproducible. Both prompts were therefore discarded on
-  EVERY request. User messages have no such ceiling. This also explains an earlier round where a
-  prompt rewrite changed behaviour by exactly 0/4 — there was nothing to ignore.
-
-**A ambiguous question was answered with a confident guess.** "Berapa banyak itu?" (a pronoun with
-no antecedent, which the prompt has always listed as needing clarification) produced
-"Jumlahnya 2.405 (total stok)" — picked from one of three connected databases. A downstream guard
-suppressed clarification whenever the question contained "berapa", which is exactly what the
-ambiguous shapes contain. The rule moved into CODE, because two prompt rewrites changed it by 0/4.
-
-**Also fixed:** `extractError` dropped the actionable `hint` on 48 callers; `fetchProviderModels`
-never read the response body so BYOK failures could not be classified; a transport failure surfaced
-to the customer as Bun's raw "Unable to connect" with an empty hint; `resetCognee` reported a
-successful wipe when the forget had failed; `GET /api/documents/[id]` selected `cognifyStatus` and
-never mapped it.
-
-**This file was silently truncating itself.** Measured: `CLAUDE.md` was 90719 bytes against a
-65536-byte read budget, and truncation keeps the HEAD — so the 2026-09-25 entry (starting at byte
-87712) was never read, in a file whose own header calls the Progress Log "the single source of truth
-for cross-session continuity". Entries through 2026-08-14 moved to `docs/progress-log-archive.md`;
-`CLAUDE.md` is now 33584 bytes and the newest entry starts at byte 30577. `AGENTS.md` had the same
-problem at 66057 and a duplicated section; both fixed.
-
-**Verified by execution:** `tsc` 0 · `lint` 0 · `bun run test` 267/267 files, 6858 pass, 0 fail,
-71 skip · benchmark 167 · invariants 49 · e2e dev 16/16 and e2e:prod 16/16. Every fix carries a
-negative-controlled guard: plant the violation, confirm the guard FAILS, restore, confirm it passes.
-One guard written this session survived its control and was rewritten — a test that cannot fail is
-worse than no test, because it reports safety.
-
-**Still open, recorded rather than hidden:** memory-write latency is the customer's model (a 23.7s
-extraction call vs 1.3s for "Say OK"), all write sites are fire-and-forget so answers are never
-blocked; memory FRAMING shows no measurable effect (14/15 vs 14/15, unproven); the provider
-occasionally returns an empty body and retries recover it.
-
 ### 2026-09-29 — Repo cleanup: 63 dead files, a duplicated implementation, and a truncated instruction file
 
 **The instruction budget was the real defect.** `AGENTS.md` (59,565 B) plus this file (37,433 B) came to 97 KB against
@@ -456,3 +362,19 @@ floor sits above its measurement, or when a floor names a file the summary no lo
 **Verified:** tsc 0 · lint 0 errors (133 pre-existing warnings) · 299/299 files, 7387 pass, 0 fail · coverage:gate exit 0 · e2e dev 18 passed · e2e:prod 18 passed · invariants 52 · benchmark 167 · CI green on `main` and `dev`.
 
 **Recorded rather than fixed:** the `mock.module` cross-file bleed is a property of running two suites in one Bun process, not a defect in either file — measured (`tool-branches` + `stream-preparers` in one process = 106 pass / 4 fail; each alone green; `bun run test` green). Documented with numbers in `AGENTS.md` so it stops being re-opened as a bug.
+
+### 2026-09-30 (b) — Release 1.4.0: AI Memory gets its own extraction model, and the sub-menu names its consumer
+
+**Version 1.3.0 → 1.4.0** (minor: a new user-facing capability, no breaking change). Eight stamped locations bumped, CHANGELOG heading cut, `main` fast-forwarded, tag `v1.4.0` pushed, all six image tags verified published, then **deployed and confirmed live** — `/api/v1/health` reports 1.4.0, all six services healthy, and the served `install.sh` updated to 1.4.0 (sha256 identical to the tested copy).
+
+**The sub-menu now says which consumer it configures.** `Chat Configuration` / `AI Memory Configuration` / `Embedding`, replacing "LLM / Embedding / AI Memory" — where two of the three fed DIFFERENT consumers with different credentials and neither name said which.
+
+**Memory can have its own model**, stored as an `LlmConfig` row with `purpose: 'memory'` (the table's unique key is `(organizationId, purpose)`, so no schema change). Extraction is high-volume and structure-bound where a fast model is the better trade, and the previous mechanism was a hard COPY of the chat row. **The fallback is the load-bearing part**: unset means FOLLOW CHAT, so every upgrading install keeps working — verified on production, where no `memory` row exists and the boot log reads `Memory provider shared with cognee: Shared openai/cbcn/deepseek-v4-flash`.
+
+**Storage facts come from the sidecar**, measured live: `relational_db=postgres, vector_db=pgvector, graph_db=kuzu, file_storage=local`. `getCogneeGraphProvider()` was deliberately NOT used as the source — it derives the graph backend from a field its own comment calls INERT, so it is right only by coincidence.
+
+**Two limits found by probing the sidecar, reported instead of worked around:** `save_llm_config` stores provider/model/api_key and has NO endpoint field (four spellings posted, all stored `''`), so the endpoint is saved app-side and surfaced as the exact `OPENAI_API_BASE=` line; and the settings API exposes no embedding parameters, so the Embedding tab REPORTS the memory embedder rather than offering a field that could not take effect.
+
+**Negative-controlled 21/21, and the control changed the code twice** — the recurring value of running it: (1) the test guarding ENCRYPTION of a billable credential asserted only that the mocked encryptor had been CALLED, so a route calling it and storing plaintext passed; it now reads the stored payload and decrypts it back, with the UPDATE arm covered separately (the harness proved those are separate write sites by only breaking one). (2) The rename guard asserted the new label but not the absence of the old, so reverting to `LLM` stayed green.
+
+**Verified:** tsc 0 · lint 0 errors · 300/300 files, 7431 pass, 0 fail · coverage:gate exit 0 (203 gated modules; new route floored at 98 against a measured 99.37%) · e2e dev 18 · e2e:prod 18.
