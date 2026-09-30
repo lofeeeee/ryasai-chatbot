@@ -5,6 +5,66 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-09-30
+
+### Added
+- **Knowledge storage is now an explicit choice, and the install refuses uploads until one is made.** The Knowledge
+  menu had conflated three different things behind one vector-store form — where AI memory lives, where uploaded
+  knowledge is searched, and how to reach an external store — so nothing forced anyone to configure anything, and an
+  install could accept documents into a store nobody had chosen. The storage choice is now its own tab: the bundled
+  PostgreSQL/pgvector, or an external vector database (Qdrant, Milvus, Pinecone, Chroma, or an existing collection).
+  Until an admin chooses, `POST /api/documents` — the only path that creates a document — returns
+  `503 SETUP_REQUIRED` *before* extraction runs. The choice is recorded as a sticky `storageChosenAt` timestamp
+  rather than a boolean, because a defaulted boolean invites a later backfill that would mark every install "chosen"
+  and delete the gate silently.
+- **AI Memory is stated as bundled, not offered as a choice.** It is always the PostgreSQL/pgvector that ships with
+  the install, beside a cognee graph on its embedded Kuzu. There is no second option to offer: one database, on-prem,
+  bring-your-own-key.
+- **External vector databases have their own destination** instead of being a mode buried inside a form, so "point at
+  the customer's existing vector DB" is a named sub-menu.
+- **The setup wizard gains a Knowledge Storage step**, between Test Model and Document, with **no Skip** — the step
+  after it uploads a document and would fail the gate.
+
+### Changed
+- **The memory sidecar now uses the bundled PostgreSQL** for its relational store, its vectors and its cache, instead
+  of SQLite, LanceDB and its own default cache. That was a third storage technology inside an install whose premise is
+  "one PostgreSQL you already back up" — invisible to the operator and absent from every backup. A one-shot
+  `cognee-db-init` service creates `cognee_db` first, because a missing database is not created by the provider: it
+  exits 1. **The graph deliberately stays on cognee's embedded Kuzu** — the vendor labels its Postgres graph adapter a
+  demo and not production-ready — and the `cogneedata` volume holding it survives the change untouched. `install.sh`
+  generates the same service block, and its pre-update backup now dumps `cognee_db` too, gated on existence so an
+  install predating this change still backs up cleanly.
+- **The sidebar rows are compact enough that Settings is reachable without scrolling.** Measured in a browser at the
+  viewports the report implies: rows 36px → 32px, nav content 564px → 470px, zero overflow at every height from 700
+  down to 584 CSS px.
+
+### Fixed
+- **A correct sign-in could be refused.** The login limiter counted *successes* — middleware cannot see an outcome,
+  so every POST consumed quota — and it keyed its bucket on the session cookie, which a login request does not have,
+  which collapsed every unauthenticated caller into ONE shared bucket. On a single on-prem install the eleventh person
+  to sign in inside a minute was locked out, and ten wrong passwords from anywhere locked out every user. It now
+  counts failures only, on two axes (per normalized account, and deliberately looser per client address), and the
+  address is the *last* forwarded hop — the first hop is attacker-controlled, and trusting it would mint a fresh
+  bucket per request. A successful sign-in clears the account budget and deliberately not the address budget.
+- **`VectorStoreConfig.vectorSize` still defaulted to 1536** while the column it describes is `vector(384)`, so a
+  config row created without an explicit size disagreed with both the schema and the embedder that fills it.
+- **`prisma db push` wanted to drop the full-text index.** `DocumentChunk_tsv_idx` is created by raw DDL at runtime,
+  so Prisma could not see it and treated it as drift; dropping it removes BM25 ranking from a live install silently.
+  It is now declared, and `db push` emits only the `ALTER`.
+- **Five failures an operator could not see**, each one a place where the product reported success for work it had not
+  done: an admin could change their **own** role and lock the last administrator out of the install; the **streaming**
+  RAG path did not deliver the per-source context guidance the non-streaming path did, so the same question was
+  answered with different instructions depending on the transport; citations were **not stamped with their retrieval
+  rank**, so a list could not be read in the order the retriever actually ranked it; four code paths still fell back
+  to a **1536-dimension provider model** beside a `vector(384)` column; and the agentic loop's per-round deadline
+  (60s) was **shorter than the stream budget it wraps** (120s), so a slow answer was reported as a timeout with the
+  stream still in flight. The agentic deadline is now 180s and configurable via `AGENTIC_DEADLINE_MS`.
+- **A stored/configured embedding-model disagreement is now visible.** When the vectors in the store were written by a
+  different model than the one now configured, retrieval compares only chunks whose model matches the query's, so
+  every similarity score became zero and document search silently degraded to keyword matching — with no error
+  anywhere and every dimension field agreeing. The vector-store panel now reports the *measured* stored model beside
+  the configured one and names both when they disagree at the same width.
+
 ## [1.2.1] - 2026-09-29
 
 ### Fixed
