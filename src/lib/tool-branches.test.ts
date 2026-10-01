@@ -350,6 +350,18 @@ describe('runRagBranch — the citation carries the retrieval rank, not an array
     expect(r.citations[0]?.rank).toBe(3)
   })
 
+  test('the citation is built from the chunk\'s OWN text when the retriever supplied it', async () => {
+    mockRetrieveWithReflection.mockImplementation(async () => ({
+      chunks: [makeChunk({ chunkId: 'c1', documentId: 'doc-a', documentName: 'doc-a.txt', score: 0.9, content: 'From doc-a.txt: SUMMARY\n\nthe passage', ownContent: 'the passage' } as never)],
+      queryTokens: [], candidatesScanned: 1, graphContext: '', retrievalPasses: 1,
+      reflection: { sufficient: true, reason: '', confidence: 1 }, citationTrail: undefined,
+    }))
+    mockGenerateAnswer.mockImplementation(async () => 'ans')
+    await runRagBranch({ question: 'q' })
+    const args = (mockBuildDocumentCitation.mock.calls[0] as unknown as [{ content: string }])[0]
+    expect(args.content).toBe('the passage')
+  })
+
   test('passes no rank through when the retriever stamped none', async () => {
     mockRetrieveWithReflection.mockImplementation(async () => ({
       chunks: [makeChunk({ chunkId: 'c1', documentId: 'doc-a', documentName: 'doc-a.txt', score: 0.9 })],

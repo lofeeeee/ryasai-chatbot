@@ -59,7 +59,13 @@ mock.module('@/lib/llm-config', () => ({
 // intent-pipeline imports FIVE names from '@/lib/rag' -- a factory that exports
 // only `retrieveRelevantChunks` kills the whole file with
 // "SyntaxError: Export named 'selectTopRetrievedChunks' not found".
+// Deferred-rerank seam. `rerankOn` is false by default so every pre-existing test keeps its old (per-retrieval) path;
+// the dedicated describe block below turns it on.
+let rerankOn = false
+const mockRerankMerged = mock(async (_q: string, chunks: unknown[], topK: number) => (chunks as unknown[]).slice(0, topK))
 mock.module('@/lib/rag', () => ({
+  rerankMergedChunks: mockRerankMerged,
+  ragRerankEnabled: () => rerankOn,
   retrieveRelevantChunks: mockRetrieveRelevantChunks,
   selectTopRetrievedChunks: mockSelectTopRetrievedChunks,
   tokenize: mockTokenize,
@@ -1653,5 +1659,89 @@ describe('mergeRetrievalResults ranks by AGREEMENT, not by a per-query score', (
       mk([['x', 0.5], ['y', 0.5]]),
     ])
     expect(a.chunks.map((c) => c.chunkId)).toEqual(b.chunks.map((c) => c.chunkId))
+  })
+})
+
+// --- Rerank ONCE over the merged pools ---
+
+describe('retrieveWithReflection — one rerank over the union of the expansions', () => {
+  const pool = (q: string) => [
+    makeChunk({ chunkId: `a-${q}`, content: 'A'.repeat(100), score: 0.9 }),
+    makeChunk({ chunkId: 'shared', content: 'S'.repeat(100), score: 0.5 }),
+  ]
+  const setup = () => {
+    rerankOn = true
+    mockRerankMerged.mockClear()
+    mockGetLlmRuntimeConfig.mockImplementation(async () => null)
+    mockRetrieveRelevantChunks.mockClear()
+    mockRetrieveRelevantChunks.mockImplementation(async (args: { query: string }) => ({
+      chunks: pool(args.query), queryTokens: [args.query], candidatesScanned: 2, graphContext: '',
+    }))
+  }
+
+  test('asks every expansion for its un-reranked pool and reranks exactly ONCE', async () => {
+    setup()
+    try {
+      await retrieveWithReflection({ query: 'leave', topK: 4 })
+      const calls = mockRetrieveRelevantChunks.mock.calls as unknown as Array<[{ _skipRerank?: boolean }]>
+      expect(calls.length).toBe(3)
+      expect(calls.every(([a]) => a._skipRerank === true)).toBe(true)
+      expect(mockRerankMerged.mock.calls.length).toBe(1)
+    } finally { rerankOn = false }
+  })
+
+  test('the single rerank sees the UNION (a chunk found by several expansions appears once)', async () => {
+    setup()
+    try {
+      await retrieveWithReflection({ query: 'leave', topK: 4 })
+      const chunks = mockRerankMerged.mock.calls[0][1] as Array<{ chunkId: string }>
+      const ids = chunks.map((c) => c.chunkId)
+      expect(ids.filter((i) => i === 'shared').length).toBe(1)
+      expect(ids.length).toBe(new Set(ids).size)
+      expect(ids.length).toBe(4) // 3 distinct `a-*` + 1 shared
+    } finally { rerankOn = false }
+  })
+
+  test('the pool handed to the reranker is capped at topK*3, so the prompt does not grow with the expansions', async () => {
+    setup()
+    try {
+      mockRetrieveRelevantChunks.mockImplementation(async (args: { query: string }) => ({
+        chunks: Array.from({ length: 10 }, (_, i) => makeChunk({ chunkId: `${args.query}-${i}`, content: 'x'.repeat(50), score: 1 - i / 100 })),
+        queryTokens: [args.query], candidatesScanned: 10, graphContext: '',
+      }))
+      await retrieveWithReflection({ query: 'leave', topK: 2 })
+      expect((mockRerankMerged.mock.calls[0][1] as unknown[]).length).toBe(6)
+    } finally { rerankOn = false }
+  })
+
+  test('the returned list is the RERANKER\'s choice, re-stamped with final ranks', async () => {
+    setup()
+    try {
+      mockRerankMerged.mockImplementationOnce(async (_q: string, chunks: unknown[]) => [(chunks as unknown[])[3], (chunks as unknown[])[0]])
+      const result = await retrieveWithReflection({ query: 'leave', topK: 2 })
+      const want = (mockRerankMerged.mock.calls[0][1] as Array<{ chunkId: string }>)
+      expect(result.chunks.map((c) => c.chunkId)).toEqual([want[3].chunkId, want[0].chunkId])
+      expect(result.chunks.map((c) => c.rank)).toEqual([1, 2])
+    } finally { rerankOn = false }
+  })
+
+  test('a query with ONE expansion defers nothing: the retrieval reranks itself, as before', async () => {
+    setup()
+    try {
+      await retrieveWithReflection({ query: 'zzqx', topK: 4 })
+      const calls = mockRetrieveRelevantChunks.mock.calls as unknown as Array<[{ _skipRerank?: boolean }]>
+      expect(calls.length).toBe(1)
+      expect(calls[0][0]._skipRerank).toBe(false)
+      expect(mockRerankMerged.mock.calls.length).toBe(0)
+    } finally { rerankOn = false }
+  })
+
+  test('with the reranker switched OFF nothing is deferred', async () => {
+    setup()
+    rerankOn = false
+    await retrieveWithReflection({ query: 'leave', topK: 4 })
+    const calls = mockRetrieveRelevantChunks.mock.calls as unknown as Array<[{ _skipRerank?: boolean }]>
+    expect(calls.every(([a]) => a._skipRerank === false)).toBe(true)
+    expect(mockRerankMerged.mock.calls.length).toBe(0)
   })
 })

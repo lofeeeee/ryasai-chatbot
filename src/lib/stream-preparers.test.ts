@@ -528,6 +528,22 @@ describe('prepareRagStream — the citation rank travels on the streaming transp
   })
 })
 
+describe('prepareRagStream — a citation snippet shows the passage, not the document summary', () => {
+  test('uses the chunk\'s own text when the retriever supplied it', async () => {
+    retrievalChunks = [
+      { chunkId: 'c1', documentId: 'd1', content: 'From doc.pdf: SUMMARY\n\nthe matching passage', ownContent: 'the matching passage', score: 0.9, documentName: 'doc.pdf' },
+    ] as never
+    const r = await prepareRagStream({ question: 'q' })
+    expect(r.citations[0].snippet).toBe('the matching passage')
+    expect(r.citations[0].snippet).not.toContain('SUMMARY')
+  })
+  test('falls back to content when there is no ownContent', async () => {
+    retrievalChunks = [{ chunkId: 'c1', documentId: 'd1', content: 'plain evidence', score: 0.9, documentName: 'doc.pdf' }] as never
+    const r = await prepareRagStream({ question: 'q' })
+    expect(r.citations[0].snippet).toBe('plain evidence')
+  })
+})
+
 describe('prepareSqlStream — integration selection', () => {
   test('runs the generated SQL through the connector and streams the answer', async () => {
     generateSqlResults = [{ sql: 'SELECT total FROM orders LIMIT 10', explanation: 'totals' }]

@@ -187,6 +187,9 @@ async function _runNonStreamingChatCompletion(args: {
 
   args.signal?.throwIfAborted()
 
+  // Started BEFORE intent analysis so the two LLM calls overlap; see `startSpeculativeRouting`.
+  const speculativeRouting = startSpeculativeRouting(args, effectiveQuestion, dbData, memoryContext)
+
   const intent = await analyzeIntent({
     question: args.chatHistory && args.chatHistory.length > 0 ? effectiveQuestion : args.question,
     chatHistory: args.chatHistory,
@@ -217,7 +220,7 @@ async function _runNonStreamingChatCompletion(args: {
 
   args.signal?.throwIfAborted()
 
-  const { decision, resolvedIntegrationId } = await resolveRouting(args, effectiveQuestion, dbData, memoryContext)
+  const { decision, resolvedIntegrationId } = await settleRouting(speculativeRouting, () => resolveRouting(args, effectiveQuestion, dbData, memoryContext))
 
   const effectiveDecision = applyToolGating(
     decision,
@@ -321,6 +324,9 @@ async function _runStreamingChatCompletion(args: {
   const restEndpointCount = restEndpoints.length
   const schemaSummaries = formatSchemasForIntent(schemaRows)
 
+  // Same overlap as the non-streaming path; both sites must start it or the transports diverge.
+  const speculativeRouting = startSpeculativeRouting(args, effectiveQuestion, dbData, memoryContext)
+
   const intent = await analyzeIntent({
     question: args.chatHistory && args.chatHistory.length > 0 ? effectiveQuestion : args.question,
     chatHistory: args.chatHistory,
@@ -345,7 +351,7 @@ async function _runStreamingChatCompletion(args: {
     return prepareChatStream({ question: effectiveQuestion, systemPromptPrefix: args.systemPromptPrefix, memoryContext, chatHistory: args.chatHistory ?? [] })
   }
 
-  const { decision, resolvedIntegrationId } = await resolveRouting(args, effectiveQuestion, dbData, memoryContext)
+  const { decision, resolvedIntegrationId } = await settleRouting(speculativeRouting, () => resolveRouting(args, effectiveQuestion, dbData, memoryContext))
 
   const effectiveDecision = applyToolGating(
     decision,
@@ -547,6 +553,44 @@ function applyToolGating(
   if (effective === 'RAG' && !tools.rag) effective = 'CHAT'
   if (effective === 'REST' && !tools.restApi) effective = 'CHAT'
   return effective
+}
+
+/**
+ * Start tool selection NOW, alongside intent analysis, instead of after it.
+ *
+ * `analyzeIntent` and `selectToolWithLlm` are two sequential LLM calls (~2 s each, MEASURED) that read the SAME inputs —
+ * the question, the memory context and the source list — and neither consumes the other's output. Running them
+ * back to back made the user wait for both. Started together, the wait is the slower one, and the DECISIONS are
+ * identical because the inputs are.
+ *
+ * THE PRICE, STATED: a turn that intent analysis then routes to plain chat or a clarification question has spent one
+ * selector call it did not need — on the customer's own key. That is why `SPECULATIVE_ROUTING=false` turns it off.
+ *
+ * Settled into a value instead of returned as a bare promise: if intent analysis decides the speculative result is
+ * not needed, nobody awaits it, and a bare rejected promise nobody awaits is an unhandled rejection. The error is
+ * re-thrown only by the caller that actually uses the result.
+ */
+function startSpeculativeRouting(
+  args: Parameters<typeof resolveRouting>[0],
+  effectiveQuestion: string,
+  dbData: DbData,
+  memoryContext: string,
+): Promise<{ ok: true; value: Awaited<ReturnType<typeof resolveRouting>> } | { ok: false; error: unknown }> | null {
+  if (process.env.SPECULATIVE_ROUTING === 'false') return null
+  return resolveRouting(args, effectiveQuestion, dbData, memoryContext).then(
+    (value) => ({ ok: true as const, value }),
+    (error: unknown) => ({ ok: false as const, error }),
+  )
+}
+
+async function settleRouting(
+  speculative: ReturnType<typeof startSpeculativeRouting>,
+  fallback: () => ReturnType<typeof resolveRouting>,
+): ReturnType<typeof resolveRouting> {
+  if (!speculative) return fallback()
+  const settled = await speculative
+  if (!settled.ok) throw settled.error
+  return settled.value
 }
 
 async function resolveRouting(

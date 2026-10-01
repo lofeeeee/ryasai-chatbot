@@ -213,7 +213,8 @@ export async function runRagBranch(args: {
     buildDocumentCitation({
       documentName: item.documentName,
       chunkIndex: item.chunkIndex,
-      content: item.content,
+      // The chunk's OWN text: `content` leads with the document summary, which would be every citation's snippet.
+      content: item.ownContent ?? item.content,
       score: item.score,
       // Carried, not re-derived: `retrieveWithReflection` re-stamped this list after the merge, and the
       // answer path concatenates several tool runs' citations, so the array index is not the rank.

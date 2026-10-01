@@ -148,6 +148,17 @@ export interface RetrievedChunk {
    */
   rerankScore?: number
   /**
+   * The chunk's OWN text, without the document-level `contextPrefix` that `content` carries for retrieval and for the
+   * answer prompt.
+   *
+   * WHY IT EXISTS. MEASURED ON PRODUCTION: every chunk of `kebijakan.txt` has a ~377-character prefix ("From
+   * kebijakan.txt[HR]: <document summary>"), and a citation snippet is the first 240 characters of `content` — so all
+   * three "sources" of one answer showed the SAME summary and none showed the passage that matched. `content` stays
+   * prefixed (the model benefits from the context); only the human-facing snippet uses this. Absent when the chunk has
+   * no prefix, in which case `content` already IS the chunk's own text.
+   */
+  ownContent?: string
+  /**
    * 1-based position in the order actually returned, so a consumer can label "Match #N" truthfully without
    * re-deriving it from a field that may describe a different ranking.
    */
@@ -255,4 +266,4 @@ function containsTokenPhrase(contentTokens: string[], phrase: string[]): boolean
 import { combineHybridScore, cosineSimilarity } from '@/lib/embeddings'
 
 export { chunkText, detectDocType, extractFileText } from './rag-chunking'
-export { retrieveRelevantChunks, invalidateRagCache, getRagCacheStats } from './rag-retrieval'
+export { retrieveRelevantChunks, invalidateRagCache, getRagCacheStats, rerankMergedChunks, ragRerankEnabled } from './rag-retrieval'

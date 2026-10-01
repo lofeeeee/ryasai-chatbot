@@ -41,6 +41,10 @@
 import { chatOnce } from '@/lib/llm-client'
 import { getRoleLlmConfig } from '@/lib/llm-config'
 import { retrieveRelevantChunks, selectTopRetrievedChunks, type RetrievedChunk } from '@/lib/rag'
+// Namespace import for the two names added after `@/lib/rag` was already mocked with a partial surface in several
+// test files: a NAMED import of a name a mock omits throws at module-evaluation time and surfaces as an unrelated
+// file failing. Read off the namespace, a missing name is just `undefined` and the caller degrades.
+import * as ragNs from '@/lib/rag'
 import { stampRetrievedRanks } from '@/lib/retrieval-rank'
 import { isPlaceholderChunk } from '@/lib/rag-chunking'
 import type { ChatHistoryEntry } from '@/lib/tool-utils'
@@ -774,10 +778,28 @@ export async function retrieveWithReflection(args: {
   const expansions = expandQuery(args.query).slice(0, MAX_EXPANSIONS)
 
   // 2. Retrieve with all expansions in parallel, merge + dedupe by chunkId
+  //
+  // RERANK ONCE, NOT ONCE PER EXPANSION. Each expansion used to run its own LLM rerank over its own candidates, so a
+  // three-variant query paid for three rerank calls (MEASURED: up to 3 `rag-rerank` calls in one turn, ~2 s each and
+  // billed to the customer's key). The expansions now return their un-reranked candidate pools; the pools are merged
+  // by agreement and ONE rerank picks the final members from the union. With a single expansion nothing is deferred,
+  // so that path is byte-for-byte what it was.
+  const canDeferRerank =
+    expansions.length > 1 && typeof ragNs.rerankMergedChunks === 'function' && ragNs.ragRerankEnabled?.() === true
   const allResults = await Promise.all(
-    expansions.map((q) => retrieveRelevantChunks({ query: q, topK: args.topK, documentIds: args.documentIds })),
+    expansions.map((q) =>
+      retrieveRelevantChunks({ query: q, topK: args.topK, documentIds: args.documentIds, _skipRerank: canDeferRerank }),
+    ),
   )
-  const merged = mergeRetrievalResults(allResults)
+  let merged = mergeRetrievalResults(allResults)
+  if (canDeferRerank) {
+    // The pool is capped at the size ONE retrieval would have handed the reranker, so the prompt does not grow with
+    // the number of expansions. `merged.chunks` is ordered by agreement then score, so the cap keeps the chunks the
+    // most passes found.
+    const pool = merged.chunks.slice(0, args.topK * 3)
+    const reranked = await ragNs.rerankMergedChunks(args.query, pool, args.topK)
+    merged = { ...merged, chunks: reranked }
+  }
 
   // 3. Reflect — is the evidence sufficient to answer?
   //

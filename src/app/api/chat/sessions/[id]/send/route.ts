@@ -9,6 +9,10 @@ import { generateSessionTitle, generateSessionSummary } from '@/lib/ai'
 import { stripSessionWrapper } from '@/lib/tool-utils'
 import { assertChatSendRateLimit, assertWithinBudget } from '@/lib/llm-budget'
 import { LlmProviderError } from '@/lib/llm-client-utils'
+import { enterTurnTiming, summarizeTurn, recordTurnMetrics } from '@/lib/turn-timing'
+import { scopedLogger } from '@/lib/logger'
+
+const log = scopedLogger('chat-send')
 
 // ponytail: hard ceiling for the whole handler (Next.js route segment config) —
 // the agentic loop can otherwise pin a worker for minutes across iterations.
@@ -202,6 +206,8 @@ export async function POST(req: NextRequest, ctx: RouteCtx) {
       session.title === 'Sesi Baru' ||
       session.title.trim().length === 0
     const started = Date.now()
+    // Opens the per-turn latency collector; every LLM call in this async context reports into it.
+    enterTurnTiming(started)
 
     // --- SSE stream ---
     const encoder = new TextEncoder()
@@ -341,6 +347,7 @@ export async function POST(req: NextRequest, ctx: RouteCtx) {
           // `next()` is then left to settle on its own; `return()` is still called to give a
           // well-behaved generator the chance to release its resources.
           let fullAnswer = ''
+          let firstTokenAt: number | null = null
           let timedOut = false
           /**
            * Resolved by onIdleTimeout so a stalled stream cannot hold the loop. Held in a boxed
@@ -382,6 +389,7 @@ export async function POST(req: NextRequest, ctx: RouteCtx) {
             if (idleTimer) clearTimeout(idleTimer)
             idleTimer = setTimeout(onIdleTimeout, IDLE_TIMEOUT_MS)
             const token = step.value ?? ''
+            if (firstTokenAt === null && token.length > 0) firstTokenAt = Date.now()
             fullAnswer += token
             send('token', { content: token })
           }
@@ -507,9 +515,15 @@ export async function POST(req: NextRequest, ctx: RouteCtx) {
           // and was never populated on this path. Emitted as part of `done` rather than a separate frame so a
           // client that only reads the last event still gets the counts, and omitted entirely when no LLM call
           // reported usage (a tool-only or cached turn) instead of claiming zeros.
+          const turnTimings = summarizeTurn(firstTokenAt)
+          if (turnTimings) {
+            recordTurnMetrics(turnTimings)
+            log.info('Chat turn timing', { ...turnTimings })
+          }
           send('done', {
             messageId: aiMessage.id,
             latencyMs: Date.now() - started,
+            ...(turnTimings ? { timings: turnTimings } : {}),
             ...(streaming.usage
               ? {
                   usage: {

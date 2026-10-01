@@ -44,7 +44,7 @@ export function getRagCacheStats(): { hits: number; misses: number; hitRate: num
   return { hits: _cacheHits, misses: _cacheMisses, hitRate: total === 0 ? 0 : _cacheHits / total }
 }
 
-function ragCacheKey(query: string, topK: number, documentIds: string[] | null | undefined): string | null {
+function ragCacheKey(query: string, topK: number, documentIds: string[] | null | undefined, skipRerank = false): string | null {
   // ponytail: org-scoped cache key — prevents cross-tenant data disclosure
   // (org A reading org B's cached retrieved chunks for the same query string).
   //
@@ -62,7 +62,11 @@ function ragCacheKey(query: string, topK: number, documentIds: string[] | null |
   // so two requests naming the same documents in a different order share a cache entry instead of
   // missing it. `null` (unrestricted) is a distinct segment, not an empty one.
   const scopeSegment = documentIds && documentIds.length > 0 ? [...documentIds].sort().join(',') : '*'
-  return `rag:${orgId}:${RANKING_VERSION}:${topK}:${scopeSegment}:${query.slice(0, 500).toLowerCase().trim()}`
+  const key = `rag:${orgId}:${RANKING_VERSION}:${topK}:${scopeSegment}:${query.slice(0, 500).toLowerCase().trim()}`
+  // A candidate pool (rerank deferred to the caller) is a DIFFERENT result from a reranked top-K for the same
+  // query, so it must not share an entry: serving one as the other would hand a caller the wrong stage of the
+  // pipeline with no error. The final-stage key is left EXACTLY as it was, so existing entries stay valid.
+  return skipRerank ? `${key}:pool` : key
 }
 
 export async function invalidateRagCache(): Promise<void> {
@@ -73,6 +77,12 @@ export async function retrieveRelevantChunks(args: {
   query: string
   topK: number
   _skipDecompose?: boolean
+  /**
+   * Return the fused CANDIDATE POOL (up to `topK * 3`) without running the reranker, so a caller that merges several
+   * retrievals can rerank ONCE over the union instead of once per retrieval. Only honoured while the reranker is
+   * enabled: with it off the pool and the final list are the same size and there is nothing to defer.
+   */
+  _skipRerank?: boolean
   /**
    * Restrict retrieval to these documents. `null`/absent = every document, which keeps every
    * existing caller behaving exactly as before.
@@ -102,7 +112,8 @@ export async function retrieveRelevantChunks(args: {
   // Resolved once per call, so the value that keys the cache entry is provably the
   // same one that orders the result — resolving twice would let a mid-call change
   // write a ranking under a key that no longer describes it.
-  const cacheKey = ragCacheKey(args.query, args.topK, args.documentIds)
+  const skipRerank = args._skipRerank === true && ragRerankEnabled()
+  const cacheKey = ragCacheKey(args.query, args.topK, args.documentIds, skipRerank)
   if (cacheKey) {
     const cached = await cacheGet<Awaited<ReturnType<typeof retrieveRelevantChunks>>>(cacheKey)
     if (cached) {
@@ -123,7 +134,7 @@ export async function retrieveRelevantChunks(args: {
     const subQueries = decomposeQuery(args.query)
     if (subQueries.length > 1) {
       const subResults = await Promise.all(
-        subQueries.map((q) => retrieveRelevantChunks({ query: q, topK: args.topK, _skipDecompose: true, documentIds: args.documentIds })),
+        subQueries.map((q) => retrieveRelevantChunks({ query: q, topK: args.topK, _skipDecompose: true, _skipRerank: args._skipRerank, documentIds: args.documentIds })),
       )
       const merged = mergeRetrievedResults(subResults)
       _cacheMisses += 1
@@ -158,7 +169,7 @@ export async function retrieveRelevantChunks(args: {
   // entirely when chunks.length <= topK. Opt OUT with RAG_LLM_RERANK=false.
   // (Was opt-in for years while CLAUDE.md claimed the opposite — the drift
   // meant the flagship precision feature never ran anywhere.)
-  const rerankEnabled = process.env.RAG_LLM_RERANK !== 'false'
+  const rerankEnabled = ragRerankEnabled()
   const retrievalTopK = rerankEnabled ? args.topK * 3 : args.topK
 
   const [kgResult, cogneeGraphContext] = await Promise.all([
@@ -179,9 +190,11 @@ export async function retrieveRelevantChunks(args: {
   const mergedChunks = retrievalResult.chunks
   const graphContext = kgResult.graphContext || cogneeGraphContext
 
-  const finalChunks = rerankEnabled
-    ? await dispatchRerank(args.query, mergedChunks, args.topK)
-    : selectTopRetrievedChunks(mergedChunks, args.topK)
+  const finalChunks = skipRerank
+    ? mergedChunks
+    : rerankEnabled
+      ? await dispatchRerank(args.query, mergedChunks, args.topK)
+      : selectTopRetrievedChunks(mergedChunks, args.topK)
 
   /*
    * Stamp the 1-based position in the order actually RETURNED. The UI labels these "Match #N" from array
@@ -233,6 +246,19 @@ export function parseRerankerScores(raw: string, chunkCount: number): { index: n
       && item.index >= 0 && item.index < chunkCount && item.score >= 3,
     )
     .sort((a, b) => b.score - a.score)
+}
+
+/** Whether the LLM/cross-encoder reranker is on. One predicate, so a caller deferring the rerank cannot disagree with it. */
+export function ragRerankEnabled(): boolean {
+  return process.env.RAG_LLM_RERANK !== 'false'
+}
+
+/**
+ * Rerank an already-merged candidate pool down to `topK`. The deferred half of `_skipRerank`: the caller merges
+ * several pools and pays for ONE rerank over the union.
+ */
+export async function rerankMergedChunks(query: string, chunks: RetrievedChunk[], topK: number): Promise<RetrievedChunk[]> {
+  return dispatchRerank(query, chunks, topK)
 }
 
 async function dispatchRerank(
@@ -428,6 +454,7 @@ async function retrieveAndFuse(args: {
     scored.push({
       chunkId: chunk.chunkId, documentId: chunk.documentId, documentName: chunk.documentName,
       chunkIndex: chunk.chunkIndex, content: chunk.content,
+      ...(ownContentOf(chunk) ? { ownContent: ownContentOf(chunk) } : {}),
       score,
       scoreBreakdown: {
         ...lexicalScore,
@@ -449,6 +476,17 @@ async function retrieveAndFuse(args: {
     embeddingMismatch: embeddingMismatched,
     embeddingModelUsed: queryEmbedding?.model ?? null,
   }
+}
+
+/**
+ * The chunk's text WITHOUT its context prefix, or undefined when it has none. The prefix is stripped only when
+ * `content` really starts with it (it is concatenated that way at load time), so a row whose stored prefix does not
+ * match is left alone rather than sliced at a wrong offset.
+ */
+export function ownContentOf(chunk: { content: string; contextPrefix: string | null }): string | undefined {
+  const prefix = chunk.contextPrefix
+  if (!prefix || !chunk.content.startsWith(prefix)) return undefined
+  return chunk.content.slice(prefix.length)
 }
 
 async function recallGraphContext(query: string, documentIds?: string[] | null): Promise<string> {

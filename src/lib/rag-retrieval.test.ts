@@ -1196,6 +1196,35 @@ describe('the last-resort candidate loader', () => {
     expect(found!.content.startsWith('Table: revenue — ')).toBe(true)
   })
 
+  test('the chunk\'s OWN text is carried beside the prefixed content, so a citation can show the passage that matched', async () => {
+    // MEASURED ON PRODUCTION: every chunk of one document carried the same ~377-char summary prefix, and a snippet is
+    // the first 240 characters of `content`, so three different sources displayed the identical summary.
+    const { retrieveRelevantChunks } = await import('./rag-retrieval')
+    ftsIds = []
+    vectorStoreResult = []
+    pgvectorRows = []
+    embedResult = []
+    embedConfigValue = null
+    allDocsFallback = [{ id: 'doc-1', name: 'report.pdf', chunks: [chunk('c1', 'Table: revenue — ')] }]
+
+    const found = (await retrieveRelevantChunks({ query: 'revenue', topK: 5 })).chunks.find((c) => c.chunkId === 'c1')!
+    expect(found.ownContent).toBe('quarterly revenue grew')
+    expect(found.content).toBe('Table: revenue — quarterly revenue grew')
+  })
+
+  test('a chunk with NO prefix carries no ownContent (content already is its own text)', async () => {
+    const { retrieveRelevantChunks } = await import('./rag-retrieval')
+    ftsIds = []
+    vectorStoreResult = []
+    pgvectorRows = []
+    embedResult = []
+    embedConfigValue = null
+    allDocsFallback = [{ id: 'doc-1', name: 'report.pdf', chunks: [chunk('c1')] }]
+
+    const found = (await retrieveRelevantChunks({ query: 'revenue', topK: 5 })).chunks.find((c) => c.chunkId === 'c1')!
+    expect('ownContent' in found).toBe(false)
+  })
+
   test('a genuinely EMPTY corpus short-circuits instead of scanning', async () => {
     const { retrieveRelevantChunks } = await import('./rag-retrieval')
     ftsIds = []
@@ -2043,5 +2072,21 @@ describe('the returned ORDER is explainable — rerankScore and rank', () => {
     const rows = [{ score: 0.9, chunkIndex: 0 }]
     const out = sortRetrievedChunks(rows) as Array<{ rerankScore?: number }>
     expect(out[0].rerankScore).toBeUndefined()
+  })
+})
+
+describe('ownContentOf', () => {
+  test('strips exactly the stored prefix', async () => {
+    const { ownContentOf } = await import('./rag-retrieval')
+    expect(ownContentOf({ content: 'From a.txt: summary\n\nthe passage', contextPrefix: 'From a.txt: summary\n\n' })).toBe('the passage')
+  })
+  test('a null or empty prefix yields undefined', async () => {
+    const { ownContentOf } = await import('./rag-retrieval')
+    expect(ownContentOf({ content: 'x', contextPrefix: null })).toBeUndefined()
+    expect(ownContentOf({ content: 'x', contextPrefix: '' })).toBeUndefined()
+  })
+  test('a prefix that is NOT at the start is left alone rather than sliced at a wrong offset', async () => {
+    const { ownContentOf } = await import('./rag-retrieval')
+    expect(ownContentOf({ content: 'unrelated text', contextPrefix: 'From a.txt: ' })).toBeUndefined()
   })
 })

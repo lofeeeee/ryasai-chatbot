@@ -24,9 +24,15 @@
  * answering in text with no tool call at all).
  *
  * COST, STATED PLAINLY. This runs on the customer's own LLM key (BYOK), so every
- * routing decision spends their tokens and adds ~1.4s. For a deployment where
- * that is unacceptable, `TOOL_SELECTION=heuristic` keeps the old path — the
- * fallback exists for that case, not as a silent degradation.
+ * routing decision spends their tokens and adds ~1.4s. There is NO switch back
+ * to the heuristic router: it was removed because it routed wrongly (3 of its 8
+ * measured cases), and a flag that restored it would restore those errors. An
+ * earlier revision of this comment promised `TOOL_SELECTION=heuristic`; nothing
+ * ever read that variable, so setting it did nothing. Two real levers exist:
+ *   - `SPECULATIVE_ROUTING=false` runs this call AFTER intent analysis instead of
+ *     alongside it (cheaper on plain-chat turns, slower on retrieval turns);
+ *   - `SIMPLE_PIPELINE=1` replaces the whole routing stack with the fast path in
+ *     `simple-pipeline.ts`, at the documented cost of the clarification guard.
  */
 import { chatOnce, type LlmToolDef } from '@/lib/llm-client'
 import { getLlmRuntimeConfig } from '@/lib/llm-config'

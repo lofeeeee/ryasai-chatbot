@@ -5,6 +5,7 @@
 import type { LlmMessage, LlmUsage } from './llm-client-types'
 import type { LlmRuntimeConfig } from '@/lib/llm-config'
 import { traceLlmCall } from '@/lib/observability'
+import { recordTurnLlmCall } from '@/lib/turn-timing'
 import { db } from '@/lib/db'
 import { getOrgContext } from '@/lib/prisma-tenant'
 import { logSwallowed } from '@/lib/logger'
@@ -50,6 +51,9 @@ export function logLlmUsage(
     latencyMs: latencyMs ?? 0,
     error: traceCtx?.error,
   })
+  // Reported for EVERY call, before the usage early-return below: a call that returned no
+  // token counts still cost the user wall-clock time, and it is the wait being measured.
+  recordTurnLlmCall(purpose, latencyMs ?? 0)
   if (!usage || (usage.totalTokens === 0 && usage.promptTokens === 0)) return
   if (!db.llmUsageLog) return
   const provider = cfg.provider ?? 'OPENAI_COMPATIBLE'

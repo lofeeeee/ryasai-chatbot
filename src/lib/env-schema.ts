@@ -53,6 +53,7 @@ const EnvSchema = z.object({
   COGNEE_SERVER_API_KEY: z.string().optional(),
   CONTEXTUAL_RETRIEVAL: z.enum(['true', 'false']).optional(),
   RAG_LLM_RERANK: z.enum(['true', 'false']).optional(),
+  SPECULATIVE_ROUTING: z.enum(['true', 'false']).optional(),
   REDIS_URL: z.string().url().optional(),
 
   // --- Agentic / RAG tuning (optional, sensible defaults in code) ---

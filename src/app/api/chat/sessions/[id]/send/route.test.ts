@@ -914,6 +914,21 @@ describe('send — the done frame carries token usage', () => {
     expect(doneFrame).toContain('"totalTokens":150')
   })
 
+  // The latency breakdown is only useful if it REACHES the client and the metrics. `route.ts` opens the collector
+  // with `enterTurnTiming` and reads it back with `summarizeTurn`; this drives the real handler and reads the frame,
+  // so it fails if either end is removed — not merely if the helper module exists.
+  test('the done frame carries the per-turn timing breakdown', async () => {
+    const res = await POST(makeRequest({ text: 'hello' }) as any, makeCtx())
+    const body = await res.text()
+    const doneFrame = body.slice(body.lastIndexOf('event: done'))
+    const data = JSON.parse(doneFrame.split('\n').find((l) => l.startsWith('data: '))!.slice(6))
+    expect(data.timings).toBeDefined()
+    for (const k of ['firstTokenMs', 'totalMs', 'preTokenLlmCalls', 'preTokenLlmMs', 'preTokenOtherMs', 'byPurpose']) {
+      expect(data.timings).toHaveProperty(k)
+    }
+    expect(data.timings.firstTokenMs).toBeLessThanOrEqual(data.timings.totalMs)
+  })
+
   test('with NO reported usage the frame omits the field instead of claiming 0 tokens', async () => {
     // A zero IS a measurement. Reporting it for an unmeasured turn would drag an average toward zero and be
     // indistinguishable from a genuinely free call.

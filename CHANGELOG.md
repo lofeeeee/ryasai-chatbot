@@ -5,6 +5,45 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] - 2026-10-01
+
+### Changed
+- **Document questions are answered about a fifth faster, with no answer getting worse.** The wait before the first
+  word of an answer was dominated by several AI calls made one after another. Two of them no longer queue behind
+  each other: the assistant now picks which source to use at the same moment it works out what you are asking, and
+  a question that is searched in several phrasings now ranks the combined results once instead of once per phrasing.
+  Measured on 15 policy questions run 3 times each, on the same machine: the median wait for the first word fell
+  from 9.3 s to 7.6 s, and the AI calls made before it from 6 to 4. All 45 answers stayed correct.
+  - The price, stated: a message that turns out to be plain conversation or a request for clarification now spends
+    one source-selection call it did not need, on your own AI provider key. Set `SPECULATIVE_ROUTING=false` to run
+    the two steps back to back instead.
+  - The slowest answers are not faster: the worst-case wait (95th percentile) is dominated by occasional provider
+    stalls of 30-60 s that this change does not address.
+
+### Added
+- **A per-turn timing breakdown.** Every chat reply now reports, in its final event, how long the first word took,
+  how many AI calls ran before it, and how long each kind of call took. The same figures are exported as
+  `chat_first_token_ms`, `chat_turn_total_ms` and `chat_pre_token_llm_calls` on `/api/metrics`. Without this the
+  question "where did the wait go" could only be guessed at.
+- **`bun run benchmark/latency-eval.ts`**, a harness that runs the real chat pipeline on a fixed question set and
+  checks each answer against the fact in the document, so a speed change can be rejected if it makes one answer
+  wrong. It includes questions the documents cannot answer, because a pipeline that got faster by trusting weak
+  evidence would show up there as an invented figure.
+
+### Fixed
+- **Source previews showed the document summary instead of the matching passage.** Every passage of one document
+  starts with the same summary, and a preview is the first 240 characters, so three different sources displayed the
+  identical text and none showed what actually matched. Previews now show the passage itself; the answer still
+  receives the summary as context.
+- **A documented setting that did nothing.** A code comment promised `TOOL_SELECTION=heuristic` as a way to switch
+  off per-turn source selection. Nothing ever read that variable. The comment now names the two settings that do
+  work, and a test fails if a promise like it returns.
+
+### Known
+- A question that combines something the documents answer with something they do not ("how many days of leave, and
+  what is the director's salary?") is answered correctly only about half the time, before and after this change.
+  It is sometimes sent to the database tool instead of the documents. Not addressed here.
+
 ## [1.6.2] - 2026-10-01
 
 ### Fixed

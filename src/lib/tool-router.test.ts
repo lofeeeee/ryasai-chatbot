@@ -212,6 +212,9 @@ let rewriteCalls = 0
 // Order log, assigned per test. null means "this seam is not being observed".
 let rewriteOrder: string[] | null = null
 let intentOrder: string[] | null = null
+// When set, the mocked analyzeIntent waits on it before answering — lets a test hold intent analysis open while it
+// inspects what ELSE has started. Null means "answer immediately", which is every pre-existing test.
+let intentGate: Promise<void> | null = null
 let smartRouteOrder: string[] | null = null
 let preparerOrder: string[] | null = null
 
@@ -233,7 +236,11 @@ mock.module('@/lib/intent-pipeline', () => ({
   // router mocks recorded zero calls while a stream was still produced, so tests passed while the
   // routing code never ran. The recorded arguments are kept for assertions, but the RESULT is the
   // `intentState` seam, which is what the seam's own comment always claimed it was.
-  analyzeIntent: async (a: Record<string, unknown>) => ({ ...orderIntentArgs(a as never), ...intentState.value }),
+  analyzeIntent: async (a: Record<string, unknown>) => {
+    const recorded = orderIntentArgs(a as never)
+    if (intentGate) await intentGate
+    return { ...recorded, ...intentState.value }
+  },
   rewriteQuery: async (a: { question: string }) => {
     rewriteCalls++
     rewriteOrder?.push('rewrite')
@@ -1508,6 +1515,113 @@ async function drainStream(stream: AsyncGenerator<string, void, unknown>): Promi
   return chunks
 }
 
+/**
+ * Run a body with speculative routing OFF, restoring the previous value afterwards.
+ *
+ * The tests wrapped in this assert the ORIGINAL contract — "a turn that intent analysis ends consults no router". With
+ * `SPECULATIVE_ROUTING` unset the router starts alongside intent analysis, so on such turns it IS consulted once and its
+ * result discarded; that is the stated price of the overlap, pinned by its own describe block below rather than
+ * hidden by loosening these. They stay green here so the flag's OFF path keeps the exact behaviour it had.
+ */
+async function withSequentialRouting<T>(fn: () => Promise<T>): Promise<T> {
+  const prev = process.env.SPECULATIVE_ROUTING
+  process.env.SPECULATIVE_ROUTING = 'false'
+  try { return await fn() } finally {
+    if (prev === undefined) delete process.env.SPECULATIVE_ROUTING
+    else process.env.SPECULATIVE_ROUTING = prev
+  }
+}
+
+describe('runStreamingChatCompletion — speculative routing', () => {
+  const setupRouted = () => {
+    mockIntegrationCount.mockImplementation(async () => 1)
+    mockIntegrationFindFirst.mockImplementation(async () => ({
+      id: 'int-1', name: 'Warehouse', provider: 'POSTGRESQL', encryptedConfig: 'enc',
+      schemas: [{ tableName: 'orders', columns: '[]', rowCount: 10, sampleRow: null }],
+    }))
+    intentState.value = { needsClarification: false, needsRetrieval: true }
+    mockSelectToolWithLlm.mockImplementation(async () => ({
+      toolId: 'sql', decision: 'SQL' as RouteDecision, args: {}, integrationId: 'int-1', reason: 'stub', llmUsed: true,
+    }))
+  }
+  const until = async (cond: () => boolean, ms = 500) => {
+    const t0 = Date.now()
+    while (!cond() && Date.now() - t0 < ms) await new Promise((r) => setTimeout(r, 5))
+    return cond()
+  }
+
+  test('the selector STARTS while intent analysis is still running', async () => {
+    setupRouted()
+    let release!: () => void
+    intentGate = new Promise<void>((r) => { release = r })
+    try {
+      const turn = runStreamingChatCompletion({ question: 'q', userId: 'u1' })
+      // Intent is parked on the gate, so the selector can only have been called if routing did not wait for it.
+      const started = await until(() => mockSelectToolWithLlm.mock.calls.length > 0)
+      release()
+      await turn
+      expect(started).toBe(true)
+    } finally { intentGate = null; release?.() }
+  })
+
+  test('with the flag OFF the selector waits for intent analysis, as before', async () => {
+    setupRouted()
+    let release!: () => void
+    intentGate = new Promise<void>((r) => { release = r })
+    try {
+      await withSequentialRouting(async () => {
+        const turn = runStreamingChatCompletion({ question: 'q', userId: 'u1' })
+        const startedEarly = await until(() => mockSelectToolWithLlm.mock.calls.length > 0, 150)
+        expect(startedEarly).toBe(false)
+        release()
+        await turn
+        expect(mockSelectToolWithLlm.mock.calls.length).toBe(1)
+      })
+    } finally { intentGate = null; release?.() }
+  })
+
+  test('a turn that intent analysis ENDS discards the speculative result: it asks, it does not route', async () => {
+    setupRouted()
+    intentState.value = { needsClarification: true, clarificationQuestion: 'Which database?', needsRetrieval: true }
+    const result = await runStreamingChatCompletion({ question: 'q', userId: 'u1' })
+    expect(await drainStream(result.stream)).toEqual(['Which database?'])
+    // No branch preparer ran: the answer is the question, not a routed result.
+    expect(streamCalls).toHaveLength(0)
+  })
+
+  test('a speculative selector that REJECTS on a turn that never uses it does not become an unhandled rejection', async () => {
+    setupRouted()
+    intentState.value = { needsClarification: false, needsRetrieval: false }
+    mockSelectToolWithLlm.mockImplementation(async () => { throw new Error('provider blip') })
+    const seen: unknown[] = []
+    const onUnhandled = (e: unknown) => { seen.push(e) }
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      const result = await runStreamingChatCompletion({ question: 'q', userId: 'u1' })
+      expect(await drainStream(result.stream)).toEqual(['streamed'])
+      await new Promise((r) => setTimeout(r, 30))
+      expect(seen).toEqual([])
+    } finally { process.off('unhandledRejection', onUnhandled) }
+  })
+
+  test('a selector failure on a turn that DOES need routing still fails the turn (it is not swallowed)', async () => {
+    setupRouted()
+    mockSelectToolWithLlm.mockImplementation(async () => { throw new Error('provider blip') })
+    await expect(runStreamingChatCompletion({ question: 'q', userId: 'u1' })).rejects.toThrow('provider blip')
+  })
+
+  test('the routed result is the same as the sequential one', async () => {
+    setupRouted()
+    const spec = await runStreamingChatCompletion({ question: 'q', userId: 'u1' })
+    const specFirst = streamCalls[0]?.name
+    streamCalls.length = 0
+    const seq = await withSequentialRouting(() => runStreamingChatCompletion({ question: 'q', userId: 'u1' }))
+    expect(streamCalls[0]?.name).toBe(specFirst)
+    expect(specFirst).toBe('prepareSqlStream')
+    expect(await drainStream(spec.stream)).toEqual(await drainStream(seq.stream))
+  })
+})
+
 describe('runStreamingChatCompletion — the streamed dispatcher', () => {
   /**
    * One integration + one schema row, set LOCALLY inside each routed test.
@@ -1618,25 +1732,27 @@ describe('runStreamingChatCompletion — the streamed dispatcher', () => {
   })
 
   test('a clarification question streams as the ONLY chunk with an empty shape', async () => {
-    // MEASURED: `intentState.value` is returned by reference, and the real
-    // analyzeIntent MUTATES it (`parsed.clarificationQuestion = undefined`) when
-    // it overrides a clarification. Once any test in this file has done that, a
-    // later `{ clarificationQuestion: '...' }` assignment replaces the whole
-    // object, so this fixture is fine — but a test that only toggled the flag
-    // would silently stop clarifying. Asserted through the stream either way.
-    intentState.value = { needsClarification: true, clarificationQuestion: 'Which database?', needsRetrieval: true }
-    const result = await runStreamingChatCompletion({ question: 'q', userId: 'u1' })
-    const chunks = await drainStream(result.stream)
-    // Asking is not answering: routing a tool here would answer a question the
-    // router just decided it could not understand.
-    expect(chunks).toEqual(['Which database?'])
-    expect(result.toolRuns).toEqual([])
-    expect(result.citations).toEqual([])
-    expect(result.chartData).toBeNull()
-    // No preparer and no routing may have run — the turn ended at the intent gate.
-    expect(streamCalls).toHaveLength(0)
-    expect(mockSelectToolWithLlm).toHaveBeenCalledTimes(0)
-    expect(mockRouteQuery).toHaveBeenCalledTimes(0)
+    await withSequentialRouting(async () => {
+      // MEASURED: `intentState.value` is returned by reference, and the real
+      // analyzeIntent MUTATES it (`parsed.clarificationQuestion = undefined`) when
+      // it overrides a clarification. Once any test in this file has done that, a
+      // later `{ clarificationQuestion: '...' }` assignment replaces the whole
+      // object, so this fixture is fine — but a test that only toggled the flag
+      // would silently stop clarifying. Asserted through the stream either way.
+      intentState.value = { needsClarification: true, clarificationQuestion: 'Which database?', needsRetrieval: true }
+      const result = await runStreamingChatCompletion({ question: 'q', userId: 'u1' })
+      const chunks = await drainStream(result.stream)
+      // Asking is not answering: routing a tool here would answer a question the
+      // router just decided it could not understand.
+      expect(chunks).toEqual(['Which database?'])
+      expect(result.toolRuns).toEqual([])
+      expect(result.citations).toEqual([])
+      expect(result.chartData).toBeNull()
+      // No preparer and no routing may have run — the turn ended at the intent gate.
+      expect(streamCalls).toHaveLength(0)
+      expect(mockSelectToolWithLlm).toHaveBeenCalledTimes(0)
+      expect(mockRouteQuery).toHaveBeenCalledTimes(0)
+    })
   })
 
   test('skipClarification suppresses the question and routes instead', async () => {
@@ -1650,37 +1766,41 @@ describe('runStreamingChatCompletion — the streamed dispatcher', () => {
   })
 
   test('a clarification with FALSY question text falls through instead of yielding empty', async () => {
-    intentState.value = { needsClarification: true, clarificationQuestion: '', needsRetrieval: false }
-    const result = await runStreamingChatCompletion({ question: 'hello', userId: 'u1' })
-    const chunks = await drainStream(result.stream)
-    // Both flags are required; an empty string must not become an empty stream.
-    expect(chunks).toEqual(['streamed'])
-    // When needsRetrieval is false the chat preparer is the correct exit, and the
-    // routing stack must not have been consulted at all.
-    expect(streamCalls[0].name).toBe('prepareChatStream')
-    expect(mockSelectToolWithLlm).toHaveBeenCalledTimes(0)
+    await withSequentialRouting(async () => {
+      intentState.value = { needsClarification: true, clarificationQuestion: '', needsRetrieval: false }
+      const result = await runStreamingChatCompletion({ question: 'hello', userId: 'u1' })
+      const chunks = await drainStream(result.stream)
+      // Both flags are required; an empty string must not become an empty stream.
+      expect(chunks).toEqual(['streamed'])
+      // When needsRetrieval is false the chat preparer is the correct exit, and the
+      // routing stack must not have been consulted at all.
+      expect(streamCalls[0].name).toBe('prepareChatStream')
+      expect(mockSelectToolWithLlm).toHaveBeenCalledTimes(0)
+    })
   })
 
   test('needsRetrieval=false goes straight to prepareChatStream with the EFFECTIVE question', async () => {
-    intentState.value = { needsClarification: false, needsRetrieval: false }
-    await runStreamingChatCompletion({
-      question: 'what is the procedure?',
-      userId: 'u1',
-      systemPromptPrefix: 'Be terse.',
-      chatHistory: [{ role: 'user', content: 'annual leave' }, { role: 'assistant', content: 'ok' }],
+    await withSequentialRouting(async () => {
+      intentState.value = { needsClarification: false, needsRetrieval: false }
+      await runStreamingChatCompletion({
+        question: 'what is the procedure?',
+        userId: 'u1',
+        systemPromptPrefix: 'Be terse.',
+        chatHistory: [{ role: 'user', content: 'annual leave' }, { role: 'assistant', content: 'ok' }],
+      })
+      expect(chatStreamArgs).toHaveLength(1)
+      const sent = chatStreamArgs[0]
+      // The assertion that matters: a follow-up that is answered WITHOUT retrieval
+      // must still carry the rewritten question, or the answer is generated from
+      // "what is the procedure?" with no subject.
+      expect(sent.question).toBe(effectiveQuestionValue)
+      expect(sent.question).not.toBe('what is the procedure?')
+      expect(sent.systemPromptPrefix).toBe('Be terse.')
+      expect(sent.memoryContext).toBe(memoryContextValue)
+      // Routing is unnecessary: the intent gate already decided no tool is needed.
+      expect(mockSelectToolWithLlm).toHaveBeenCalledTimes(0)
+      expect(mockRouteQuery).toHaveBeenCalledTimes(0)
     })
-    expect(chatStreamArgs).toHaveLength(1)
-    const sent = chatStreamArgs[0]
-    // The assertion that matters: a follow-up that is answered WITHOUT retrieval
-    // must still carry the rewritten question, or the answer is generated from
-    // "what is the procedure?" with no subject.
-    expect(sent.question).toBe(effectiveQuestionValue)
-    expect(sent.question).not.toBe('what is the procedure?')
-    expect(sent.systemPromptPrefix).toBe('Be terse.')
-    expect(sent.memoryContext).toBe(memoryContextValue)
-    // Routing is unnecessary: the intent gate already decided no tool is needed.
-    expect(mockSelectToolWithLlm).toHaveBeenCalledTimes(0)
-    expect(mockRouteQuery).toHaveBeenCalledTimes(0)
   })
 
   test('analyzeIntent sees the EFFECTIVE question when there is history', async () => {
@@ -2027,44 +2147,46 @@ describe('runStreamingChatCompletion — the streamed dispatcher', () => {
   })
 
   test('the side effects happen in order: rewrite, intent, routing, branch', async () => {
-    // A shared event log: each seam appends its own name as it is entered, so the
-    // assertion is about ORDER rather than about any one value. Routing before
-    // intent, or a branch before routing, is invisible in the returned result.
-    const order: string[] = []
-    rewriteOrder = order
-    intentOrder = order
-    smartRouteOrder = order
-    preparerOrder = order
-    try {
-      useOneIntegration()
-      needsRetrieval()
-      // History is present so the REWRITE step actually happens (without it `rewriteQuery` is never
-      // consulted and the first event would be missing), which also means the router is `routeQuery`.
-      // `smartRouteOrder` is the shared log for both router mocks, so either one records 'smartRoute'.
-      // The SELECTOR is the router now, so it records the routing step. The
-      // order guarantee itself is unchanged and still worth pinning: routing
-      // before intent, or a branch before routing, is invisible in the result.
-      mockSelectToolWithLlm.mockImplementation(async () => {
-        smartRouteOrder?.push('smartRoute')
-        return {
-          toolId: 'sql', decision: 'SQL' as RouteDecision, args: {},
-          integrationId: 'int-1', reason: 'test', llmUsed: true,
-        }
-      })
-      await runStreamingChatCompletion({
-        question: 'q',
-        userId: 'u1',
-        chatHistory: [{ role: 'user', content: 'prior' }],
-      })
-    } finally {
-      rewriteOrder = null
-      intentOrder = null
-      smartRouteOrder = null
-      preparerOrder = null
-    }
-    // Order, not merely membership: routing before intent, or a branch before routing, is invisible
-    // in the returned result.
-    expect(order).toEqual(['rewrite', 'analyzeIntent', 'smartRoute', 'prepareSqlStream'])
+    await withSequentialRouting(async () => {
+      // A shared event log: each seam appends its own name as it is entered, so the
+      // assertion is about ORDER rather than about any one value. Routing before
+      // intent, or a branch before routing, is invisible in the returned result.
+      const order: string[] = []
+      rewriteOrder = order
+      intentOrder = order
+      smartRouteOrder = order
+      preparerOrder = order
+      try {
+        useOneIntegration()
+        needsRetrieval()
+        // History is present so the REWRITE step actually happens (without it `rewriteQuery` is never
+        // consulted and the first event would be missing), which also means the router is `routeQuery`.
+        // `smartRouteOrder` is the shared log for both router mocks, so either one records 'smartRoute'.
+        // The SELECTOR is the router now, so it records the routing step. The
+        // order guarantee itself is unchanged and still worth pinning: routing
+        // before intent, or a branch before routing, is invisible in the result.
+        mockSelectToolWithLlm.mockImplementation(async () => {
+          smartRouteOrder?.push('smartRoute')
+          return {
+            toolId: 'sql', decision: 'SQL' as RouteDecision, args: {},
+            integrationId: 'int-1', reason: 'test', llmUsed: true,
+          }
+        })
+        await runStreamingChatCompletion({
+          question: 'q',
+          userId: 'u1',
+          chatHistory: [{ role: 'user', content: 'prior' }],
+        })
+      } finally {
+        rewriteOrder = null
+        intentOrder = null
+        smartRouteOrder = null
+        preparerOrder = null
+      }
+      // Order, not merely membership: routing before intent, or a branch before routing, is invisible
+      // in the returned result.
+      expect(order).toEqual(['rewrite', 'analyzeIntent', 'smartRoute', 'prepareSqlStream'])
+    })
   })
 
 

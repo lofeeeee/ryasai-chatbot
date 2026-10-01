@@ -95,3 +95,28 @@ describe('tool-selector — an empty reply is not a decision', () => {
     expect(src).toMatch(/model answered in text \(no tool needed\)/)
   })
 })
+
+describe('tool-selector — no promise of a switch that does nothing', () => {
+  test('TOOL_SELECTION is not documented as a working option, because nothing reads it', async () => {
+    // The header once promised `TOOL_SELECTION=heuristic`. Setting it changed nothing, so an operator who set it
+    // believed they had opted out of per-turn routing cost and had not. A flag is only real if some code reads it.
+    const src = await Bun.file(new URL('./tool-selector.ts', import.meta.url)).text()
+    const readers = (await Array.fromAsync(new Bun.Glob('src/**/*.ts').scan({ cwd: process.cwd() })))
+      .filter((f) => !f.endsWith('.test.ts'))
+    let reads = 0
+    for (const f of readers) {
+      const text = await Bun.file(f).text()
+      if (/process\.env\.TOOL_SELECTION/.test(text)) reads += 1
+    }
+    const promisesIt = /`TOOL_SELECTION=heuristic`\s+keeps/.test(src)
+    // Either the flag is honoured by code, or the comment must not promise it.
+    expect(reads > 0 || !promisesIt).toBe(true)
+  })
+
+  test('the levers the header now names really are read by code', async () => {
+    const router = await Bun.file(new URL('./tool-router.ts', import.meta.url)).text()
+    const simple = await Bun.file(new URL('./simple-pipeline.ts', import.meta.url)).text()
+    expect(/process\.env\.SPECULATIVE_ROUTING/.test(router)).toBe(true)
+    expect(/process\.env\.SIMPLE_PIPELINE/.test(simple)).toBe(true)
+  })
+})
