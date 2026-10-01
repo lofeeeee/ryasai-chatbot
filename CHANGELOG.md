@@ -5,6 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.3] - 2026-10-01
+
+### Security
+- **The last two known advisories are closed: `bun audit` now reports none.** Both sat in the database
+  command-line tool that runs when the application starts, and both were pinned exactly by that tool's own
+  configuration package, so a normal update could not move them. They had been accepted as low-risk; they are
+  now fixed instead, after checking what the fix does to the one command that matters. The real start-up
+  command was run, unchanged, inside the actual scheduler image built from the new lockfile: it applied the
+  schema and a second run reported nothing to do. The replacement merge library returned identical output to
+  the old one on every case a configuration file exercises.
+- The test that guards this no longer lists them as accepted. It now fails if any of the three held-back
+  packages resolves below its fixed version, in the lockfile or in what is installed.
+
 ## [1.7.2] - 2026-10-01
 
 ### Fixed

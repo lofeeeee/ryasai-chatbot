@@ -1,6 +1,6 @@
 {
   "name": "ryasai-chatbot",
-  "version": "1.7.2",
+  "version": "1.7.3",
   "private": true,
   "scripts": {
     "dev": "bun scripts/dev.ts",
@@ -115,6 +115,8 @@
     "bun": ">=1.4.2"
   },
   "overrides": {
+    "deepmerge-ts": "8.0.2",
+    "effect": "3.20.0",
     "prismjs": "1.30.0"
   }
 }
