@@ -1,6 +1,9 @@
 import crypto from 'crypto'
 import { db } from '@/lib/db'
 import { getOrgContext } from '@/lib/prisma-tenant'
+import { scopedLogger } from '@/lib/logger'
+
+const log = scopedLogger('doc-versioning')
 
 export interface DocVersionSnapshot {
   id: string
@@ -98,6 +101,28 @@ export async function restoreDocVersion(
       const { text } = await extractFileText(file)
       const chunks = chunkText(text)
 
+      /*
+       * Order matters, and the missing first step left ORPHANS: `KgRelation.chunkId` points at a chunk id, so
+       * deleting the chunks first left relation rows naming ids that no longer exist. MEASURED: 131 of 131 rows in a
+       * development database were orphaned this way, against 0 in production — the shape of a bug that only shows up
+       * after someone restores a version. The rows are deleted FIRST here, in the same operation that removes the
+       * chunks they describe, so the two cannot drift apart.
+       *
+       * A `try` block, NOT `.catch()` chained onto the promise. The first version used `.catch()` and MEASURED it
+       * was not equivalent: a deployment (or a test double) whose `db` has no `kgRelation` delegate throws
+       * SYNCHRONOUSLY while building the call, before any promise exists to catch it — so the throw escaped the
+       * handler, aborted the whole restore, and left the document with its chunks already deleted. Cleaning the
+       * graph is best-effort; replacing the document's content is not.
+       */
+      try {
+        const ownChunks = await db.documentChunk.findMany({ where: { documentId }, select: { id: true } })
+        await db.kgRelation.deleteMany({ where: { chunkId: { in: ownChunks.map((c) => c.id) } } })
+      } catch (e) {
+        log.warn('could not clean knowledge-graph rows for a restored document; continuing with the restore', {
+          documentId,
+          error: e instanceof Error ? e.message : String(e),
+        })
+      }
       // Delete existing chunks, then re-insert the restored content.
       await db.documentChunk.deleteMany({ where: { documentId } })
       await db.documentChunk.createMany({

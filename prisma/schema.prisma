@@ -19,17 +19,17 @@ datasource db {
 // Organization — tenant root entity
 // ------------------------------------------------------------------
 model Organization {
-  id                  String   @id @default(cuid())
-  name                String
-  slug                String   @unique
-  brandingJson        String?
-  licenseKey          String?  // license key from License-Validator
-  licensePlan         String?  // flat | enterprise | pro | starter
-  licenseStatus       String   @default("none") // none | valid | expired | invalid | suspended | unpaid
-  licenseValidatedAt  DateTime?
-  licenseExpiresAt    DateTime?
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
+  id                 String    @id @default(cuid())
+  name               String
+  slug               String    @unique
+  brandingJson       String?
+  licenseKey         String? // license key from License-Validator
+  licensePlan        String? // flat | enterprise | pro | starter
+  licenseStatus      String    @default("none") // none | valid | expired | invalid | suspended | unpaid
+  licenseValidatedAt DateTime?
+  licenseExpiresAt   DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
   users               User[]
   invitations         Invitation[]
@@ -67,19 +67,19 @@ model Organization {
 // Order — QRIS subscription purchase (Midtrans Snap)
 // ------------------------------------------------------------------
 model Order {
-  id                   String    @id @default(cuid())
-  organizationId       String
-  months               Int
-  amountIdr            Int
-  currency             String    @default("IDR")
-  midtransOrderId      String    @unique
-  snapToken            String?
-  status               String    @default("pending") // pending | settlement | expire | deny | cancel | failure
-  paidAt               DateTime?
-  licenseKeyIssued     String?
-  rawNotificationJson  String?
-  createdAt            DateTime  @default(now())
-  updatedAt            DateTime  @updatedAt
+  id                  String    @id @default(cuid())
+  organizationId      String
+  months              Int
+  amountIdr           Int
+  currency            String    @default("IDR")
+  midtransOrderId     String    @unique
+  snapToken           String?
+  status              String    @default("pending") // pending | settlement | expire | deny | cancel | failure
+  paidAt              DateTime?
+  licenseKeyIssued    String?
+  rawNotificationJson String?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
@@ -90,15 +90,15 @@ model Order {
 // Invitation — email invite to join an org
 // ------------------------------------------------------------------
 model Invitation {
-  id              String   @id @default(cuid())
-  organizationId  String
-  email           String
-  role            String   @default("viewer") // admin | analyst | viewer
-  token           String   @unique
-  invitedBy       String
-  status          String   @default("pending") // pending | accepted | expired
-  expiresAt       DateTime
-  createdAt       DateTime @default(now())
+  id             String   @id @default(cuid())
+  organizationId String
+  email          String
+  role           String   @default("viewer") // admin | analyst | viewer
+  token          String   @unique
+  invitedBy      String
+  status         String   @default("pending") // pending | accepted | expired
+  expiresAt      DateTime
+  createdAt      DateTime @default(now())
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
@@ -110,20 +110,20 @@ model Invitation {
 // User — belongs to one org, email globally unique (1 user = 1 org)
 // ------------------------------------------------------------------
 model User {
-  id              String   @id @default(cuid())
-  email           String   @unique
-  name            String
-  passwordHash    String
-  avatarColor     String   @default("oklch(0.55 0.18 250)")
-  isActive        Boolean  @default(true)
-  sessionVersion  Int      @default(0)
-  ssoSubject      String?  // OIDC sub / SAML NameID — links SSO identity
-  role            String   @default("viewer") // admin | analyst | viewer
-  organizationId  String
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id             String   @id @default(cuid())
+  email          String   @unique
+  name           String
+  passwordHash   String
+  avatarColor    String   @default("oklch(0.55 0.18 250)")
+  isActive       Boolean  @default(true)
+  sessionVersion Int      @default(0)
+  ssoSubject     String? // OIDC sub / SAML NameID — links SSO identity
+  role           String   @default("viewer") // admin | analyst | viewer
+  organizationId String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
-  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organization Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   chatSessions ChatSession[]
   auditLogs    AuditLog[]
   messages     ChatMessage[]
@@ -138,13 +138,13 @@ model User {
 // Dynamic Connector — encrypted config blob
 // ------------------------------------------------------------------
 model Integration {
-  id              String   @id @default(cuid())
+  id              String    @id @default(cuid())
   organizationId  String
   name            String
-  type            String   // DATABASE | API
-  provider        String   // POSTGRESQL | MYSQL | MSSQL | REST_API
-  encryptedConfig String   // AES-256-GCM hex blob (nonce + ciphertext)
-  status          String   @default("active") // active | inactive | error
+  type            String // DATABASE | API
+  provider        String // POSTGRESQL | MYSQL | MSSQL | REST_API
+  encryptedConfig String // AES-256-GCM hex blob (nonce + ciphertext)
+  status          String    @default("active") // active | inactive | error
   lastTestedAt    DateTime?
   lastTestOk      Boolean?
   /// LLM-generated business context: domain overview, table relationships,
@@ -153,32 +153,32 @@ model Integration {
   businessContext String?
   /// Admin-editable context prompt injected into SQL answer synthesis when
   /// this integration is used. Empty by default → injects nothing.
-  contextPrompt    String?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  contextPrompt   String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
-  organization     Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  schemas          IntegrationSchema[]
-  queryHistory     QueryHistory[]
-  chatMessages     ChatMessage[]
-  scheduledRuns    ScheduledRun[]
+  organization  Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  schemas       IntegrationSchema[]
+  queryHistory  QueryHistory[]
+  chatMessages  ChatMessage[]
+  scheduledRuns ScheduledRun[]
 
   @@index([organizationId])
 }
 
 model IntegrationSchema {
-  id              String   @id @default(cuid())
-  organizationId  String
-  integrationId   String
-  tableName       String
-  columns         String   // JSON: [{name,type,pk,notnull,fk,distinctValues}]
-  rowCount        Int?
-  sampleRow       String?  // JSON: {col: value} — 1 representative row for LLM format understanding
-  description     String?  // LLM-generated natural language summary of this table
+  id                String   @id @default(cuid())
+  organizationId    String
+  integrationId     String
+  tableName         String
+  columns           String // JSON: [{name,type,pk,notnull,fk,distinctValues}]
+  rowCount          Int?
+  sampleRow         String? // JSON: {col: value} — 1 representative row for LLM format understanding
+  description       String? // LLM-generated natural language summary of this table
   /// When true, enrichSchemaDescriptions MUST skip this row — an admin has
   /// manually edited `description` and the edit must survive re-enrichment.
-  manualDescription Boolean @default(false)
-  reflectedAt     DateTime @default(now())
+  manualDescription Boolean  @default(false)
+  reflectedAt       DateTime @default(now())
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   integration  Integration  @relation(fields: [integrationId], references: [id], onDelete: Cascade)
@@ -191,23 +191,23 @@ model IntegrationSchema {
 // LLM provider configuration — multiple configs (chat vs agent), per-org
 // ------------------------------------------------------------------
 model LlmConfig {
-  id              String   @id @default(cuid())
-  organizationId  String
-  purpose         String   // chat | agent
-  provider        String   @default("OPENAI_COMPATIBLE")
-  baseUrl         String
-  encryptedApiKey String
-  model           String
-  availableModels String?  // JSON: string[]
-  lastModelSyncAt DateTime?
+  id                       String    @id @default(cuid())
+  organizationId           String
+  purpose                  String // chat | agent
+  provider                 String    @default("OPENAI_COMPATIBLE")
+  baseUrl                  String
+  encryptedApiKey          String
+  model                    String
+  availableModels          String? // JSON: string[]
+  lastModelSyncAt          DateTime?
   embeddingProvider        String?
   embeddingBaseUrl         String?
   encryptedEmbeddingApiKey String?
   embeddingModel           String?
   embeddingAvailableModels String?
   lastEmbeddingModelSyncAt DateTime?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  createdAt                DateTime  @default(now())
+  updatedAt                DateTime  @updatedAt
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
@@ -219,45 +219,50 @@ model LlmConfig {
 // RAG — documents & semantic chunks
 // ------------------------------------------------------------------
 model Document {
-  id              String    @id @default(cuid())
-  organizationId  String
-  name            String
-  type            String    // pdf | docx | xlsx | txt | md
-  sizeBytes       Int
-  mimeType        String
-  status          String    @default("processing") // processing | ready | error
-  isEnabled       Boolean   @default(true)
-  category        String?   // SOP | KEBIJAKAN | FINANSIAL | INVOICE | LAINNYA
-  description     String?
+  id             String    @id @default(cuid())
+  organizationId String
+  name           String
+  type           String // pdf | docx | xlsx | txt | md
+  sizeBytes      Int
+  mimeType       String
+  status         String    @default("processing") // processing | ready | error
+  isEnabled      Boolean   @default(true)
+  category       String? // SOP | KEBIJAKAN | FINANSIAL | INVOICE | LAINNYA
+  description    String?
   /// Admin-editable context prompt prepended to RAG answer synthesis when
   /// chunks from this document contribute to an answer. Empty → no-op.
-  contextPrompt   String?
-  contentText     String
-  uploadPath      String?
-  cognifyStatus   String?   // null | processing | completed | failed
-  cognifyError    String?
-  cognifiedAt     DateTime?
-  version         Int       @default(1)
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  contextPrompt  String?
+  contentText    String
+  uploadPath     String?
+  cognifyStatus  String? // null | processing | completed | failed
+  cognifyError   String?
+  cognifiedAt    DateTime?
+  version        Int       @default(1)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
-  organization Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   chunks       DocumentChunk[]
   versions     DocumentVersion[]
 
   @@index([organizationId])
+  // The document list reads `status:'ready', isEnabled:true` (plus an optional category) and orders by `createdAt
+  // desc`, ALL of it org-scoped by the tenant extension — so the composite leads with organizationId. The plain
+  // `organizationId` index above cannot serve that ordering, which means sorting every document the org owns on
+  // every load of the Knowledge screen.
+  @@index([organizationId, status, isEnabled, createdAt])
 }
 
 model DocumentChunk {
-  id              String   @id @default(cuid())
-  organizationId  String
-  documentId      String
-  chunkIndex      Int
-  content         String
-  tokenCount      Int?
-  keywords        String?
-  contextPrefix   String?
-  embeddingJson   String?
+  id                String                      @id @default(cuid())
+  organizationId    String
+  documentId        String
+  chunkIndex        Int
+  content           String
+  tokenCount        Int?
+  keywords          String?
+  contextPrefix     String?
+  embeddingJson     String?
   /// Cosine-search column. The dimension MUST equal the configured embedding
   /// model's output dimension, and Prisma cannot check this because
   /// `Unsupported` is passed through verbatim to Postgres.
@@ -274,7 +279,7 @@ model DocumentChunk {
   /// column, and stores `embeddingJson` instead; retrieval then silently degrades
   /// to lexical-only ranking while still reporting a `semanticSimilarity`, so the
   /// vector leg looks healthy in the UI while contributing nothing to order.
-  embedding       Unsupported("vector(384)")?
+  embedding         Unsupported("vector(384)")?
   /// Full-text search column, written and read by `rag-fts.ts`
   /// (`UPDATE "DocumentChunk" SET tsv = to_tsvector(...)`, `-ts_rank(tsv, ...)`).
   ///
@@ -290,11 +295,11 @@ model DocumentChunk {
   /// `Unsupported` because Prisma has no `tsvector` type: it passes the type through verbatim and
   /// stops managing the column, so the runtime DDL remains the creator while `db push` leaves it
   /// alone. The two no longer disagree.
-  tsv             Unsupported("tsvector")?
+  tsv               Unsupported("tsvector")?
   embeddingProvider String?
-  embeddingModel  String?
-  embeddedAt      DateTime?
-  createdAt       DateTime @default(now())
+  embeddingModel    String?
+  embeddedAt        DateTime?
+  createdAt         DateTime                    @default(now())
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   document     Document     @relation(fields: [documentId], references: [id], onDelete: Cascade)
@@ -309,17 +314,39 @@ model DocumentChunk {
 // Knowledge Graph — entity-relation extraction
 // ------------------------------------------------------------------
 model KgRelation {
-  id              String   @id @default(cuid())
-  organizationId  String
-  chunkId         String
-  source          String
-  target          String
-  description     String
-  keywords        String   @default("")
-  createdAt       DateTime @default(now())
+  id             String   @id @default(cuid())
+  organizationId String
+  chunkId        String
+  source         String
+  target         String
+  description    String
+  keywords       String   @default("")
+  createdAt      DateTime @default(now())
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
+  /*
+   * NO FOREIGN KEY ON `chunkId`, AND THAT IS DELIBERATE — with the measurement that decided it.
+   *
+   * The column is a loose string, so deleting chunks (a version restore, or a re-upload) left rows naming chunk ids
+   * that no longer exist: MEASURED, 131 of 131 rows orphaned in a development database, 0 in production. The graph's
+   * global level then looks those ids up, finds nothing, and contributes no candidates — which reads as "no entities
+   * matched" rather than as a broken graph.
+   *
+   * `doc-versioning.ts` now deletes the relation rows in the same operation that deletes their chunks, which is the
+   * real fix. The constraint itself is NOT added, because it cannot be added non-destructively:
+   *
+   *   - `prisma db push` runs in the `migrate` service on EVERY boot, BEFORE the app starts, so a runtime cleanup
+   *     cannot run first. MEASURED, on a clone of a real database holding 131 orphans:
+   *         Error: insert or update on table "KgRelation" violates foreign key constraint "KgRelation_chunkId_fkey"
+   *     and the migrate container exits non-zero — the app never starts. That is the exact failure mode recorded for
+   *     the `tsv` column (see `DocumentChunk.tsv`): a schema push that refuses on legacy data is a failed install.
+   *   - `onDelete: NoAction` does not help; adding the constraint still VALIDATES existing rows.
+   *   - A `NOT VALID` constraint would be invisible to Prisma, which manages this table and would treat it as drift.
+   *
+   * So the FK stays out, and `scripts/cleanup-kg-orphans.ts` exists for operators whose database already has
+   * orphans. Once a cleanup has been verified in the field, the constraint can be added in a later release.
+   */
   @@index([organizationId])
   @@index([chunkId])
   @@index([source])
@@ -330,18 +357,18 @@ model KgRelation {
 // Hybrid RAG — external vector database config, per-org
 // ------------------------------------------------------------------
 model VectorStoreConfig {
-  id              String   @id @default(cuid())
+  id              String    @id @default(cuid())
   organizationId  String
-  provider        String   @default("INTERNAL") // INTERNAL | QDRANT | MILVUS
+  provider        String    @default("INTERNAL") // INTERNAL | QDRANT | MILVUS
   baseUrl         String?
   encryptedApiKey String?
-  collectionName  String   @default("ryasai_chunks")
+  collectionName  String    @default("ryasai_chunks")
   /// 384, matching `EMBEDDING_DIMENSIONS` in `src/lib/constants.ts`. These are ONE fact stated twice, not two
   /// settings: the vectors this dimension describes are always produced by the configured embedder, and the bundled
   /// one returns 384. A schema default of 1536 was the sixth place the old, wrong number lived - it disagreed with
   /// the `vector(384)` column above and with the embedder, and `src/lib/embedding-dimension.test.ts` now checks it.
-  vectorSize      Int      @default(384)
-  distance        String   @default("Cosine")
+  vectorSize      Int       @default(384)
+  distance        String    @default("Cosine")
   /// The admin's EXPLICIT choice of where the knowledge base is stored — NULL until somebody picks, and only ever
   /// written by a save from the Knowledge → Storage control or the setup wizard's storage step. Knowledge upload is
   /// gated on it (`src/app/api/documents/route.ts`), so a DEFAULT must never grant it: a boolean `@default(false)`
@@ -349,8 +376,8 @@ model VectorStoreConfig {
   /// "chosen" and the gate then disappears with nothing to see. A timestamp can only come from an explicit write,
   /// and it answers "when did this install decide its knowledge store" without a second column.
   storageChosenAt DateTime?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
@@ -362,16 +389,16 @@ model VectorStoreConfig {
 // Chat sessions & messages
 // ------------------------------------------------------------------
 model ChatSession {
-  id              String   @id @default(cuid())
-  organizationId  String
-  userId          String
-  title           String   @default("Sesi Baru")
+  id             String    @id @default(cuid())
+  organizationId String
+  userId         String
+  title          String    @default("Sesi Baru")
   // ponytail: rolling summary of messages that fell out of the 10-message
   // history window — without it, long sessions silently lose their beginning.
-  summary         String?
-  summaryUpTo     DateTime?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  summary        String?
+  summaryUpTo    DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
   organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -383,22 +410,22 @@ model ChatSession {
 }
 
 model ChatMessage {
-  id              String   @id @default(cuid())
-  organizationId  String
-  sessionId       String
-  userId          String?
-  sender          String   // user | ai | system
-  text            String
-  status          String?
-  citations       String?
-  chartData       String?
-  integrationId   String?
-  createdAt       DateTime @default(now())
+  id             String   @id @default(cuid())
+  organizationId String
+  sessionId      String
+  userId         String?
+  sender         String // user | ai | system
+  text           String
+  status         String?
+  citations      String?
+  chartData      String?
+  integrationId  String?
+  createdAt      DateTime @default(now())
 
-  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  session      ChatSession    @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  user         User?          @relation(fields: [userId], references: [id], onDelete: SetNull)
-  integration  Integration?   @relation(fields: [integrationId], references: [id], onDelete: SetNull)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  session      ChatSession  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  user         User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+  integration  Integration? @relation(fields: [integrationId], references: [id], onDelete: SetNull)
   toolRuns     ToolRun[]
 
   @@index([organizationId])
@@ -419,7 +446,7 @@ model AppConfig {
   productionChecklist String?
   promptSettings      String?
   cogneeEnabled       Boolean  @default(true)
-  cogneeDbProvider    String?  // 'local' | 'postgres'
+  cogneeDbProvider    String? // 'local' | 'postgres'
   cogneeDbUrl         String?
   cogneeBatchSize     Int      @default(50)
   cogneeMaxRetries    Int      @default(3)
@@ -446,9 +473,9 @@ model RestApiConnector {
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 
-  organization Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  endpoints     RestApiEndpoint[]
-  requestLogs   RestApiRequestLog[]
+  organization Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  endpoints    RestApiEndpoint[]
+  requestLogs  RestApiRequestLog[]
 
   @@index([organizationId])
 }
@@ -467,8 +494,8 @@ model RestApiEndpoint {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
-  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  connector    RestApiConnector  @relation(fields: [connectorId], references: [id], onDelete: Cascade)
+  organization Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  connector    RestApiConnector    @relation(fields: [connectorId], references: [id], onDelete: Cascade)
   requestLogs  RestApiRequestLog[]
   toolRuns     ToolRun[]
 
@@ -490,8 +517,8 @@ model RestApiRequestLog {
   createdAt       DateTime @default(now())
 
   organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  connector    RestApiConnector  @relation(fields: [connectorId], references: [id], onDelete: Cascade)
-  endpoint     RestApiEndpoint?  @relation(fields: [endpointId], references: [id], onDelete: SetNull)
+  connector    RestApiConnector @relation(fields: [connectorId], references: [id], onDelete: Cascade)
+  endpoint     RestApiEndpoint? @relation(fields: [endpointId], references: [id], onDelete: SetNull)
 
   @@index([organizationId])
   @@index([connectorId])
@@ -506,17 +533,17 @@ model ToolRun {
   organizationId    String
   chatMessageId     String?
   restApiEndpointId String?
-  type              String   // RAG | SQL | REST_API | CHAT | PLUGIN — must match PendingToolRun['type'] (tool-utils.ts); metrics filter on these exact strings, so a novel literal is silently ignored
-  status            String   // success | error | blocked | skipped
+  type              String // RAG | SQL | REST_API | CHAT | PLUGIN — must match PendingToolRun['type'] (tool-utils.ts); metrics filter on these exact strings, so a novel literal is silently ignored
+  status            String // success | error | blocked | skipped
   latencyMs         Int?
   inputSummary      String
   outputSummary     String?
   errorMessage      String?
   createdAt         DateTime @default(now())
 
-  organization     Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  chatMessage      ChatMessage?     @relation(fields: [chatMessageId], references: [id], onDelete: SetNull)
-  restApiEndpoint  RestApiEndpoint? @relation(fields: [restApiEndpointId], references: [id], onDelete: SetNull)
+  organization    Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  chatMessage     ChatMessage?     @relation(fields: [chatMessageId], references: [id], onDelete: SetNull)
+  restApiEndpoint RestApiEndpoint? @relation(fields: [restApiEndpointId], references: [id], onDelete: SetNull)
 
   @@index([organizationId])
   @@index([chatMessageId])
@@ -569,18 +596,18 @@ model ApiKey {
 }
 
 model ApiRequestLog {
-  id              String   @id @default(cuid())
-  organizationId  String
-  apiKeyId        String?
-  endpoint        String
-  status          Int
-  latencyMs       Int?
-  requestId       String?
-  errorMessage    String?
-  createdAt       DateTime @default(now())
+  id             String   @id @default(cuid())
+  organizationId String
+  apiKeyId       String?
+  endpoint       String
+  status         Int
+  latencyMs      Int?
+  requestId      String?
+  errorMessage   String?
+  createdAt      DateTime @default(now())
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  apiKey      ApiKey?       @relation(fields: [apiKeyId], references: [id], onDelete: SetNull)
+  apiKey       ApiKey?      @relation(fields: [apiKeyId], references: [id], onDelete: SetNull)
 
   @@index([organizationId])
   @@index([apiKeyId])
@@ -591,15 +618,15 @@ model ApiRequestLog {
 // Audit logs
 // ------------------------------------------------------------------
 model AuditLog {
-  id              String   @id @default(cuid())
-  organizationId  String
-  userId          String?
-  action          String
-  severity        String   @default("info") // info | warning | critical
-  detail          String   // JSON string
-  ipAddress       String?
-  hash            String?
-  createdAt       DateTime @default(now())
+  id             String   @id @default(cuid())
+  organizationId String
+  userId         String?
+  action         String
+  severity       String   @default("info") // info | warning | critical
+  detail         String // JSON string
+  ipAddress      String?
+  hash           String?
+  createdAt      DateTime @default(now())
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   user         User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
@@ -615,17 +642,17 @@ model AuditLog {
 // Query history (Text-to-SQL executed queries)
 // ------------------------------------------------------------------
 model QueryHistory {
-  id              String   @id @default(cuid())
-  organizationId  String
-  integrationId   String
-  userId          String
-  naturalQuery    String
-  generatedSql    String
-  rowCount        Int?
-  executionMs     Int?
-  success         Boolean  @default(true)
-  errorMessage    String?
-  createdAt       DateTime @default(now())
+  id             String   @id @default(cuid())
+  organizationId String
+  integrationId  String
+  userId         String
+  naturalQuery   String
+  generatedSql   String
+  rowCount       Int?
+  executionMs    Int?
+  success        Boolean  @default(true)
+  errorMessage   String?
+  createdAt      DateTime @default(now())
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   integration  Integration  @relation(fields: [integrationId], references: [id], onDelete: Cascade)
@@ -640,20 +667,20 @@ model QueryHistory {
 // Plugin/tool manifest registry — per-org
 // ------------------------------------------------------------------
 model Plugin {
-  id              String   @id @default(cuid())
-  organizationId  String
-  toolId          String
-  name            String
-  description     String
-  manifestJson    String
-  isEnabled       Boolean  @default(false)
-  chatEnabled     Boolean  @default(true)
-  agenticEnabled  Boolean  @default(true)
-  category        String   @default("general")
-  subcategory     String   @default("general")
-  keywords        String   @default("")
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id             String   @id @default(cuid())
+  organizationId String
+  toolId         String
+  name           String
+  description    String
+  manifestJson   String
+  isEnabled      Boolean  @default(false)
+  chatEnabled    Boolean  @default(true)
+  agenticEnabled Boolean  @default(true)
+  category       String   @default("general")
+  subcategory    String   @default("general")
+  keywords       String   @default("")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
@@ -666,21 +693,21 @@ model Plugin {
 // MCP (Model Context Protocol) server registry — per-org
 // ------------------------------------------------------------------
 model McpServer {
-  id              String   @id @default(cuid())
-  organizationId  String
-  name            String
-  description     String   @default("")
-  transport       String   @default("stdio") // stdio | sse | http
-  command         String   @default("") // for stdio: executable to run
-  args            String   @default("[]") // JSON array of command args
-  url             String   @default("") // for sse/http: server endpoint
-  envJson         String   @default("{}") // AES-256-GCM encrypted JSON of env vars
-  headersJson     String   @default("{}") // AES-256-GCM encrypted JSON of HTTP headers (sse/http)
-  isEnabled       Boolean  @default(true)
-  chatEnabled     Boolean  @default(true)
-  agenticEnabled  Boolean  @default(true)
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  description    String   @default("")
+  transport      String   @default("stdio") // stdio | sse | http
+  command        String   @default("") // for stdio: executable to run
+  args           String   @default("[]") // JSON array of command args
+  url            String   @default("") // for sse/http: server endpoint
+  envJson        String   @default("{}") // AES-256-GCM encrypted JSON of env vars
+  headersJson    String   @default("{}") // AES-256-GCM encrypted JSON of HTTP headers (sse/http)
+  isEnabled      Boolean  @default(true)
+  chatEnabled    Boolean  @default(true)
+  agenticEnabled Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
@@ -692,25 +719,25 @@ model McpServer {
 // Scheduled/triggered runs (cron + prompt)
 // ------------------------------------------------------------------
 model ScheduledRun {
-  id                    String    @id @default(cuid())
-  organizationId        String
-  name                  String
-  cronExpr              String
-  prompt                String
-  promptId              String?
-  timezone              String?   @default("UTC")
-  isActive              Boolean   @default(true)
-  lastRunAt             DateTime?
-  nextRunAt             DateTime?
-  lastResult            String?
-  notificationConfigId  String?
-  integrationId         String?   // when set, restricts execution to this data source only (no auto-routing)
-  createdAt             DateTime  @default(now())
-  updatedAt             DateTime  @updatedAt
+  id                   String    @id @default(cuid())
+  organizationId       String
+  name                 String
+  cronExpr             String
+  prompt               String
+  promptId             String?
+  timezone             String?   @default("UTC")
+  isActive             Boolean   @default(true)
+  lastRunAt            DateTime?
+  nextRunAt            DateTime?
+  lastResult           String?
+  notificationConfigId String?
+  integrationId        String? // when set, restricts execution to this data source only (no auto-routing)
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
 
-  organization       Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organization       Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   notificationConfig NotificationConfig? @relation(fields: [notificationConfigId], references: [id], onDelete: SetNull)
-  integration         Integration?       @relation(fields: [integrationId], references: [id], onDelete: SetNull)
+  integration        Integration?        @relation(fields: [integrationId], references: [id], onDelete: SetNull)
   logs               ScheduledRunLog[]
 
   @@index([organizationId])
@@ -721,18 +748,18 @@ model ScheduledRun {
 }
 
 model ScheduledRunLog {
-  id              String   @id @default(cuid())
-  organizationId  String
-  scheduledRunId  String
-  status          String   // 'success' | 'error' | 'skipped' (skipped = license lockdown, see scheduler processJob)
-  answer          String?  // full LLM answer
-  error           String?  // error message if failed
-  toolRunsJson    String?  // JSON array of tool run summaries
-  latencyMs       Int?
-  executedAt      DateTime @default(now())
+  id             String   @id @default(cuid())
+  organizationId String
+  scheduledRunId String
+  status         String // 'success' | 'error' | 'skipped' (skipped = license lockdown, see scheduler processJob)
+  answer         String? // full LLM answer
+  error          String? // error message if failed
+  toolRunsJson   String? // JSON array of tool run summaries
+  latencyMs      Int?
+  executedAt     DateTime @default(now())
 
-  organization Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  scheduledRun ScheduledRun   @relation(fields: [scheduledRunId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  scheduledRun ScheduledRun @relation(fields: [scheduledRunId], references: [id], onDelete: Cascade)
 
   @@index([organizationId])
   @@index([scheduledRunId])
@@ -740,17 +767,17 @@ model ScheduledRunLog {
 }
 
 model NotificationConfig {
-  id              String   @id @default(cuid())
+  id              String    @id @default(cuid())
   organizationId  String
   name            String
-  type            String   // webhook | email | telegram
-  encryptedConfig String   // AES-256-GCM encrypted JSON
-  isActive        Boolean  @default(true)
+  type            String // webhook | email | telegram
+  encryptedConfig String // AES-256-GCM encrypted JSON
+  isActive        Boolean   @default(true)
   lastUsedAt      DateTime?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
-  organization  Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organization  Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   scheduledRuns ScheduledRun[]
 
   @@index([organizationId])
@@ -761,21 +788,21 @@ model NotificationConfig {
 // Agentic multi-step run tracking
 // ------------------------------------------------------------------
 model AgentRun {
-  id              String   @id @default(cuid())
-  organizationId  String
-  userId          String?
-  sessionId       String?
-  question        String
-  planJson        String
-  status          String   // planning | executing | complete | error
-  resultJson      String?
-  errorMessage    String?
-  latencyMs       Int?
-  createdAt       DateTime @default(now())
+  id             String   @id @default(cuid())
+  organizationId String
+  userId         String?
+  sessionId      String?
+  question       String
+  planJson       String
+  status         String // planning | executing | complete | error
+  resultJson     String?
+  errorMessage   String?
+  latencyMs      Int?
+  createdAt      DateTime @default(now())
 
-  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  user    User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
-  session ChatSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+  session      ChatSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
 
   @@index([organizationId])
   @@index([status])
@@ -789,16 +816,16 @@ model AgentRun {
 // token spend is billed by THEIR provider. No cost/margin column exists by design.
 // ------------------------------------------------------------------
 model LlmUsageLog {
-  id              String   @id @default(cuid())
-  organizationId  String
-  purpose         String   // chat | agent | router | sql | rag | rest | synthesis
-  provider        String   // OPENAI_COMPATIBLE | ANTHROPIC_COMPATIBLE
-  model           String
-  promptTokens    Int      @default(0)
-  completionTokens Int     @default(0)
-  totalTokens     Int      @default(0)
-  latencyMs       Int?
-  createdAt       DateTime @default(now())
+  id               String   @id @default(cuid())
+  organizationId   String
+  purpose          String // chat | agent | router | sql | rag | rest | synthesis
+  provider         String // OPENAI_COMPATIBLE | ANTHROPIC_COMPATIBLE
+  model            String
+  promptTokens     Int      @default(0)
+  completionTokens Int      @default(0)
+  totalTokens      Int      @default(0)
+  latencyMs        Int?
+  createdAt        DateTime @default(now())
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
@@ -812,13 +839,13 @@ model LlmUsageLog {
 // Document versioning — snapshot history for restore
 // ------------------------------------------------------------------
 model DocumentVersion {
-  id              String   @id @default(cuid())
-  organizationId  String
-  documentId      String
-  version         Int
-  contentHash     String
-  chunkCount      Int
-  createdAt       DateTime @default(now())
+  id             String   @id @default(cuid())
+  organizationId String
+  documentId     String
+  version        Int
+  contentHash    String
+  chunkCount     Int
+  createdAt      DateTime @default(now())
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   document     Document     @relation(fields: [documentId], references: [id], onDelete: Cascade)
@@ -832,15 +859,15 @@ model DocumentVersion {
 // SavedPrompt — reusable prompt library, per-org
 // ------------------------------------------------------------------
 model SavedPrompt {
-  id              String   @id @default(cuid())
-  organizationId  String
-  userId          String
-  title           String
-  content         String
-  category        String   @default("general")
-  isPublic        Boolean  @default(false)
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id             String   @id @default(cuid())
+  organizationId String
+  userId         String
+  title          String
+  content        String
+  category       String   @default("general")
+  isPublic       Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
