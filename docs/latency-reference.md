@@ -35,14 +35,24 @@ Combined, on 15 questions x3: median 9.3 s → 7.6 s, 45/45 answers correct.
 
 ## Rejected, and why — do not re-open without new data
 
-**Turning the reranker off** (`RAG_LLM_RERANK=false`). Fastest of everything tried: median 7.7 s → 5.3 s. But the
-question that mixes an answerable part with an unanswerable one ("how many days of leave, and what is the director's
-salary?") was correct 2/8 with the reranker off against 7/8 with it on (run side by side, same minute).
+**Turning the reranker off** (`RAG_LLM_RERANK=false`). Fastest of everything tried: median 7.7 s -> 5.3 s, and every
+question with a deterministic route stayed correct (45/45 originals, 3/3 and 3/3 on the two unanswerable ones).
+The one question that changed was the compound one ("how many days of leave, and what is the director's salary?"):
+correct 2/8 with the reranker off against 7/8 with it on.
 
-The cause is NOT understood. The reranker runs after routing, so it should not change which tool is chosen, yet
-the off-runs were routed to the database tool in 4 of 8 turns against 1 of 8 with it on. That is either chance at
-a small sample or an interaction nobody has found. Until it is explained, switching the reranker off trades a real
-accuracy risk for speed, and the saving is not worth an unexplained one.
+That gap is mostly NOT the reranker. The tool selector itself is unstable on that question at temperature 0 —
+called directly, 12 times, with no retrieval involved: documents 8, database 4. Two variants of the same compound
+shape gave 4/12 and 7/12 database. A single-part salary question went to the database 12/12 and a single-part
+leave question to documents 10/12 (2 text-only). So that question's outcome is decided by a coin flip the
+reranker never sees. Whether 6 of 8 off-runs landing on a wrong answer is chance depends on the true wrong-rate:
+at 1/3 the chance of 6+ of 8 is 2%, at 0.4 it is 5%, at 0.5 it is 15%. The selector measurements (4/12 and 7/12)
+span that range, so this is unlikely but not excluded, and eight runs cannot settle it.
+
+The reason it is still not shipped is different, and it is a limit of the evidence rather than a finding: the local
+corpus is too easy to show what the reranker is for. The chunk that holds the answer was already first after fusion
+in 13 of 14 answerable questions, so "no regression with the reranker off" is what you would see whether or not it
+helps on a larger corpus. Switching it off would be justified by a test that could have failed, and this one could
+not. Until there is a corpus where the fused order is wrong often enough to matter, leave it on.
 
 **Skipping the rerank when the top score is high** and **skipping reflection when evidence looks strong.** Both need
 a signal that separates "the evidence answers the question" from "it only looks like it does". The rerank score does
@@ -53,6 +63,9 @@ threshold would work on them — which is the trap: it would pass the near-miss 
 
 ## Known and unchanged
 
-- A compound question is correct only about half the time, before and after 1.7.0, because it is sometimes sent to
-  the database tool instead of the documents.
+- A compound question is correct only about half the time, before and after 1.7.0, because the tool selector sends
+  it to the database tool about a third of the time and to the documents the rest — measured on the selector alone,
+  12 calls, same input, temperature 0. Nothing in the retrieval stages can change that; it needs a routing change,
+  and the selector's prompt is deliberately minimal (see the measured rule-count table in `tool-selector.ts`), so
+  any edit must be re-measured at N=40 per arm, not tried once.
 - p95 is set by provider stalls of 30–60 s, which none of the above touches.
