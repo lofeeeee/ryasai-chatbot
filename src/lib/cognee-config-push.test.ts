@@ -12,6 +12,15 @@ import { join } from 'node:path'
  */
 const state = {
   serverOptions: null as { baseUrl: string; timeoutMs?: number; apiKey?: string } | null,
+  /**
+   * What the sidecar's OWN health probe reports about its LLM provider.
+   *
+   * This is the signal that replaced the old `!stored.endpoint` test, which was true on EVERY push
+   * because `save_llm_config` never stores an endpoint — so it told operators to add a line that was
+   * already in `.env.cognee`. `'healthy'` here is the production shape.
+   */
+  llmProviderStatus: 'healthy' as string,
+  llmProviderDetails: 'API responding' as string,
   llmConfig: null as { id: string; provider: string; baseUrl: string; apiKey: string; model: string } | null,
   /**
    * Which row the memory credentials came from. In production `getMemoryLlmConfig()` prefers a
@@ -51,6 +60,18 @@ globalThis.fetch = (async (url: string, init?: RequestInit) => {
     body: init?.body ? JSON.parse(String(init.body)) : null,
     headers,
   })
+  // /health/detailed carries the LLM-provider verdict; everything else goes to the per-test stub.
+  if (String(url).endsWith('/health/detailed')) {
+    return new Response(
+      JSON.stringify({
+        status: state.llmProviderStatus === 'healthy' ? 'healthy' : 'degraded',
+        components: {
+          llm_provider: { status: state.llmProviderStatus, provider: 'openai', details: state.llmProviderDetails },
+        },
+      }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    )
+  }
   return state.respond()
 }) as unknown as typeof fetch
 
@@ -66,6 +87,8 @@ beforeEach(() => {
     model: 'cbcn/deepseek-v4.1-flash',
   }
   state.requests = []
+  state.llmProviderStatus = 'healthy'
+  state.llmProviderDetails = 'API responding'
   state.respond = () => new Response('{}', { status: 200 })
 })
 
@@ -251,22 +274,58 @@ describe('cognee provider push — the endpoint is DROPPED by the sidecar, and w
    * "shared" while the sidecar called api.openai.com and failed with an authentication error naming
    * the wrong provider. So success is reported WITH the remaining gap.
    */
-  test('a dropped endpoint is reported alongside the successful push', async () => {
-    // The sidecar accepts the POST then reports no endpoint back — the real behaviour.
+  test('AN EMPTY endpoint IN THE READ-BACK IS NOT A FAULT (the reported false alarm)', async () => {
+    /*
+     * USER-REPORTED DEFECT, and the one this test now pins.
+     *
+     * The sidecar's settings API never stores an endpoint, so `endpoint` comes back as `''` on every
+     * install no matter how correctly it is configured. The old condition was `!stored.endpoint`, so
+     * the warning fired on EVERY push and told operators to add a line that was already in
+     * `.env.cognee`:
+     *
+     *     "Add OPENAI_API_BASE=https://proxy.ryasai.my.id/v1 to .env.cognee and restart the sidecar"
+     *
+     * MEASURED on the install it fired on: that exact line was present, and the sidecar's own
+     * `llm_provider` component read `healthy / API responding`. Nothing was wrong. A warning that is
+     * always on carries no information and teaches an operator to ignore the case that matters.
+     *
+     * So an empty endpoint with a HEALTHY provider must be a clean success. The empty string is
+     * treated as "the API does not carry this field", which is what it is.
+     */
+    // The read-back MUST echo the model the push sent. Answering a different one sets `modelMismatch`,
+    // whose `error` is a separate, legitimate arm — and this test asserts `error` is undefined, so a
+    // mismatched fixture would fail it for the wrong reason. (The first draft used `openai/x` and did
+    // exactly that: the endpoint arm was correctly silent, and the failure came from the model arm.)
+    state.respond = () =>
+      new Response(JSON.stringify({ llm: { model: 'openai/cbcn/deepseek-v4.1-flash', endpoint: '' } }), {
+        status: 200,
+      })
+    const r = await pushCogneeProviderConfig()
+    expect(r.ok).toBe(true)
+    // The alarm must NOT fire: the provider is healthy, so there is nothing to fix.
+    expect(r.endpointNeedsEnv).toBeUndefined()
+    expect(r.error).toBeUndefined()
+  })
+
+  test('an UNUSABLE provider still gets the endpoint remedy, with the measured status', async () => {
+    // The actionable replacement. The sidecar's own probe says the provider cannot be used, so the
+    // operator is told the measured verdict AND the line that is the likely fix. This is the case the
+    // old always-on warning was drowning out.
+    state.llmProviderStatus = 'degraded'
+    state.llmProviderDetails = 'LLMAPIKeyNotSetError: LLM API key is not set'
     state.respond = () => new Response(JSON.stringify({ llm: { model: 'openai/x', endpoint: '' } }), { status: 200 })
     const r = await pushCogneeProviderConfig()
-    // The model and key DID land, so this is not a failure.
-    expect(r.ok).toBe(true)
+    expect(r.ok).toBe(true) // the credentials DID land; the provider problem is separate
     expect(r.endpointNeedsEnv).toBe(true)
-    // And the remedy is exact and copy-pasteable, because that is what makes it actionable.
     expect(r.endpointValue).toBe('https://proxy.example/v1')
+    expect(r.error).toContain('degraded')
     expect(r.error).toContain('OPENAI_API_BASE=https://proxy.example/v1')
     expect(r.error).toContain('.env.cognee')
     // The key must not ride along with the message.
     expect(JSON.stringify(r)).not.toContain('sk-secret-value')
   })
 
-  test('a sidecar that DID store the endpoint gets a clean success', async () => {
+  test('a sidecar that reports everything correctly gets a clean success', async () => {
     // Guards against the flag being hardcoded true: a future cognee that supports endpoints must not
     // keep telling operators to edit a file they no longer need to touch.
     //
@@ -370,6 +429,7 @@ describe('cognee provider push — the MODEL read-back was fetched and discarded
     // Both are properties of the same read-back. An `else if` between them would hide one whenever the
     // other fired — and on cognee 1.6.0 the endpoint is ALWAYS dropped, so that shape would mean the
     // model mismatch could never be reported in production at all.
+    state.llmProviderStatus = 'degraded'
     state.respond = () => new Response(JSON.stringify({ llm: { model: 'openai/gpt-4o', endpoint: '' } }), { status: 200 })
     const r = await pushCogneeProviderConfig()
     expect(r.endpointNeedsEnv).toBe(true)

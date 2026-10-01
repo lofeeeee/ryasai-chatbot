@@ -1,5 +1,6 @@
 import { getMemoryLlmConfig } from '@/lib/llm-config'
 import { getCogneeServerOptions } from '@/lib/cognee-core'
+import { cogneeServerDiagnostics } from '@/lib/cognee-http'
 import { scopedLogger } from '@/lib/logger'
 
 /**
@@ -140,7 +141,39 @@ export async function pushCogneeProviderConfig(): Promise<CogneeProviderPushResu
     // assignment, so the endpoint is DROPPED — and reporting success without checking would leave the
     // operator with a sidecar that calls api.openai.com while the UI says the push worked.
     const stored = await readCogneeProviderConfig()
-    const endpointDropped = stored !== null && !stored.endpoint && !!cfg.baseUrl
+
+    /*
+     * THE ENDPOINT WARNING WAS UNCONDITIONALLY TRUE, and it told an operator to add a line that was
+     * already there.
+     *
+     * The old condition was `!stored.endpoint`, and `save_llm_config` NEVER assigns an endpoint —
+     * MEASURED on the live sidecar, `GET /api/v1/settings` answers `"endpoint": ""` however correctly
+     * the deployment is configured. So the warning fired on EVERY push, saying:
+     *
+     *     "Add OPENAI_API_BASE=https://proxy.ryasai.my.id/v1 to .env.cognee and restart the sidecar"
+     *
+     * The install it fired on already HAD that exact line, and its `llm_provider` component was
+     * reporting `healthy / API responding` — the sidecar was reaching the proxy the whole time. A
+     * warning that is always on carries no information and teaches an operator to ignore the case
+     * that matters, which is worse than not warning at all.
+     *
+     * WHAT REPLACES IT IS A REAL MEASUREMENT, not a guess. This code cannot compare endpoints: the
+     * read-back can never carry one, and the sidecar's `OPENAI_API_BASE` lives in a separate container
+     * this app cannot read. But the sidecar's `/health/detailed` ACTIVELY TESTS its LLM provider and
+     * reports the verdict, so that is what is asked — the one signal that can actually distinguish
+     * "the endpoint is wrong" from "the endpoint is fine".
+     *
+     * `llm_provider` unhealthy is therefore reported WITH the endpoint remedy, because a provider that
+     * cannot be reached is exactly when the OPENAI_API_BASE line is the likely fix. Healthy or unknown
+     * reports nothing: silence is the correct answer when there is nothing wrong.
+     */
+    const diagnostics = await cogneeServerDiagnostics({
+      baseUrl: opts.baseUrl,
+      timeoutMs: opts.timeoutMs,
+      apiKey: opts.apiKey,
+    }).catch(() => null)
+    const llmComponent = diagnostics?.components?.find((c) => c.name === 'llm_provider') ?? null
+    const llmUnreachable = llmComponent !== null && llmComponent.status !== 'healthy'
 
     /*
      * THE MODEL READ-BACK IS THE OTHER HALF, and it was DISCARDED.
@@ -165,13 +198,19 @@ export async function pushCogneeProviderConfig(): Promise<CogneeProviderPushResu
     // landed, and a key in a log or a toast is a credential leak.
     // The detail names what the SIDECAR holds when it disagrees, so the reported state is reality rather
     // than intent — the same rule this module applies to the endpoint.
+    //
+    // THE HOST IS NAMED IN BOTH ARMS. It used to appear only in the clean case, so a model mismatch
+    // dropped it — and the host is the one fact an operator uses to confirm the push went to the
+    // deployment they meant. It is a URL, not a secret, which is why it is safe to echo.
     const detail = modelMismatch
-      ? `Shared ${body.llm.model}, but the sidecar reports ${stored.model || '(no model)'}`
+      ? `Shared ${body.llm.model} at ${cfg.baseUrl}, but the sidecar reports ${stored.model || '(no model)'}`
       : `Shared ${body.llm.model} at ${cfg.baseUrl}`
     log.info('pushed provider config to cognee', {
       model: body.llm.model,
       endpoint: cfg.baseUrl,
-      endpointDropped,
+      // The endpoint lives on the sidecar's side and is not verifiable from here, so it is logged as
+      // the fact it is rather than through the old flag that was true on every single push.
+      llmUnreachable,
       modelMismatch,
       source: cfg.source,
     })
@@ -191,20 +230,25 @@ export async function pushCogneeProviderConfig(): Promise<CogneeProviderPushResu
               `Push again, and check the sidecar's LLM configuration if it persists.`,
           }
         : {}),
-      ...(endpointDropped
+      ...(llmUnreachable
         ? {
             endpointNeedsEnv: true,
             endpointValue: cfg.baseUrl,
-            // Extends `detail` rather than replacing it: the model and key ARE shared, and saying
-            // otherwise would send an operator to fix something that already works.
-            // OPENAI_API_BASE, not LLM_ENDPOINT. Both reach litellm, but measured: filling the three
-            // LLM_* vars slows the sidecar's boot from ~125s to ~150s+ (cognee validates them at
-            // startup), while OPENAI_API_BASE alone has no startup cost and api_base="" does NOT
-            // override it. The cheaper of two working options is the one to recommend.
+            // This IS actionable, unlike the alarm it replaces: the sidecar's own health probe just
+            // reported that it cannot use its LLM provider. The endpoint is the likeliest cause and the
+            // one an operator can fix from outside the container, so the remedy is named — while the
+            // message states the MEASURED fault rather than asserting where the sidecar will send
+            // requests, which this code has no way to know.
+            //
+            // OPENAI_API_BASE is the variable to name: it reaches litellm with no startup cost, while
+            // filling the three LLM_* vars slows the sidecar's boot from ~125s to ~150s+ (cognee
+            // validates them at startup), and api_base="" does NOT override OPENAI_API_BASE.
             error:
-              `The endpoint cannot be shared through cognee's settings API (it stores provider, model ` +
-              `and key only), so the sidecar will call api.openai.com instead of ${cfg.baseUrl}. ` +
-              `Add OPENAI_API_BASE=${cfg.baseUrl} to .env.cognee and restart the sidecar.`,
+              `The sidecar's LLM provider is ${llmComponent?.status ?? 'unusable'}` +
+              `${llmComponent?.details ? ` (${llmComponent.details})` : ''}. ` +
+              `Its endpoint is configured separately from these credentials, in .env.cognee as ` +
+              `OPENAI_API_BASE=${cfg.baseUrl} — the settings API cannot carry it. Check that line, ` +
+              `then restart the sidecar.`,
           }
         : {}),
     }
