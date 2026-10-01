@@ -13,10 +13,24 @@ import { cn } from '@/lib/utils'
 import type { Citation } from '@/lib/types'
 
 export function CitationList({ citations }: { citations: Citation[] }) {
-  const [open, setOpen] = useState(true)
+  /**
+   * CLOSED by default. It used to start open, so every answer that cited anything carried three expanded
+   * cards with their snippets — MEASURED as the single largest consumer of vertical space in a chat reply,
+   * and the reason the block was asked to be removed entirely. Collapsed keeps one line ("Sources (3)") and
+   * keeps the evidence one click away, which is what the removal would have destroyed: the citation list is
+   * the only place a wrong or irrelevant retrieval is VISIBLE to the user.
+   */
+  const [open, setOpen] = useState(false)
   return (
-    <Collapsible open={open} onOpenChange={setOpen} className="mt-1 min-w-0 rounded-lg bg-secondary/50 p-3">
-      <CollapsibleTrigger className="flex min-w-0 w-full items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors">
+    <Collapsible open={open} onOpenChange={setOpen} className="mt-1 min-w-0 rounded-lg bg-secondary/50 px-3 py-2">
+      <CollapsibleTrigger
+        className={cn(
+          'flex min-w-0 w-full items-center gap-1.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground',
+          // A closed block is exactly one line tall; the padding that makes the expanded cards breathe is
+          // dropped while collapsed so the answer does not gain a bare strip of background.
+          !open && 'py-0.5',
+        )}
+      >
         <FileText className="h-3.5 w-3.5 shrink-0" />
         <span className="min-w-0 truncate">Sources ({citations.length})</span>
         <ChevronDown

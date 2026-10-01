@@ -83,3 +83,26 @@ describe('chat citation list — the badge is given the retrieval rank', () => {
     expect(citationRankLabel(0, undefined, 3)).toBeNull()
   })
 })
+
+describe('the citation block costs one line when it is not being read', () => {
+  /**
+   * MEASURED complaint: the block was open by default, so a reply with three citations pushed the answer itself
+   * off the screen. The request was to delete the block entirely; it is collapsed instead, because it is the only
+   * surface where a retrieval mistake is visible — on the very question that prompted the request, citations #2
+   * and #3 were about annual leave and did not answer a question about overtime pay.
+   */
+  test('starts COLLAPSED', () => {
+    const body = strip(viewSrc)
+    expect(body, 'the block must start closed').toContain('useState(false)')
+    expect(body, 'the block must not start open').not.toContain('useState(true)')
+  })
+
+  test('is still rendered at all, with its evidence', () => {
+    // Guarding the collapsed state must not become a way to drop the feature: the snippet is the evidence, and
+    // the rank badge is what shows WHERE in the retrieval the passage came from.
+    const body = strip(viewSrc)
+    expect(body).toContain('CitationList')
+    expect(body).toContain('c.snippet')
+    expect(body).toContain('citationRankLabel')
+  })
+})

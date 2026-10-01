@@ -500,7 +500,20 @@ export async function generateAnswer(args: {
     `Never invent data, and never substitute manual setup instructions for the user to run by hand. ` +
     `Never invent a REASON for a failure: do not claim a network problem, a blocked host, a timeout or a permission error unless the CONTEXT states it, and never tell the user to change firewall or security settings to fix something that was never attempted. If you could not answer, say what YOU did not find. If the question asks you to COMPARE two things and the CONTEXT covers only one, give that one and state plainly that the other was not available in this result — never relabel one source's rows as another's.` +
     `Format numbers for readability. ` +
-    `Mention the data source naturally at the end of the answer.`
+    /*
+     * THE SOURCE LINE MOVED OUT OF THE ANSWER TEXT.
+     *
+     * This used to instruct "Mention the data source naturally at the end of the answer", so every reply ended with a
+     * sentence like "Sumber: kebijakan.txt (HR), bagian kebijakan lembur." — text the user has to read past, and which
+     * the UI already renders as structured metadata under the answer (the collapsible Sources row, built from the
+     * citation objects rather than from prose). MEASURED: the model paraphrased the file name AND the section, so the
+     * sentence also varied between replies for identical citations.
+     *
+     * What is NOT removed is grounding: the answer must still be based on the context, and must still say when the
+     * context did not contain the answer. Only the human-readable attribution moved to the metadata surface.
+     */
+    `Do NOT write a source, citation or file-name line at the end of the answer: the interface shows the sources as ` +
+    `metadata, so repeating them in prose is redundant. Answer in your own sentences and stop.`
   assertSystemPromptUnderCeiling(systemContent, 'generateAnswer')
   if (args.systemPromptPrefix) {
     messages.push(orgSystemPrefixMessage(args.systemPromptPrefix, 'generateAnswer', systemContent))
@@ -861,7 +874,16 @@ export async function* streamAnswer(args: {
     'If the CONTEXT marks a step FAILED, report that failure and its reason. ' +
     'Never invent data, and never substitute manual setup instructions for the user to run by hand. ' +
     `Never invent a REASON for a failure: do not claim a network problem, a blocked host, a timeout or a permission error unless the CONTEXT states it, and never tell the user to change firewall or security settings to fix something that was never attempted. If you could not answer, say what YOU did not find. If the question asks you to COMPARE two things and the CONTEXT covers only one, give that one and state plainly that the other was not available in this result — never relabel one source's rows as another's.` +
-    'Format numbers for readability.'
+    'Format numbers for readability. ' +
+    /*
+     * THE SAME RULE AS `generateAnswer`, and it has to live in BOTH prompts. MEASURED: the trailer "Sumber:
+     * kebijakan.txt (HR), bagian kebijakan lembur." was still appearing on streamed answers after the instruction was
+     * removed from `generateAnswer`, because this prompt never carried the rule while the ORG's own system prompt did
+     * ("Cite sources when using retrieved knowledge. Cite sources …"). A per-source instruction can only be
+     * overridden by a more specific one; saying nothing leaves the operator's wording in charge.
+     */
+    `Do NOT end the answer with a source, citation or file-name line: the interface shows the sources as ` +
+    `metadata, so repeating them in prose is redundant. Answer in your own sentences and stop.`
   assertSystemPromptUnderCeiling(systemContent, 'streamAnswer')
   if (args.systemPromptPrefix) {
     messages.push(orgSystemPrefixMessage(args.systemPromptPrefix, 'streamAnswer', systemContent))

@@ -1652,13 +1652,28 @@ describe('streaming — chunk boundaries, sentinel and truncation', () => {
     expect(await collect(streamChat('q'))).toEqual(['real'])
   })
 
-  test('streamAnswer does not append a data-source attribution line (only generateAnswer does)', async () => {
-    // generateAnswer's prompt asks the model to "mention the data source".
-    // streamAnswer must NOT, or every streamed answer grows a redundant trailer.
+  test('NEITHER answer path asks the model to write a source line in the prose', async () => {
+    /*
+     * REVERSED EXPECTATION, and the reason matters more than the assertion. This test used to read
+     * "streamAnswer does not append a data-source attribution line (only generateAnswer does)" — it pinned
+     * `generateAnswer` asking for attribution, which was the behaviour at the time.
+     *
+     * MEASURED: the operator's own system prompt ("Cite sources when using retrieved knowledge") made every reply end
+     * with a "Sumber: …" sentence, which the user has to read past while the interface ALREADY renders the same
+     * attribution as structured metadata. The requirement is now that the model is told NOT to, on both paths — a rule
+     * present in one prompt only is a rule the other path does not have.
+     */
     await collect(streamAnswer({ question: 'q', context: 'ctx', source: 'RAG' }))
-    const body = JSON.parse(lastFetchCall()!.init.body as string)
-    const texts = body.messages.map((m: { content: string }) => m.content).join('\n')
-    expect(texts).not.toContain('Mention the data source naturally')
+    const streamed = JSON.parse(lastFetchCall()!.init.body as string)
+      .messages.map((m: { content: string }) => m.content).join('\n')
+    expect(streamed).not.toContain('Mention the data source naturally')
+    expect(streamed).toContain('Do NOT end the answer with a source')
+
+    await generateAnswer({ question: 'q', context: 'ctx', source: 'RAG' })
+    const nonStreamed = JSON.parse(lastFetchCall()!.init.body as string)
+      .messages.map((m: { content: string }) => m.content).join('\n')
+    expect(nonStreamed).not.toContain('Mention the data source naturally')
+    expect(nonStreamed).toContain('Do NOT write a source')
   })
 
   test('a streaming 500 surfaces as an error before any token is yielded', async () => {

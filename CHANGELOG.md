@@ -5,6 +5,23 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.6] - 2026-10-01
+
+### Changed
+- **Sources no longer take over the conversation.** The list of sources under an answer used to start
+  expanded, so three cited passages pushed the answer itself off the screen. It now shows a single line
+  ("Sources (3)") and opens when you want to check the evidence. It is kept rather than removed because it
+  is the only place a wrong result is visible — on the question that prompted this, two of the three
+  passages were about annual leave and had nothing to do with overtime pay.
+- **Answers no longer end with a "Sumber: …" sentence.** The interface already shows the sources as
+  metadata, so repeating them in prose was redundant, and the wording varied between replies for the same
+  citations. The answer text now stops at the answer. Grounding is unchanged: answers are still written from
+  the retrieved context, and still say when that context did not contain the answer.
+  - Worth knowing: the sentence was also being requested by the organisation's own assistant instructions in
+    Settings ("Cite sources when using retrieved knowledge"), which override the built-in wording. The
+    built-in instruction now states the rule for both the streamed and non-streamed paths, so it wins for
+    streamed replies; an operator who wants it back can add it there again.
+
 ## [1.7.5] - 2026-10-01
 
 ### Fixed
