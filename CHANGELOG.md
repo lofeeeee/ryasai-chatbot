@@ -5,6 +5,16 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.2] - 2026-10-01
+
+### Fixed
+- **A memory-service warning that fired on every save and could not be silenced.** It told you to add
+  `OPENAI_API_BASE` to `.env.cognee`, on installations that already had that line. The check read a field the
+  memory service's settings API never stores, so it was always true — and it also asserted the service would call
+  the wrong provider, which was not something it could know. It now asks the memory service whether it can
+  actually reach its provider, and speaks only when the answer is no. Dismissing a warning that is always on is
+  how a real one gets missed.
+
 ## [1.6.1] - 2026-10-01
 
 ### Fixed
