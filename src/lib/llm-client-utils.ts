@@ -191,27 +191,50 @@ export async function* iterSseStream(
 // Fetch with retry on 5xx + network errors.
 // ---------------------------------------------------------------------------
 
-export async function fetchWithRetry(url: string, init: RequestInit): Promise<Response> {
+/**
+ * How long ONE attempt may take, and whether a TIMEOUT may be retried.
+ *
+ * A timeout is not a flaky-provider symptom: it means the request sat open for the full budget. Retrying it spends
+ * that budget AGAIN, so a slow provider turned one 30 s wait into four and the user saw 120 s. MEASURED on the
+ * latency harness: these retried timeouts were the 30-60 s tail of p95, and three of twelve tool-selection calls
+ * became a `null` decision that fell back to the heuristic router — so the retry ladder was also costing routing
+ * ACCURACY, not just time.
+ *
+ * A 5xx and a connection reset are different: they come back fast and often succeed on the next try, so those keep
+ * the full ladder. The timeout ceiling is only raised where a caller asks for it (see `timeoutMs`), which the
+ * streaming path does because a long answer legitimately takes longer than 30 s.
+ */
+export async function fetchWithRetry(url: string, init: RequestInit, timeoutMs?: number): Promise<Response> {
   let lastError: Error | null = null
-  for (let attempt = 0; attempt <= LLM_MAX_RETRIES; attempt++) {
+  // ONE retry budget for the whole call, decremented only where a retry is actually decided. An earlier version
+  // computed it inside the catch and then `continue`d on the loop's own ceiling as well, so the budget affected
+  // only how long the backoff slept: removing it changed nothing observable, which a negative control caught.
+  // Keeping the decision in the loop guard means "may this failure be retried" is answered in exactly one place.
+  let retriesLeft = LLM_MAX_RETRIES
+  while (true) {
     try {
       // A hung provider socket would otherwise block the whole retry ladder: without a
       // signal the request can sit open indefinitely and the backoff never runs. The
-      // timeout is per ATTEMPT, so the total worst case is
-      // (LLM_MAX_RETRIES + 1) * LLM_TIMEOUT_MS plus the backoff delays.
-      const res = await fetch(url, { ...init, signal: init.signal ?? AbortSignal.timeout(LLM_TIMEOUT_MS) })
-      if (res.status >= 500 && attempt < LLM_MAX_RETRIES) {
+      // budget is per ATTEMPT, so retrying a TIMEOUT would multiply the worst case by
+      // the ladder length — which is why a timeout is not retried at all.
+      const budget = timeoutMs ?? LLM_TIMEOUT_MS
+      const res = await fetch(url, { ...init, signal: init.signal ?? AbortSignal.timeout(budget) })
+      // A 5xx is a fast, usually-transient provider answer: worth the ladder.
+      if (res.status >= 500 && retriesLeft > 0) {
+        retriesLeft -= 1
         lastError = new Error(`LLM error (HTTP ${res.status}).`)
-        await new Promise((r) => setTimeout(r, LLM_RETRY_BACKOFF_BASE_MS * 2 ** attempt))
+        await new Promise((r) => setTimeout(r, LLM_RETRY_BACKOFF_BASE_MS * 2 ** (LLM_MAX_RETRIES - retriesLeft - 1)))
         continue
       }
       return res
     } catch (e) {
       lastError = e instanceof Error ? e : new Error(String(e))
-      if (attempt < LLM_MAX_RETRIES) {
-        await new Promise((r) => setTimeout(r, LLM_RETRY_BACKOFF_BASE_MS * 2 ** attempt))
-        continue
-      }
+      // A TIMEOUT already consumed the full budget and will consume it again, so it ends the call here — that is
+      // the whole point of the budget. A connection error fails immediately and often succeeds on the next try.
+      const mayRetry = !isTimeoutError(lastError) && retriesLeft > 0
+      if (!mayRetry) break
+      retriesLeft -= 1
+      await new Promise((r) => setTimeout(r, LLM_RETRY_BACKOFF_BASE_MS * 2 ** (LLM_MAX_RETRIES - retriesLeft - 1)))
     }
   }
   // Wrap a TRANSPORT failure in LlmProviderError so it reaches `classifyProviderFailure`.
@@ -231,6 +254,22 @@ export async function fetchWithRetry(url: string, init: RequestInit): Promise<Re
     throw new LlmProviderError(null, lastError.message)
   }
   throw lastError ?? new Error('LLM fetch failed.')
+}
+
+/**
+ * True for an aborted-due-to-timeout, in any of the shapes the runtimes produce.
+ *
+ * Matched on the NAME/`code` first: Bun reports `TimeoutError`, Node's undici reports `AbortError` with a
+ * `TimeoutError` cause, and the DOMException name is the only field common to both. The message patterns are a
+ * fallback for a wrapped error, not the primary signal — a message is prose and can be reworded by a runtime
+ * upgrade, while the name is part of the contract.
+ */
+export function isTimeoutError(e: Error): boolean {
+  const name = e.name ?? ''
+  if (name === 'TimeoutError' || name === 'AbortError') return true
+  const cause = (e as { cause?: { name?: string } }).cause
+  if (cause?.name === 'TimeoutError') return true
+  return /timed out|timeout|ETIMEDOUT/i.test(e.message)
 }
 
 export function readErrorBody(res: Response): Promise<string> {

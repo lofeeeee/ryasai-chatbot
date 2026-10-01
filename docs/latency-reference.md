@@ -61,6 +61,20 @@ not: the compound question returned a top score of 10 while reflection correctly
 reflection step is doing its job. The near-miss questions (topic present, fact absent) scored 6 or lower, so a
 threshold would work on them — which is the trap: it would pass the near-miss set and fail the compound one.
 
+## Shipped after 1.7.0: the timeout retry ladder
+
+`fetchWithRetry` retried EVERY failure, including a TIMEOUT — which means the request had already sat open for the
+whole budget (30 s) and then sat open for it again, up to four attempts. MEASURED: first-token p95 43.3 s -> 11.3 s
+with timeouts attempted once, and correctness on the 15-question set went 52/54 -> 53/54 (the same question, a
+half-answerable compound one, is flaky by nature — see below).
+
+The retry change also explains three of twelve tool-selection calls returning `null` on that question: a `null`
+decision falls back to the heuristic router, and the traces showed the cause was `LLM transport error: The
+operation timed out.` rather than anything about the question.
+
+A 5xx and a connection error still use the full ladder — they come back immediately and usually succeed on the next
+try — and a caller-supplied signal (the two streaming paths pass their own 120 s budget) is never replaced.
+
 ## Known and unchanged
 
 - A compound question is correct only about half the time, before and after 1.7.0, because the tool selector sends
