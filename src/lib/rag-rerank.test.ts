@@ -257,23 +257,32 @@ describe('rerankWithLlm — reordering by model judgement', () => {
     expect(r.chunks).toHaveLength(2)
   })
 
-  test('UNSCORED chunks backfill so the caller never gets fewer than topK', async () => {
+  test('UNSCORED chunks are NOT backfilled: topK is a ceiling, not a quota', async () => {
+    /*
+     * REVERSED EXPECTATION. This used to be "UNSCORED chunks backfill so the caller never gets fewer than topK",
+     * justified as "dropping the rest would shrink the context window for no reason". MEASURED across 17
+     * retrievals: 2.24 chunks endorsed on average, 4.65 returned — so the "no reason" was the user-visible
+     * defect. Every padded chunk is a citation shown as a source, and on the question that prompted the report two
+     * of three were about annual leave on a question about overtime pay.
+     *
+     * The case the old test was protecting — an answer-less result — is handled separately and still pinned below:
+     * a reranker that endorses NOTHING returns the fused order.
+     */
     seedCandidates(9)
     state.chatRaw = '[{"index":4,"score":10}]'
     const r = await retrieveRelevantChunks({ query: 'sales by region', topK: 4 })
-    // The model usually scores only a few; dropping the rest would shrink the
-    // context window for no reason.
-    expect(r.chunks).toHaveLength(4)
+    expect(r.chunks).toHaveLength(1)
     expect(r.chunks[0].chunkId).toBe('c4')
-    // No duplicates introduced by the backfill.
-    expect(new Set(r.chunks.map((c) => c.chunkId)).size).toBe(4)
   })
 
   test('a duplicate index in the model reply is ignored, not double-counted', async () => {
     seedCandidates(9)
     state.chatRaw = '[{"index":3,"score":9},{"index":3,"score":8},{"index":1,"score":7}]'
     const r = await retrieveRelevantChunks({ query: 'sales by region', topK: 3 })
-    expect(new Set(r.chunks.map((c) => c.chunkId)).size).toBe(3)
+    // Two DISTINCT chunks were scored (3 twice, 1 once). It used to expect 3 because a backfill padded the gap; with
+    // no padding the count is the number of distinct endorsed chunks, and the assertion that matters is that the
+    // duplicated index was not counted twice.
+    expect(r.chunks.map((c) => c.chunkId)).toEqual(['c3', 'c1'])
   })
 
   test('a THROWING reranker degrades to the original order instead of failing the query', async () => {
@@ -296,10 +305,9 @@ describe('rerankWithLlm — reordering by model judgement', () => {
     seedCandidates(9)
     state.chatRaw = '[{"index":0,"score":1}]'
     const r = await retrieveRelevantChunks({ query: 'sales by region', topK: 3 })
-    // Every score is below the floor, so parseRerankerScores returns []. Because
-    // `if (!scored)` does not catch [], the loop runs zero times and the backfill
-    // restores the ORIGINAL order — asserted so this stays a known, tested edge
-    // rather than a latent surprise.
+    // Every score is below the floor, so parseRerankerScores returns []. Nothing was endorsed, which is a
+    // rejection of the WHOLE pool rather than a ranking of it, so the ORIGINAL order is returned — an empty
+    // result would answer "I found nothing" from a corpus that holds the answer.
     expect(r.chunks).toHaveLength(3)
     expect(r.chunks[0].chunkId).toBe('c0')
   })

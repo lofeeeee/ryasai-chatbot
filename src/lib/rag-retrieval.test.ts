@@ -1,3 +1,4 @@
+import { RAG_MAX_PER_DOCUMENT } from '@/lib/constants'
 import { describe, expect, test, mock, beforeEach } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { prometheusText, resetMetrics } from './metrics'
@@ -732,20 +733,74 @@ describe('rerankWithLlm', () => {
     expect(new Set(contents).size).toBe(contents.length)
   })
 
-  test('when the model scores too FEW chunks, the rest are BACKFILLED', async () => {
-    // Only one usable score, but topK asks for 2. The gap must be filled from the
-    // unranked remainder rather than returning a short answer.
+  test('when the model scores too FEW chunks, ONLY the scored ones are returned', async () => {
+    /*
+     * REVERSED EXPECTATION. This test used to require the gap to `topK` be filled from the UNRANKED remainder
+     * ("the rest are BACKFILLED"), and that padding is what the user saw: MEASURED across 17 retrievals, 2.24
+     * chunks were endorsed on average while 4.65 were returned, so more than half of every answer's citations
+     * were passages the reranker had refused to endorse. On the question that prompted the report, "Match #2"
+     * and "Match #3" were about annual leave and did not answer a question about overtime pay.
+     *
+     * The old expectation treated `topK` as a QUOTA. It is a ceiling: fewer chunks is the correct output when
+     * fewer are endorsed, and the empty case is handled separately (a TOTAL rejection returns the fused order,
+     * because "nothing scored" is a reranker event rather than a ranking).
+     */
     llmAnswer = '[{"index":3,"score":9}]'
     const chunks = await rerankViaLlm(5, 2)
-    expect(chunks.length).toBe(2)
+    expect(chunks.length).toBe(1)
     expect((chunks[0] as { content: string }).content).toContain('content 3')
   })
 
-  test('a backfilled chunk is never a duplicate of a scored one', async () => {
-    llmAnswer = '[{"index":1,"score":9}]'
-    const chunks = await rerankViaLlm(4, 3)
-    const contents = chunks.map((c) => (c as { content: string }).content)
-    expect(new Set(contents).size).toBe(contents.length)
+  test('the reranker is shown each chunk\'s OWN text, not the shared context prefix', async () => {
+    /*
+     * MEASURED ON PRODUCTION: every chunk of a document carried the same 377-character `contextPrefix`, and the
+     * reranker reads only the first 300 characters of what it is given — so it saw one identical header for every
+     * candidate and the passages themselves never reached it. It could not tell chunks apart, which is why it
+     * endorsed 2.24 of ~12 on average. The prefix here is longer than that window on purpose: a prefix SHORTER than
+     * the window would leave part of the passage visible and this test would pass for the wrong reason.
+     */
+    const prefix = 'From kebijakan.txt[HR]: ' + 'ringkasan dokumen. '.repeat(20)
+    expect(prefix.length).toBeGreaterThan(300)
+    rerankValue = null
+    llmCfgValue = { id: 'r1' }
+    const ids = ['c0', 'c1', 'c2', 'c3', 'c4']
+    ftsIds = ids
+    dbChunkRows = ids.map((id, i) => ({ ...dbChunkRow(id, `PASSAGE-${i} isi unik`), contextPrefix: prefix }))
+    toRankingImpl = (entries: unknown) => (entries as Array<{ id: string }>).map((e) => e.id)
+    llmAnswer = '[{"index":0,"score":9}]'
+    await retrieveRelevantChunks({ query: 'invoices', topK: 2 })
+    const prompt = llmPrompts.at(-1)!
+    expect(prompt, 'the passage text must reach the reranker').toContain('PASSAGE-0 isi unik')
+    expect(prompt, 'the shared prefix must not be what fills its window').not.toContain('ringkasan dokumen.')
+  })
+
+  test('a reranker that endorses NOTHING does not empty the result', async () => {
+    // An all-below-floor answer is a rejection of the WHOLE pool, not a ranking of it. Returning [] would make the
+    // assistant report "I found nothing" from a corpus holding the answer, which is the evidence-sufficiency defect
+    // this codebase already documents. The fused order is returned instead.
+    llmAnswer = '[{"index":2,"score":1},{"index":3,"score":2}]'
+    const chunks = await rerankViaLlm(5, 2)
+    expect(chunks.length).toBe(2)
+    expect((chunks[0] as { content: string }).content).toContain('content 0')
+  })
+
+  test('the per-document cap applies on the reranked path too', async () => {
+    // `selectTopRetrievedChunks` capped one document's share on the non-reranked path, but the reranked path
+    // bypassed it — so a single document could fill every citation slot. The fixture puts every chunk in `doc-1`,
+    // so with a cap of 3 the fourth endorsed chunk must NOT appear however well it scored.
+    // SIX candidates for a topK of 4, and that is deliberate: `rerankWithLlm` returns early when
+    // `chunks.length <= topK`, so an equal-sized pool never reaches the reranker at all — the first version of this
+    // test used four and passed for the wrong reason (it measured the early return, not the cap).
+    rerankValue = null
+    llmCfgValue = { id: 'r1' }
+    const ids = ['c0', 'c1', 'c2', 'c3', 'c4', 'c5']
+    ftsIds = ids
+    dbChunkRows = ids.map((id, i) => dbChunkRow(id, `content ${i}`))
+    toRankingImpl = (entries: unknown) => (entries as Array<{ id: string }>).map((e) => e.id)
+    llmAnswer = '[{"index":0,"score":10},{"index":1,"score":9},{"index":2,"score":8},{"index":3,"score":7}]'
+    const r = await retrieveRelevantChunks({ query: 'invoices', topK: 4 })
+    // Four endorsed, all in one document: the cap of RAG_MAX_PER_DOCUMENT (3) must hold.
+    expect(r.chunks.length).toBe(RAG_MAX_PER_DOCUMENT)
   })
 
   test('an UNPARSEABLE answer falls back to the original order', async () => {

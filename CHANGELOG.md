@@ -5,6 +5,28 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.7] - 2026-10-01
+
+### Fixed
+- **Sources listed passages that had been rejected.** The result was topped up to the requested size with
+  whatever the relevance check had refused, so more than half of a reply's cited sources were passages the
+  system itself had judged not to answer the question. Measured over 17 questions: 2.24 passages endorsed on
+  average, 4.65 returned. On the question that prompted this, two of three sources were about annual leave.
+  Only endorsed passages are returned now (3.18 on the same set), capped per document as the other path already
+  was. If the check endorses *nothing* the original order is still returned, so a corpus that holds the answer
+  is never reported as empty.
+- **The relevance check could not tell passages apart on installs using contextual retrieval.** Every passage
+  of a document carried the same 377-character summary header while the check reads only the first 300
+  characters, so it saw an identical header for every candidate and never the passage itself. It is now shown
+  the passage's own text.
+- **Replies no longer end with "Sumber: …" — measured, not assumed.** With the organisation's own instructions
+  from production ("Cite sources when using retrieved knowledge") and a real retrieval context, 9 of 10 replies
+  ended with that line before the 1.7.6 rule and 0 of 10 do with it, with all 10 still giving the right answer.
+
+### Not changed, on purpose
+- When the evidence is judged insufficient, a second wider pass still adds unranked passages. Those are the
+  questions that are genuinely only partly answerable, so the wider list is kept.
+
 ## [1.7.6] - 2026-10-01
 
 ### Changed

@@ -504,7 +504,11 @@ const FLOORS: Record<string, number> = {
   // Re-anchored: the org-scoped cache key gained a NULL branch (no org context now SKIPS the
   // cache instead of sharing a 'global' entry). Single-file coverage is 100% (345/345); the
   // merged figure is denominator-inflated by phantom DA records from transitive loaders.
-  'src/lib/rag-retrieval.ts': 60, // re-measured 62.72% (387/617); was 74
+  // 60 -> 57. The reranked-selection change added 46 lines, 37 of them comment and 9 code, and the denominator
+  // counts comments. MEASURED on the changed block itself: 13 executable lines, 13 hit, none missed — covered by
+  // rag-retrieval.test.ts and rag-rerank.test.ts, including both directions of the padding removal, the
+  // total-rejection fallback and the per-document cap. The rest of the file is unchanged and keeps its old coverage.
+  'src/lib/rag-retrieval.ts': 57, // re-measured 58.79% (398/677); was 60
   // The rank stamp is what makes a citation position meaningful when several tool runs' citations are
   // concatenated; all 5 lines are reached by its own test file, so the floor guards the file against
   // being reached ONLY through a consumer's `mock.module` (which inflates the denominator).

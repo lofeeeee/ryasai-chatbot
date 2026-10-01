@@ -15,6 +15,9 @@ import { cacheGet, cacheSet, cacheDel } from '@/lib/redis'
 import {
   RAG_CACHE_TTL_MS,
   RAG_MAX_CHUNKS_PER_UPLOAD,
+  // The per-document cap the non-reranked path already applied through `selectTopRetrievedChunks`. The reranked
+  // path bypassed it entirely until the padding loop was removed, so one document could fill every citation slot.
+  RAG_MAX_PER_DOCUMENT,
 } from '@/lib/constants'
 import {
   tokenize, scoreChunk,
@@ -287,7 +290,17 @@ async function rerankWithLlm(
     const cfg = await getRoleLlmConfig('query')
     if (!cfg) return chunks.slice(0, topK)
 
-    const chunkList = chunks.map((c, i) => `[${i}] ${c.content.slice(0, 300)}`).join('\n\n')
+    /*
+     * THE RERANKER IS SHOWN THE CHUNK'S OWN TEXT, not the retrieval `content`.
+     *
+     * MEASURED ON PRODUCTION: every chunk carried a 377-character `contextPrefix` (the document summary that
+     * `CONTEXTUAL_RETRIEVAL` prepends), while this window is 300 characters — so every candidate was presented to
+     * the model as the SAME header text, with its passage never visible. It scored what it could see, which is why
+     * it endorsed 2.24 chunks of ~12 on average and why identical documents were indistinguishable to it. `ownContent`
+     * is the text without that prefix; falling back to `content` keeps installs without contextual retrieval exactly
+     * as they were (MEASURED locally: `ownContent` is absent there, and the reranker already saw the real text).
+     */
+    const chunkList = chunks.map((c, i) => `[${i}] ${(c.ownContent ?? c.content).slice(0, 300)}`).join('\n\n')
     const systemPrompt =
       'You are a retrieval reranker. Given a query and text chunks, score each chunk\'s relevance to the query from 0 to 10.\n' +
       '10 = directly answers the query, 7 = contains relevant info, 4 = partially relevant, 1 = not relevant.\n' +
@@ -301,26 +314,49 @@ async function rerankWithLlm(
 
     const reranked: RetrievedChunk[] = []
     const used = new Set<number>()
+    /*
+     * ONLY WHAT THE RERANKER ACTUALLY SCORED, capped per document.
+     *
+     * The loop below used to PART-FILL the result to `topK` with whatever the reranker had rejected, so a result
+     * always carried `topK` chunks — MEASURED across 17 retrievals: 2.24 chunks endorsed on average, 4.65 returned.
+     * More than half of every answer's "sources" were passages the reranker had refused, which is exactly what the
+     * user saw: citations #2 and #3 about annual leave on a question about overtime pay.
+     *
+     * The padding looked harmless — more context is not obviously worse — but it is not free: every padded chunk is
+     * a citation the UI shows (so it advertises a match that does not exist), a passage competing for the answer
+     * prompt's attention, and a diversity slot taken from a document that might have answered better. `selectTop`'s
+     * per-document cap never applied on this path either, so one document could occupy the whole result.
+     *
+     * `min(topK, chunks.length)` is the ceiling, not a target: fewer chunks is the correct output when the reranker
+     * endorses fewer, and callers already handle an empty result (`prepareRagStream` falls back to chat).
+     */
+    const perDocument = new Map<string, number>()
     for (const item of scored) {
       if (used.has(item.index)) continue
       used.add(item.index)
+      const chunk = chunks[item.index]
+      const count = perDocument.get(chunk.documentId) ?? 0
+      if (count >= RAG_MAX_PER_DOCUMENT) continue
+      perDocument.set(chunk.documentId, count + 1)
       /*
        * Carry the RERANKER's judgement on the chunk. MEASURED IN UAT: without it this array was ordered by the
        * LLM while every chunk still reported its RETRIEVAL score, so `POST /api/documents/search` returned
        * `[0.3333, 1, 0.5, 0.1111]` — an array that is correctly ordered and a visible score that contradicts it.
        * The UI then labelled it "Match #1…#4", with the best chunk shown as Match #3.
        */
-      reranked.push({ ...chunks[item.index], rerankScore: item.score })
+      reranked.push({ ...chunk, rerankScore: item.score })
       if (reranked.length >= topK) break
     }
-    if (reranked.length < topK) {
-      for (let i = 0; i < chunks.length && reranked.length < topK; i++) {
-        if (!used.has(i)) {
-          used.add(i)
-          reranked.push(chunks[i])
-        }
-      }
-    }
+    /*
+     * A TOTAL rejection is NOT a ranking, so it does not get to empty the result.
+     *
+     * "The reranker endorsed 3 of 12" is a judgement worth honouring: those three are the ones it read and scored.
+     * "The reranker endorsed NONE" is a different event — every score fell below the floor, or the model returned
+     * numbers the parser rejects — and honouring it would answer "I found nothing" from a corpus that contains the
+     * answer. That is the evidence-sufficiency failure this codebase has already been bitten by, so the fused order
+     * is returned instead, truncated to what the caller asked for.
+     */
+    if (reranked.length === 0) return chunks.slice(0, topK)
     return reranked
   } catch (e) {
     log.warn('LLM rerank failed, using original order', { error: e instanceof Error ? e.message : String(e) })
