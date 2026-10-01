@@ -5,6 +5,48 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.1] - 2026-10-01
+
+### Security
+- **Two unauthenticated remote-code-execution flaws in the web framework, and 127 other advisories.**
+  `next` 16.1.3 → 16.3.8 fixes both criticals, which are fixed only in 16.3.3 and above: one on
+  Windows-hosted servers, and one through the Image Optimization API when AVIF is used. The second
+  is live here — the login screen renders an image through that optimizer, so it answers before
+  anyone signs in. The dependency range has been raised too: it allowed a version older than the
+  fix, so a fresh install could have pulled a vulnerable one back in. `bun audit` reported 130
+  advisories before this release and 3 after.
+- `prismjs` is pinned to 1.30.0. The syntax highlighter pulls a version with a DOM-clobbering flaw,
+  and that copy was being shipped to the browser.
+
+### Fixed
+- **A slow answer could take four times as long as the configured limit, and sometimes ended in a
+  shrug instead of an answer.** A request that timed out was retried — up to four times — even
+  though a timeout means the request already used its whole budget. Measured on a fixed question
+  set, the worst-case wait for the first word fell from 43.3 s to 11.3 s. It also cost correct
+  answers: three of twelve source-selection calls gave up on a timeout and fell back to the older
+  keyword router. A server error and a refused connection still retry, because those come back
+  immediately.
+- **Restoring a document version left the knowledge graph pointing at passages that no longer
+  existed.** Measured: 131 of 131 graph rows in a development database were left orphaned this way.
+  Retrieval then found nothing for them, which read as "no matching entity" rather than as a broken
+  graph. `bun run scripts/cleanup-kg-orphans.ts` reports an installation that already has orphans,
+  and with `--apply` removes them.
+- **Answer sources all showed the same text.** Every passage of a document carries the same
+  summary, and the source preview was the first 240 characters — so three different sources from one
+  document displayed one identical summary and none showed the passage that matched. Previews now
+  show the passage.
+- **A documented setting did nothing.** A comment offered `TOOL_SELECTION=heuristic` as a way to turn
+  off per-turn source selection; nothing read that variable. The comment now names the settings that
+  work.
+
+### Changed
+- **The knowledge base is a little faster on every question.** Two memory lookups that ran one after
+  another now run together (~1.1 s saved per turn, measured on a deployment), and a question is
+  ranked once over the combined results instead of once per phrasing. A query for the document list
+  now has the index it needs.
+- Every answer reports how long the first word took and how many AI calls preceded it, in the stream
+  and on `/api/metrics`, so a slow turn can be diagnosed instead of guessed at.
+
 ## [1.7.0] - 2026-10-01
 
 ### Changed

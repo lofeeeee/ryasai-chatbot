@@ -364,35 +364,45 @@ async function recallFromServer(
     { searchType: 'CHUNKS', topK: 5 },
   ]
 
-  const parts: string[] = []
-  for (const strategy of strategies) {
-    try {
-      const hits = await cogneeRecall(opts, {
-        query,
-        datasets: [dataset],
-        searchType: strategy.searchType,
-        topK: strategy.topK,
-        sessionId,
-      })
-      // `cogneeRecall` returns NULL on an HTTP failure and never throws, so the `catch` below
-      // never sees an outage. Without this distinction a dead server and an empty dataset both
-      // took the `continue` branch and the turn simply reviewed as "no memory" — the caller's
-      // `.catch(() => '')` then hides it further. Recall is best-effort by design, so this stays
-      // NON-FATAL; it just stops being SILENT, because "memory is down" and "no relevant memory"
-      // are different facts and only one of them is a deployment problem.
-      if (hits === null) {
-        console.warn(
-          `[cognee] recall strategy ${strategy.searchType} could NOT reach the server — treating as no memory, but this is an outage, not an empty result`,
-        )
-        continue
+  /*
+   * CONCURRENT, not sequential. The strategies are independent requests to the same server, so awaiting them one
+   * after another made the turn wait for their SUM: MEASURED on the production deployment, SUMMARIES 565 ms plus
+   * CHUNKS 536 ms — about 1.1 s of avoidable latency on EVERY chat turn, before the answer LLM is even contacted.
+   *
+   * Order is preserved: the results are collected by index and joined in the strategies' own order, so the memory
+   * block a prompt receives is byte-identical to what the sequential version produced. A failure in one strategy is
+   * isolated per index, exactly as the loop's `continue` isolated it.
+   */
+  const settled = await Promise.all(
+    strategies.map(async (strategy) => {
+      try {
+        const hits = await cogneeRecall(opts, {
+          query,
+          datasets: [dataset],
+          searchType: strategy.searchType,
+          topK: strategy.topK,
+          sessionId,
+        })
+        // `cogneeRecall` returns NULL on an HTTP failure and never throws, so a `catch` alone never sees an
+        // outage. Without this distinction a dead server and an empty dataset both took the same branch and the
+        // turn simply reviewed as "no memory" — the caller's `.catch(() => '')` then hides it further. Recall is
+        // best-effort by design, so this stays NON-FATAL; it just stops being SILENT, because "memory is down" and
+        // "no relevant memory" are different facts and only one of them is a deployment problem.
+        if (hits === null) {
+          console.warn(
+            `[cognee] recall strategy ${strategy.searchType} could NOT reach the server — treating as no memory, but this is an outage, not an empty result`,
+          )
+          return ''
+        }
+        if (hits.length === 0) return ''
+        return hits.map((h) => h.text ?? '').filter(Boolean).join('\n')
+      } catch (e) {
+        console.warn('[cognee] server recall strategy failed:', e instanceof Error ? e.message : String(e))
+        return ''
       }
-      if (hits.length === 0) continue
-      const text = hits.map((h) => h.text ?? '').filter(Boolean).join('\n')
-      if (text) parts.push(text)
-    } catch (e) {
-      console.warn('[cognee] server recall strategy failed:', e instanceof Error ? e.message : String(e))
-    }
-  }
+    }),
+  )
+  const parts = settled.filter(Boolean)
 
   return parts.length > 0 ? dedupeJoin(parts) : ''
 }
@@ -468,24 +478,28 @@ async function recallFromGraph(c: any, query: string): Promise<string> {
       ? [{ searchType: 'NATURAL_LANGUAGE', topK: 10 }]
       : [{ searchType: 'CHUNKS_LEXICAL', topK: 10 }]),
   ]
-  const results: string[] = []
-  for (const strategy of strategies) {
-    try {
-      const result = await withDeadline(
-        c.search(query, {
-          datasets: [datasetFor()],
-          topK: strategy.topK,
-          searchType: strategy.searchType,
-          userId: getCogneeOwnerId(),
-        }),
-        'recall-search',
-      )
-      const formatted = formatSearchResponse(result)
-      if (formatted) results.push(formatted)
-    } catch (e) {
-      console.warn('[cognee] graph recall strategy failed:', e instanceof Error ? e.message : String(e))
-    }
-  }
+  // Concurrent for the same reason as `recallFromServer`: independent searches whose awaits were serialised, so
+  // the caller waited for their sum. Kept in strategy order by index.
+  const settled = await Promise.all(
+    strategies.map(async (strategy) => {
+      try {
+        const result = await withDeadline(
+          c.search(query, {
+            datasets: [datasetFor()],
+            topK: strategy.topK,
+            searchType: strategy.searchType,
+            userId: getCogneeOwnerId(),
+          }),
+          'recall-search',
+        )
+        return formatSearchResponse(result)
+      } catch (e) {
+        console.warn('[cognee] graph recall strategy failed:', e instanceof Error ? e.message : String(e))
+        return ''
+      }
+    }),
+  )
+  const results = settled.filter(Boolean)
   if (results.length > 0) return dedupeJoin(results)
   // Last resort: no dataset filter
   try {

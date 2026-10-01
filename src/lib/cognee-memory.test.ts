@@ -874,6 +874,31 @@ describe('recallContext — server backend', () => {
     expect(args.topK).toBe(5)
   })
 
+  test('both strategies are IN FLIGHT at once, and the block keeps the strategies’ own order', async () => {
+    // MEASURED on production: SUMMARIES 565 ms + CHUNKS 536 ms, awaited one after another, is ~1.1 s of avoidable
+    // wait on every chat turn before the answer LLM is even contacted. The two requests are independent, so the
+    // turn should wait for the SLOWER one, not their sum.
+    //
+    // The assertion is on OBSERVED OVERLAP, not on elapsed time: each call records that it started and does not
+    // resolve until BOTH have started, so a serialised implementation deadlocks and the test fails on the timeout
+    // instead of passing on a fast machine. Order is asserted at the same time, because the fix must not reorder
+    // the memory block a prompt receives.
+    state.serverOptions = SERVER_OPTS
+    const started: string[] = []
+    let releaseBoth!: () => void
+    const bothStarted = new Promise<void>((r) => { releaseBoth = r })
+    state.httpRecallImpl = async (_opts: any, args: any) => {
+      started.push(args.searchType)
+      if (started.length === 2) releaseBoth()
+      await bothStarted
+      return [{ text: `${args.searchType} fact` }]
+    }
+    const out = await recallContext({ query: 'sales' })
+    expect(started.sort()).toEqual(['CHUNKS', 'SUMMARIES'])
+    // SUMMARIES precedes CHUNKS in the prompt block regardless of which answered first.
+    expect(out).toBe('SUMMARIES fact\nCHUNKS fact')
+  })
+
   test('identical strategy outputs are deduped on the server path too', async () => {
     // dedupeJoin runs AFTER recallFromServer, not before it, so a server that answers both
     // strategies with the same text must contribute it ONCE. Injecting it twice inflates
