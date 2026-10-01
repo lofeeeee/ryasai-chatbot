@@ -5,6 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.1] - 2026-10-01
+
+### Fixed
+- **The memory screen offered several Reload buttons for one action.** Up to three copies could appear depending
+  on the state, because each had been added to a different part of the card. There is now one, in a position that
+  is present in every state.
+- **The manual "share provider now" button had become unreachable.** It lives inside the memory operations card,
+  which moved to Knowledge → Storage → AI Memory → Details, so it ended up two menus away from the screen where
+  you are standing when you have just changed memory's provider. It is now also on the AI Memory Configuration
+  screen, where it belongs.
+- **Two labels described a screen that no longer exists.** One said memory reuses the chat model (untrue since
+  memory gained its own model), and one pointed at an "LLM" tab that was renamed to "Chat Configuration".
+
 ## [1.6.0] - 2026-10-01
 
 A security release. Every fix below was found by an audit of this codebase, reproduced before being
