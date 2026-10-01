@@ -28,7 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is live here — the login screen renders an image through that optimizer, so it answers before
   anyone signs in. The dependency range has been raised too: it allowed a version older than the
   fix, so a fresh install could have pulled a vulnerable one back in. `bun audit` reported 130
-  advisories before this release and 3 after.
+  advisories before 1.7.1 and reports 2 after 1.7.2; both are in the database command-line tool, which
+  runs only at start-up and is not part of the application image.
 - `prismjs` is pinned to 1.30.0. The syntax highlighter pulls a version with a DOM-clobbering flaw,
   and that copy was being shipped to the browser.
 
