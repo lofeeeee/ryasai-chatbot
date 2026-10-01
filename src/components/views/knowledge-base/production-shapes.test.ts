@@ -889,3 +889,60 @@ describe('readSidecarState — "memory off" and "sidecar down" are not one value
     expect(readSidecarState({})).toBe('unknown')
   })
 })
+
+/**
+ * The memory panel must offer ONE Reload, and must expose the manual push.
+ *
+ * BOTH WERE USER-REPORTED REGRESSIONS of the 1.4.0/1.5.0 work, and both are asserted on the RENDERED
+ * MARKUP rather than on the source, because the defect was a COUNT and a MISSING surface:
+ *
+ *   1. "why are there multiple reload buttons" — a Reload had been added to the follow-chat banner
+ *      AND to the action row AND to the card footer. Individually each looked reasonable; together the
+ *      user saw two or three controls for one action. A source-level assertion cannot see this, because
+ *      the copies live in branches that render in different states.
+ *   2. "where is the share provider" — `MemoryProviderPanel` renders inside `CogneeCard`, which moved to
+ *      Knowledge > Storage > AI Memory > Details. That put the push button two menus away from the screen
+ *      where an operator has just CHANGED the provider — the one moment the button is for.
+ */
+describe('MemoryConfigurationPanel — one Reload, and the manual push is reachable', () => {
+  const reloadCount = (html: string) => (html.match(/>\s*Reload\s*</g) ?? []).length
+
+  /**
+   * A LOCAL stub. `stub` inside the earlier describe is scoped to it, so reusing that name here threw
+   * `ReferenceError: stub is not defined` — which is a test-harness mistake, not a component defect,
+   * and it would have read as three failing guards if the message had not been read.
+   *
+   * These endpoints must BOTH be served: the panel fetches its own config AND `/api/cognee` for the
+   * storage grid, and `MemoryProviderPanel` reads `/api/cognee/provider` for the push state.
+   */
+  const stub = (memory: unknown, source: 'memory' | 'chat') =>
+    (async (url: string) => {
+      const u = String(url)
+      if (u.includes('/api/cognee/provider')) return json({ ok: true, data: { configured: null } })
+      if (u.includes('/api/llm-config/memory')) return json({ ok: true, data: { memory, source } })
+      return json({ ok: true, data: { diagnostics: { components: [] } } })
+    }) as unknown as typeof fetch
+
+  test('the follow-chat state renders EXACTLY ONE Reload', async () => {
+    g.fetch = stub(null, 'chat')
+    const html = await renderComponent(React.createElement(MemoryConfigurationPanel))
+    expect(reloadCount(html)).toBe(1)
+  })
+
+  test('the own-model state with the form open also renders exactly one', async () => {
+    // The state where the duplication actually happened: banner + action row + footer all present.
+    g.fetch = stub(
+      { provider: 'OPENAI_COMPATIBLE', baseUrl: 'https://m.example/v1', model: 'm', apiKeyMasked: 'sk-a••••' },
+      'memory',
+    )
+    const html = await renderComponent(React.createElement(MemoryConfigurationPanel))
+    expect(html).toContain('id="mem-model"')
+    expect(reloadCount(html)).toBe(1)
+  })
+
+  test('the manual push is reachable from THIS screen, not only from Knowledge > Storage', async () => {
+    g.fetch = stub(null, 'chat')
+    const html = await renderComponent(React.createElement(MemoryConfigurationPanel))
+    expect(html).toContain('Share provider now')
+  })
+})

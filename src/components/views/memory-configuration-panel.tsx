@@ -37,6 +37,7 @@ import {
 import { DEFAULT_EMBEDDING_MODEL } from '@/lib/constants'
 import { extractError } from '@/lib/extract-error'
 import { cn } from '@/lib/utils'
+import { MemoryProviderPanel } from '@/components/views/memory-provider-panel'
 
 /**
  * AI Memory Configuration — the memory sidecar's own extraction provider, and where its memory lives.
@@ -486,7 +487,7 @@ export function MemoryConfigurationPanel() {
                       working setup — there is nothing to fill in here.
                     </p>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     {!dedicatedIntent && (
                       <Button
                         size="sm"
@@ -498,16 +499,6 @@ export function MemoryConfigurationPanel() {
                         Use a dedicated model
                       </Button>
                     )}
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-7 shrink-0 text-xs"
-                      icon={<RefreshCw className="h-3.5 w-3.5" />}
-                      onClick={() => void load()}
-                      disabled={loading}
-                    >
-                      Reload
-                    </Button>
                   </div>
                 </div>
               )}
@@ -619,16 +610,13 @@ export function MemoryConfigurationPanel() {
                         Clear, follow chat
                       </Button>
                     )}
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="h-7 text-xs"
-                      icon={<RefreshCw className="h-3.5 w-3.5" />}
-                      onClick={() => void load()}
-                      disabled={loading || saving || clearing}
-                    >
-                      Reload
-                    </Button>
+                    {/*
+                      NO Reload HERE. It lives in the CARD FOOTER, which renders in every state, so a
+                      second copy in this action row would be a duplicate control for one action —
+                      reported by a user as "why are there multiple reload buttons". The footer is the
+                      single owner: it is present when this form is hidden, when it is shown, and when
+                      the read failed and neither applies.
+                    */}
                     {!usingOwn && (
                       <Button size="sm" variant="ghost" onClick={cancelDedicated} className="h-7 text-xs">
                         Cancel
@@ -744,6 +732,19 @@ export function MemoryConfigurationPanel() {
           </div>
         </CardContent>
       </Card>
+
+      {/*
+        THE MANUAL PUSH, and why it belongs on this screen rather than only behind Knowledge >
+        Storage > AI Memory > Details.
+        Reported by a user: "where is the share provider". It was reachable only by a two-level
+        detour, because it renders inside `CogneeCard`, which MOVED to the Knowledge storage tab. But
+        this screen is where the operator is standing when they change memory's provider — the one
+        moment the push button is for — so hiding it two menus away made the action effectively
+        unreachable from the place that motivates it.
+        The panel reads the SIDECAR's own report, so the two copies cannot disagree about what the
+        sidecar holds; only the button is duplicated, and it is idempotent.
+      */}
+      <MemoryProviderPanel />
     </div>
   )
 }

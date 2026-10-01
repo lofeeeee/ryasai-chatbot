@@ -111,9 +111,10 @@ export function MemoryProviderPanel() {
       </div>
 
       <p className="text-[10px] text-muted-foreground">
-        Memory reuses the model from <strong>AI Configuration</strong> — one place to set it, both
-        consumers using it. The sidecar keeps this in memory only, so the app re-shares it at every
-        restart. Share now if you just changed the provider.
+        Push the configured credentials to the memory service now. It keeps them in memory only, so the
+        app re-shares them at every start — this button exists for the case where you have just changed
+        something and do not want to wait for a restart. What lands here is whatever{' '}
+        <strong>AI Configuration</strong> resolves memory at the moment of the push.
       </p>
 
       {/*
@@ -159,7 +160,7 @@ export function MemoryProviderPanel() {
           Re-read
         </Button>
         <Label className="ml-auto text-[10px] font-normal text-muted-foreground">
-          Set the model in AI Configuration → LLM
+          Set the model in AI Configuration → Chat Configuration
         </Label>
       </div>
     </div>
