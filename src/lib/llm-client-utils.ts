@@ -192,7 +192,7 @@ export async function* iterSseStream(
 // ---------------------------------------------------------------------------
 
 /**
- * How long ONE attempt may take, and whether a TIMEOUT may be retried.
+ * Whether a TIMEOUT may be retried — it may not.
  *
  * A timeout is not a flaky-provider symptom: it means the request sat open for the full budget. Retrying it spends
  * that budget AGAIN, so a slow provider turned one 30 s wait into four and the user saw 120 s. MEASURED on the
@@ -201,10 +201,10 @@ export async function* iterSseStream(
  * ACCURACY, not just time.
  *
  * A 5xx and a connection reset are different: they come back fast and often succeed on the next try, so those keep
- * the full ladder. The timeout ceiling is only raised where a caller asks for it (see `timeoutMs`), which the
- * streaming path does because a long answer legitimately takes longer than 30 s.
+ * the full ladder. The two streaming call sites pass their OWN 120 s signal, which takes precedence over the 30 s
+ * default below, because a long answer legitimately takes longer than 30 s.
  */
-export async function fetchWithRetry(url: string, init: RequestInit, timeoutMs?: number): Promise<Response> {
+export async function fetchWithRetry(url: string, init: RequestInit): Promise<Response> {
   let lastError: Error | null = null
   // ONE retry budget for the whole call, decremented only where a retry is actually decided. An earlier version
   // computed it inside the catch and then `continue`d on the loop's own ceiling as well, so the budget affected
@@ -217,8 +217,7 @@ export async function fetchWithRetry(url: string, init: RequestInit, timeoutMs?:
       // signal the request can sit open indefinitely and the backoff never runs. The
       // budget is per ATTEMPT, so retrying a TIMEOUT would multiply the worst case by
       // the ladder length — which is why a timeout is not retried at all.
-      const budget = timeoutMs ?? LLM_TIMEOUT_MS
-      const res = await fetch(url, { ...init, signal: init.signal ?? AbortSignal.timeout(budget) })
+      const res = await fetch(url, { ...init, signal: init.signal ?? AbortSignal.timeout(LLM_TIMEOUT_MS) })
       // A 5xx is a fast, usually-transient provider answer: worth the ladder.
       if (res.status >= 500 && retriesLeft > 0) {
         retriesLeft -= 1
@@ -231,7 +230,8 @@ export async function fetchWithRetry(url: string, init: RequestInit, timeoutMs?:
       lastError = e instanceof Error ? e : new Error(String(e))
       // A TIMEOUT already consumed the full budget and will consume it again, so it ends the call here — that is
       // the whole point of the budget. A connection error fails immediately and often succeeds on the next try.
-      const mayRetry = !isTimeoutError(lastError) && retriesLeft > 0
+      // A cancelled request (the caller aborted it) is not retried either: nobody is waiting for the answer.
+      const mayRetry = !isTimeoutError(lastError) && lastError.name !== 'AbortError' && retriesLeft > 0
       if (!mayRetry) break
       retriesLeft -= 1
       await new Promise((r) => setTimeout(r, LLM_RETRY_BACKOFF_BASE_MS * 2 ** (LLM_MAX_RETRIES - retriesLeft - 1)))
@@ -257,18 +257,24 @@ export async function fetchWithRetry(url: string, init: RequestInit, timeoutMs?:
 }
 
 /**
- * True for an aborted-due-to-timeout, in any of the shapes the runtimes produce.
+ * True for an abort caused by a TIMEOUT — and only that.
  *
- * Matched on the NAME/`code` first: Bun reports `TimeoutError`, Node's undici reports `AbortError` with a
- * `TimeoutError` cause, and the DOMException name is the only field common to both. The message patterns are a
- * fallback for a wrapped error, not the primary signal — a message is prose and can be reworded by a runtime
- * upgrade, while the name is part of the contract.
+ * MEASURED against Bun's fetch: a MANUAL abort throws `AbortError` ("The operation was aborted.") while
+ * `AbortSignal.timeout` throws `TimeoutError` ("The operation timed out."). The first version of this function
+ * treated both as a timeout, which is wrong in both directions: it described a caller's cancellation as a provider
+ * stall, and on Node's undici an `AbortError` can wrap an unrelated cause. A cancellation is not retried either —
+ * the caller no longer wants the answer — but that is `fetchWithRetry`'s decision, made for its own reason, not a
+ * side effect of this classifier's name.
+ *
+ * Matched on the NAME and the `cause` name first, because a message is prose a runtime upgrade can reword. The
+ * message patterns are a fallback for a wrapped error that lost its name.
  */
 export function isTimeoutError(e: Error): boolean {
-  const name = e.name ?? ''
-  if (name === 'TimeoutError' || name === 'AbortError') return true
+  if (e.name === 'TimeoutError') return true
   const cause = (e as { cause?: { name?: string } }).cause
   if (cause?.name === 'TimeoutError') return true
+  // An AbortError that carries no timeout cause is a CANCELLATION, whatever its message says.
+  if (e.name === 'AbortError') return false
   return /timed out|timeout|ETIMEDOUT/i.test(e.message)
 }
 

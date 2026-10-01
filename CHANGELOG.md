@@ -5,6 +5,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.2] - 2026-10-01
+
+### Fixed
+- **Cancelling a request was treated as a provider stall.** The retry change in 1.7.1 grouped a request
+  the caller cancelled with a request that timed out, and described both as the provider being slow. They
+  are different: a timeout means the provider took the whole budget, a cancellation means nobody is waiting
+  any more. Neither is retried, but each is now identified for the right reason.
+- **A safety check that reported success while checking nothing.** The test that confirms two known
+  advisories never reach the shipped image asserted that a file was absent — and with no build on disk every
+  file is absent, so it passed on a clean checkout, which is exactly where continuous integration runs it.
+  It now confirms it can see a real package first, and reports itself as skipped, not passed, when there is
+  no build to inspect.
+- Removed an unused parameter from the retry helper whose own comment claimed a caller used it. None did.
+
 ## [1.7.1] - 2026-10-01
 
 ### Security

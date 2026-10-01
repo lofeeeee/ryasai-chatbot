@@ -94,12 +94,23 @@ describe('vulnerable dependencies cannot re-enter the shipped app', () => {
     expect(copies.length, 'the lockfile must pin prismjs at least once').toBeGreaterThan(0)
   })
 
-  test('the accepted advisories are still accepted: the packages are NOT in the app image', () => {
+  // This guard has TWO halves, and the second is only meaningful with a build on disk.
+  //
+  // MEASURED: with `.next/` moved away, the original single test still PASSED — it asserted that a package.json
+  // was absent, and a missing build makes every file absent. CI runs the unit suite before any build, so there it
+  // guarded nothing while reporting green. The premise is now asserted FIRST (a package that MUST be in the image is
+  // visible to the same probe), and when there is no build the test is SKIPPED rather than passed: a skip shows up
+  // in the runner's count, a green tick that checked nothing does not.
+  const standalone = join(ROOT, '.next', 'standalone', 'node_modules')
+  const haveBuild = Bun.file(join(standalone, 'next', 'package.json')).size > 0
+
+  test.skipIf(!haveBuild)('the accepted advisories are still accepted: the packages are NOT in the app image', () => {
     // If one of these ever reaches `.next/standalone`, its advisory is no longer a CLI-only concern and this test's
     // premise is false — the failure message says what changed. Presence is probed by reading the package manifest
-    // inside each candidate directory, which is the only filesystem check that works without a directory listing.
+    // inside each candidate directory, the only filesystem check that works without a directory listing.
+    expect(Bun.file(join(standalone, 'next', 'package.json')).size, 'the probe must be able to see a real package').toBeGreaterThan(0)
     for (const { name } of ACCEPTED) {
-      const manifest = join(ROOT, '.next', 'standalone', 'node_modules', name, 'package.json')
+      const manifest = join(standalone, name, 'package.json')
       expect(Bun.file(manifest).size, `${name} reached the standalone image; its accepted advisory must be re-assessed`).toBe(0)
     }
   })

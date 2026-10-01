@@ -19,10 +19,16 @@ const ok = () => new Response('{}', { status: 200 })
 describe('isTimeoutError', () => {
   test('matches the shapes each runtime produces', () => {
     expect(isTimeoutError(timeoutError())).toBe(true)
-    expect(isTimeoutError(Object.assign(new Error('aborted'), { name: 'AbortError' }))).toBe(true)
     // Node's undici wraps the cause; the outer name is AbortError but the CAUSE carries the truth.
     expect(isTimeoutError(Object.assign(new Error('aborted'), { name: 'AbortError', cause: { name: 'TimeoutError' } }))).toBe(true)
     expect(isTimeoutError(new Error('fetch failed: ETIMEDOUT'))).toBe(true)
+  })
+  test('a plain AbortError is a CANCELLATION, not a timeout', () => {
+    // MEASURED on Bun: a manual abort throws AbortError; AbortSignal.timeout throws TimeoutError. Calling both a
+    // "timeout" blamed the provider for a caller's own cancellation.
+    expect(isTimeoutError(Object.assign(new Error('The operation was aborted.'), { name: 'AbortError' }))).toBe(false)
+    // …even when its message happens to contain the word, because the NAME is the contract.
+    expect(isTimeoutError(Object.assign(new Error('aborted due to timeout handler'), { name: 'AbortError' }))).toBe(false)
   })
   test('does NOT match a connection failure, which is fast and worth retrying', () => {
     expect(isTimeoutError(Object.assign(new Error('Unable to connect. Is the computer able to access the url?'), { name: 'TypeError' }))).toBe(false)
@@ -60,6 +66,14 @@ describe('fetchWithRetry', () => {
       expect(res.status).toBe(200)
     })
     expect(calls).toBe(2)
+  })
+
+  test('a CANCELLED request is attempted once: nobody is waiting for the answer', async () => {
+    let calls = 0
+    await withFetch(async () => { calls += 1; throw Object.assign(new Error('The operation was aborted.'), { name: 'AbortError' }) }, async () => {
+      await expect(fetchWithRetry('http://x', {})).rejects.toThrow()
+    })
+    expect(calls).toBe(1)
   })
 
   test('a caller-supplied signal is NOT replaced by the timeout signal', async () => {
