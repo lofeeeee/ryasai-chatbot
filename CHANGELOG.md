@@ -5,6 +5,16 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.5] - 2026-10-01
+
+### Fixed
+- **The build's own checks passed locally while failing on the server.** Three modules grew during
+  these releases, and the coverage floors guarding them had become unreachable: the framework counts
+  comment lines in a file's total, and one module gained 48 lines of explanation for 20 of code, so no
+  amount of testing could have reached its floor. The floors are re-derived from the measurement, with
+  the reason and the evidence for the new code recorded next to each — not lowered to make a failure
+  go away. No product code changed in this release.
+
 ## [1.7.4] - 2026-10-01
 
 ### Fixed

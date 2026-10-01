@@ -1,7 +1,7 @@
 # CLAUDE.md — ryasai Chatbot (Super-App Track)
 
 > Living document. Update the **Progress Log** at the bottom every session.
-> Last updated 2026-10-01. Version 1.7.4. PostgreSQL 16. All PLAN.md phases P0–P5 + S4 + RAG complete. Language standardized to English.
+> Last updated 2026-10-01. Version 1.7.5. PostgreSQL 16. All PLAN.md phases P0–P5 + S4 + RAG complete. Language standardized to English.
 >
 > **Counts and versions in this file drift.** Section 1 and 8 describe CURRENT state — run the
 > command rather than trusting a number written here; section 9 (Progress Log) is HISTORICAL and
@@ -19,8 +19,8 @@
 | Stack | Next.js 16 (App Router) · React 19 · TypeScript 5 · Prisma 6 · PostgreSQL 16 (pgvector + pg_trgm) · Bun · Tailwind 4 · shadcn/ui |
 | Runtime | Bun for dev/test, Node standalone for prod build |
 | Domain | Multi-tenant AI assistant deployed **on-prem per customer**, licensed with a signed machine-bound key: natural-language → SQL, RAG over company docs, whitelisted REST calls, streaming chat |
-| Status | **Release 1.7.4** (2026-10-01). Latency + security. Verified by execution, not assertion: `tsc` 0 · `lint` 0 · `bun run test` 313/313 files, 7670 pass, 0 fail · coverage:gate exit 0 · `e2e` and `e2e:prod` both 19 passed |
-| Version | 1.7.4 |
+| Status | **Release 1.7.5** (2026-10-01). Latency + security. Verified by execution, not assertion: `tsc` 0 · `lint` 0 · `bun run test` 313/313 files, 7670 pass, 0 fail · coverage:gate exit 0 · `e2e` and `e2e:prod` both 19 passed |
+| Version | 1.7.5 |
 | Language | English (standardized — all UI, errors, system prompts, comments in English) |
 
 ---

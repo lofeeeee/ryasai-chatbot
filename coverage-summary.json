@@ -1,14 +1,14 @@
 {
   "linePct": 75,
-  "linesHit": 26600,
-  "linesFound": 35468,
-  "reachableLinePct": 86.5,
-  "reachableLinesHit": 23174,
-  "reachableLinesFound": 26792,
+  "linesHit": 26789,
+  "linesFound": 35720,
+  "reachableLinePct": 86.78,
+  "reachableLinesHit": 23354,
+  "reachableLinesFound": 26912,
   "fnPct": 88.76,
-  "fnsHit": 2361,
-  "fnsFound": 2660,
-  "filesMeasured": 252,
+  "fnsHit": 2385,
+  "fnsFound": 2687,
+  "filesMeasured": 253,
   "failedTestFiles": [],
   "files": [
     {
@@ -34,15 +34,6 @@
       "hit": 8,
       "found": 164,
       "pct": 4.878048780487805,
-      "fHit": 0,
-      "fFound": 1,
-      "fPct": 0
-    },
-    {
-      "file": "src/components/views/memory-provider-panel.tsx",
-      "hit": 7,
-      "found": 142,
-      "pct": 4.929577464788732,
       "fHit": 0,
       "fFound": 1,
       "fPct": 0
@@ -174,6 +165,15 @@
       "fPct": 100
     },
     {
+      "file": "src/components/views/memory-provider-panel.tsx",
+      "hit": 69,
+      "found": 144,
+      "pct": 47.91666666666667,
+      "fHit": 4,
+      "fFound": 6,
+      "fPct": 66.66666666666666
+    },
+    {
       "file": "src/lib/memory-queue.ts",
       "hit": 48,
       "found": 97,
@@ -192,15 +192,6 @@
       "fPct": 100
     },
     {
-      "file": "src/lib/tool-router.ts",
-      "hit": 298,
-      "found": 596,
-      "pct": 50,
-      "fHit": 36,
-      "fFound": 41,
-      "fPct": 87.8048780487805
-    },
-    {
       "file": "src/lib/system-message-ceiling.ts",
       "hit": 80,
       "found": 159,
@@ -208,6 +199,15 @@
       "fHit": 9,
       "fFound": 9,
       "fPct": 100
+    },
+    {
+      "file": "src/lib/tool-router.ts",
+      "hit": 319,
+      "found": 621,
+      "pct": 51.368760064412236,
+      "fHit": 42,
+      "fFound": 48,
+      "fPct": 87.5
     },
     {
       "file": "src/lib/mcp-client.ts",
@@ -264,6 +264,15 @@
       "fPct": 40
     },
     {
+      "file": "src/lib/cognee-config-push.ts",
+      "hit": 119,
+      "found": 200,
+      "pct": 59.5,
+      "fHit": 5,
+      "fFound": 9,
+      "fPct": 55.55555555555556
+    },
+    {
       "file": "src/lib/cognee-knowledge-graph.ts",
       "hit": 275,
       "found": 462,
@@ -271,6 +280,15 @@
       "fHit": 31,
       "fFound": 36,
       "fPct": 86.11111111111111
+    },
+    {
+      "file": "src/components/views/memory-configuration-panel.tsx",
+      "hit": 377,
+      "found": 629,
+      "pct": 59.93640699523053,
+      "fHit": 16,
+      "fFound": 31,
+      "fPct": 51.61290322580645
     },
     {
       "file": "src/lib/guardrails.ts",
@@ -283,30 +301,21 @@
     },
     {
       "file": "src/lib/cognee-memory.ts",
-      "hit": 234,
-      "found": 381,
-      "pct": 61.417322834645674,
-      "fHit": 27,
-      "fFound": 28,
-      "fPct": 96.42857142857143
+      "hit": 238,
+      "found": 395,
+      "pct": 60.25316455696203,
+      "fHit": 31,
+      "fFound": 32,
+      "fPct": 96.875
     },
     {
       "file": "src/lib/rag-retrieval.ts",
-      "hit": 387,
-      "found": 622,
-      "pct": 62.21864951768489,
-      "fHit": 53,
-      "fFound": 53,
-      "fPct": 100
-    },
-    {
-      "file": "src/components/views/memory-configuration-panel.tsx",
-      "hit": 391,
-      "found": 628,
-      "pct": 62.261146496815286,
-      "fHit": 16,
-      "fFound": 33,
-      "fPct": 48.484848484848484
+      "hit": 400,
+      "found": 644,
+      "pct": 62.11180124223602,
+      "fHit": 55,
+      "fFound": 56,
+      "fPct": 98.21428571428571
     },
     {
       "file": "src/components/ui/button.tsx",
@@ -328,9 +337,9 @@
     },
     {
       "file": "src/lib/intent-pipeline.ts",
-      "hit": 374,
-      "found": 579,
-      "pct": 64.59412780656304,
+      "hit": 384,
+      "found": 598,
+      "pct": 64.21404682274247,
       "fHit": 33,
       "fFound": 35,
       "fPct": 94.28571428571428
@@ -343,6 +352,15 @@
       "fHit": 13,
       "fFound": 15,
       "fPct": 86.66666666666667
+    },
+    {
+      "file": "src/lib/doc-versioning.ts",
+      "hit": 91,
+      "found": 135,
+      "pct": 67.4074074074074,
+      "fHit": 7,
+      "fFound": 8,
+      "fPct": 87.5
     },
     {
       "file": "src/lib/ai.ts",
@@ -444,15 +462,6 @@
       "fPct": 100
     },
     {
-      "file": "src/lib/cognee-config-push.ts",
-      "hit": 111,
-      "found": 156,
-      "pct": 71.15384615384616,
-      "fHit": 4,
-      "fFound": 7,
-      "fPct": 57.14285714285714
-    },
-    {
       "file": "src/lib/real-connectors.ts",
       "hit": 701,
       "found": 977,
@@ -460,6 +469,15 @@
       "fHit": 98,
       "fFound": 103,
       "fPct": 95.14563106796116
+    },
+    {
+      "file": "src/lib/stream-preparers.ts",
+      "hit": 485,
+      "found": 668,
+      "pct": 72.60479041916167,
+      "fHit": 33,
+      "fFound": 44,
+      "fPct": 75
     },
     {
       "file": "src/lib/web-fetch.ts",
@@ -471,28 +489,10 @@
       "fPct": 86.66666666666667
     },
     {
-      "file": "src/lib/stream-preparers.ts",
-      "hit": 485,
-      "found": 667,
-      "pct": 72.71364317841079,
-      "fHit": 33,
-      "fFound": 44,
-      "fPct": 75
-    },
-    {
-      "file": "src/lib/doc-versioning.ts",
-      "hit": 81,
-      "found": 111,
-      "pct": 72.97297297297297,
-      "fHit": 7,
-      "fFound": 7,
-      "fPct": 100
-    },
-    {
       "file": "src/lib/tool-branches.ts",
       "hit": 670,
-      "found": 910,
-      "pct": 73.62637362637363,
+      "found": 911,
+      "pct": 73.54555433589462,
       "fHit": 34,
       "fFound": 36,
       "fPct": 94.44444444444444
@@ -532,6 +532,15 @@
       "fHit": 30,
       "fFound": 31,
       "fPct": 96.7741935483871
+    },
+    {
+      "file": "src/lib/llm-client-utils.ts",
+      "hit": 290,
+      "found": 385,
+      "pct": 75.32467532467533,
+      "fHit": 22,
+      "fFound": 22,
+      "fPct": 100
     },
     {
       "file": "src/lib/rag-metrics.ts",
@@ -595,15 +604,6 @@
       "fHit": 12,
       "fFound": 16,
       "fPct": 75
-    },
-    {
-      "file": "src/lib/llm-client-utils.ts",
-      "hit": 278,
-      "found": 351,
-      "pct": 79.2022792022792,
-      "fHit": 21,
-      "fFound": 21,
-      "fPct": 100
     },
     {
       "file": "src/components/views/knowledge-base/helpers.ts",
@@ -985,9 +985,9 @@
     },
     {
       "file": "src/app/api/chat/sessions/[id]/send/route.ts",
-      "hit": 424,
-      "found": 458,
-      "pct": 92.57641921397381,
+      "hit": 436,
+      "found": 470,
+      "pct": 92.76595744680851,
       "fHit": 23,
       "fFound": 32,
       "fPct": 71.875
@@ -1038,15 +1038,6 @@
       "fPct": 100
     },
     {
-      "file": "src/lib/midtrans.ts",
-      "hit": 63,
-      "found": 67,
-      "pct": 94.02985074626866,
-      "fHit": 5,
-      "fFound": 6,
-      "fPct": 83.33333333333334
-    },
-    {
       "file": "src/lib/tool-circuit-breaker.ts",
       "hit": 63,
       "found": 67,
@@ -1054,6 +1045,15 @@
       "fHit": 6,
       "fFound": 6,
       "fPct": 100
+    },
+    {
+      "file": "src/lib/midtrans.ts",
+      "hit": 63,
+      "found": 67,
+      "pct": 94.02985074626866,
+      "fHit": 5,
+      "fFound": 6,
+      "fPct": 83.33333333333334
     },
     {
       "file": "src/lib/logger.ts",
@@ -1117,6 +1117,15 @@
       "fHit": 2,
       "fFound": 3,
       "fPct": 66.66666666666666
+    },
+    {
+      "file": "src/lib/turn-timing.ts",
+      "hit": 50,
+      "found": 52,
+      "pct": 96.15384615384616,
+      "fHit": 6,
+      "fFound": 6,
+      "fPct": 100
     },
     {
       "file": "src/app/api/auth/signup/route.ts",
@@ -1305,6 +1314,24 @@
       "pct": 100,
       "fHit": 2,
       "fFound": 2,
+      "fPct": 100
+    },
+    {
+      "file": "src/lib/db-provider-presets.ts",
+      "hit": 35,
+      "found": 35,
+      "pct": 100,
+      "fHit": 8,
+      "fFound": 8,
+      "fPct": 100
+    },
+    {
+      "file": "src/lib/public-config.ts",
+      "hit": 10,
+      "found": 10,
+      "pct": 100,
+      "fHit": 1,
+      "fFound": 1,
       "fPct": 100
     },
     {
@@ -1521,24 +1548,6 @@
       "pct": 100,
       "fHit": 6,
       "fFound": 6,
-      "fPct": 100
-    },
-    {
-      "file": "src/lib/db-provider-presets.ts",
-      "hit": 35,
-      "found": 35,
-      "pct": 100,
-      "fHit": 8,
-      "fFound": 8,
-      "fPct": 100
-    },
-    {
-      "file": "src/lib/public-config.ts",
-      "hit": 10,
-      "found": 10,
-      "pct": 100,
-      "fHit": 1,
-      "fFound": 1,
       "fPct": 100
     },
     {
@@ -2137,8 +2146,8 @@
     },
     {
       "file": "src/lib/env-schema.ts",
-      "hit": 170,
-      "found": 170,
+      "hit": 171,
+      "found": 171,
       "pct": 100,
       "fHit": 10,
       "fFound": 10,
