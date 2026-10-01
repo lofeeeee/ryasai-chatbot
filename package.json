@@ -75,7 +75,7 @@
     "lucide-react": "^0.525.0",
     "mssql": "^12.7.0",
     "mysql2": "^3.23.1",
-    "next": "^16.1.1",
+    "next": "^16.3.8",
     "next-themes": "^0.4.6",
     "pg": "^8.22.0",
     "prisma": "^6.11.1",
@@ -113,5 +113,8 @@
   "packageManager": "bun@1.4.2",
   "engines": {
     "bun": ">=1.4.2"
+  },
+  "overrides": {
+    "prismjs": "1.30.0"
   }
 }
