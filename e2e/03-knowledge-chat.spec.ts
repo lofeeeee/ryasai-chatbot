@@ -341,3 +341,45 @@ test.describe('RAG citations', () => {
     expect({ ...plainBody.summary, avgLatencyMs: 0 }).toEqual({ ...headerBody.summary, avgLatencyMs: 0 })
   })
 })
+
+/**
+ * The per-turn latency breakdown must reach a REAL client and the REAL metrics endpoint.
+ *
+ * Unit tests prove the handler builds the frame and the metrics module renders the histogram, but neither proves the
+ * two are connected on a running server: the collector is opened with `AsyncLocalStorage.enterWith` inside a streaming
+ * handler, which behaves differently under the standalone build than in a test process. This drives `POST
+ * /api/chat/sessions/:id/send` and reads the SSE `done` frame, then scrapes `/api/metrics` and asserts the
+ * histogram's COUNT moved — present-but-zero would mean the series is registered and never fed.
+ */
+test('a chat turn reports its timing breakdown in the done frame and on /api/metrics', async ({ page }) => {
+  const res = await page.request.post('/api/auth/login', { data: { email: E2E_EMAIL, password: E2E_PASSWORD } })
+  expect.soft(res.ok(), `login API returned ${res.status()}`).toBe(true)
+
+  const countOf = async (): Promise<number> => {
+    const m = await page.request.get('/api/metrics')
+    expect(m.status(), '/api/metrics must be readable by the e2e admin').toBe(200)
+    const line = (await m.text()).split('\n').find((l) => l.startsWith('chat_first_token_ms_count'))
+    return line ? Number(line.split(' ')[1]) : 0
+  }
+  const before = await countOf()
+
+  const created = await page.request.post('/api/chat/sessions', { data: { title: 'timing probe' } })
+  expect(created.status()).toBe(201)
+  const sessionId = (await created.json()).id as string
+
+  const send = await page.request.post(`/api/chat/sessions/${sessionId}/send`, { data: { text: 'Halo' } })
+  expect(send.status()).toBe(200)
+  const body = await send.text()
+  const doneFrame = body.slice(body.lastIndexOf('event: done'))
+  expect(doneFrame, 'the stream must end with a done frame').toContain('event: done')
+  const data = JSON.parse(doneFrame.split('\n').find((l) => l.startsWith('data: '))!.slice(6))
+
+  expect(data.timings, 'the done frame must carry the timing breakdown').toBeDefined()
+  for (const k of ['firstTokenMs', 'totalMs', 'preTokenLlmCalls', 'preTokenLlmMs', 'preTokenOtherMs', 'byPurpose']) {
+    expect(data.timings).toHaveProperty(k)
+  }
+  expect(data.timings.firstTokenMs).toBeGreaterThan(0)
+  expect(data.timings.firstTokenMs).toBeLessThanOrEqual(data.timings.totalMs)
+
+  expect(await countOf(), 'the first-token histogram must have recorded this turn').toBeGreaterThan(before)
+})
