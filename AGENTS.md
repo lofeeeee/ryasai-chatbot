@@ -143,6 +143,9 @@ LLM-to-database safety layers (including what each layer does NOT cover), and th
 It is a separate file for a MEASURED reason: at 20 KB it was a third of `AGENTS.md`, and pushing the rules below it
 past the instruction budget so they never loaded.
 
+Before trying to make a chat answer faster, read **`docs/latency-reference.md`**: it records what was measured, what
+shipped, and two tempting speed-ups that were rejected with the evidence.
+
 ## Cross-tenant IDOR: `findUnique` on a client-supplied id (2026-09 audit)
 
 `findUnique` is NOT org-scoped (the tenant extension cannot add `organizationId`
