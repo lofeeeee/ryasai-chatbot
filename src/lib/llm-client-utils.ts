@@ -218,10 +218,24 @@ export async function fetchWithRetry(url: string, init: RequestInit): Promise<Re
       // budget is per ATTEMPT, so retrying a TIMEOUT would multiply the worst case by
       // the ladder length — which is why a timeout is not retried at all.
       const res = await fetch(url, { ...init, signal: init.signal ?? AbortSignal.timeout(LLM_TIMEOUT_MS) })
-      // A 5xx is a fast, usually-transient provider answer: worth the ladder.
+      // A 5xx is a fast, usually-transient provider answer: worth the ladder. MEASURED at the end of the ladder:
+      // the final 5xx RESPONSE is returned rather than thrown — the caller decides what a 503 means, and
+      // `classifyProviderFailure` is applied one level up.
       if (res.status >= 500 && retriesLeft > 0) {
         retriesLeft -= 1
         lastError = new Error(`LLM error (HTTP ${res.status}).`)
+        // The body of a response we are ABANDONING is released before the retry. An unread body holds its socket
+        // (and the upstream connection) until the garbage collector reaches it, so a retry ladder could leave up to
+        // three abandoned sockets per request. Best-effort: a body that fails to drain must not turn a retryable
+        // 5xx into a thrown error.
+        try {
+          await res.body?.cancel()
+        } catch {
+          // Best-effort by design: a body already consumed or closed throws, and that must not turn a retryable
+          // 5xx into a thrown error. MEASURED: without this block the rejection lands in the surrounding `catch`,
+          // where it looks like a connection failure — the retry still happens, so the test could not tell the
+          // two apart. It is caught HERE so the classification stays unambiguous.
+        }
         await new Promise((r) => setTimeout(r, LLM_RETRY_BACKOFF_BASE_MS * 2 ** (LLM_MAX_RETRIES - retriesLeft - 1)))
         continue
       }

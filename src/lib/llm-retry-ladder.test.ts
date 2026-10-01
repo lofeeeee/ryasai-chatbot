@@ -1,3 +1,7 @@
+// Deterministic backoff whether this file runs alone (default 500 ms) or under the suite runner (which injects 25).
+// It must be set BEFORE the module that reads it is imported, because the constant is evaluated at load.
+process.env.LLM_RETRY_BACKOFF_BASE_MS ||= '1'
+
 import { describe, expect, test } from 'bun:test'
 import { fetchWithRetry, isTimeoutError } from './llm-client-utils'
 import { LLM_MAX_RETRIES } from './constants'
@@ -74,6 +78,43 @@ describe('fetchWithRetry', () => {
       await expect(fetchWithRetry('http://x', {})).rejects.toThrow()
     })
     expect(calls).toBe(1)
+  })
+
+  test('a persistent 5xx is returned to the caller after the ladder, with each abandoned body released', async () => {
+    // MEASURED behaviour, not assumed: the final 5xx RESPONSE is returned (the caller decides what a 503 means,
+    // and `classifyProviderFailure` lives above this function) and the bodies of the ABANDONED attempts are
+    // cancelled — 4 attempts, 3 cancellations. An unread body holds its socket until the collector reaches it, so
+    // without the cancels a single request could strand three upstream connections.
+    const real = globalThis.fetch
+    let attempts = 0
+    let cancelled = 0
+    globalThis.fetch = (async () => {
+      attempts += 1
+      return { status: 503, body: { cancel: async () => { cancelled += 1 } } }
+    }) as never
+    try {
+      const res = await fetchWithRetry('http://x', {})
+      expect(res.status).toBe(503)
+      expect(attempts).toBe(LLM_MAX_RETRIES + 1)
+      expect(cancelled, 'every abandoned attempt must release its body').toBe(LLM_MAX_RETRIES)
+    } finally { globalThis.fetch = real }
+  })
+
+  test('a body that refuses to be released does not change the outcome', async () => {
+    // Best-effort by design. The `catch` around the cancel is what keeps a draining failure from being read as a
+    // provider failure: MEASURED, a version that rethrew inside that catch still attempted the same number of times
+    // and still returned the same 503, so the outcome is what has to be asserted, not an attempt count.
+    const real = globalThis.fetch
+    let attempts = 0
+    globalThis.fetch = (async () => {
+      attempts += 1
+      return { status: 503, body: { cancel: async () => { throw new Error('already gone') } } }
+    }) as never
+    try {
+      const res = await fetchWithRetry('http://x', {})
+      expect(res.status).toBe(503)
+      expect(attempts).toBe(LLM_MAX_RETRIES + 1)
+    } finally { globalThis.fetch = real }
   })
 
   test('a caller-supplied signal is NOT replaced by the timeout signal', async () => {

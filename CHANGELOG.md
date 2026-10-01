@@ -5,6 +5,17 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.4] - 2026-10-01
+
+### Fixed
+- **A retried request could leave its previous connection open.** When a provider answered with a server
+  error and the request was retried, the response being abandoned was never released, so a single question
+  could strand up to three upstream connections until the runtime collected them. Each abandoned response is
+  now released before the retry. Measured: four attempts, three releases.
+- The documentation for the retry helper now states what it actually does when every attempt fails — the
+  server-error response is handed back to the caller, which decides what it means — instead of leaving that
+  to be inferred.
+
 ## [1.7.3] - 2026-10-01
 
 ### Security
