@@ -19,7 +19,7 @@
 | Stack | Next.js 16 (App Router) · React 19 · TypeScript 5 · Prisma 6 · PostgreSQL 16 (pgvector + pg_trgm) · Bun · Tailwind 4 · shadcn/ui |
 | Runtime | Bun for dev/test, Node standalone for prod build |
 | Domain | Multi-tenant AI assistant deployed **on-prem per customer**, licensed with a signed machine-bound key: natural-language → SQL, RAG over company docs, whitelisted REST calls, streaming chat |
-| Status | **Release 1.7.8** (2026-10-01). Latency + security. Verified by execution, not assertion: `tsc` 0 · `lint` 0 · `bun run test` 313/313 files, 7674 pass, 0 fail · coverage:gate exit 0 · `e2e` and `e2e:prod` both 19 passed |
+| Status | **Release 1.7.8** (2026-10-01). Latency + security. Verified by execution, not assertion: `tsc` 0 · `lint` 0 · `bun run test` 315/315 files, 7712 pass, 0 fail · coverage:gate exit 0 · `e2e` and `e2e:prod` both 19 passed |
 | Version | 1.7.8 |
 | Language | English (standardized — all UI, errors, system prompts, comments in English) |
 
@@ -323,41 +323,19 @@ pemecahan `tool-router.ts` → algoritma kualitas P1 (pola LightRAG) → verifik
 
 **Verified:** tsc 0 · lint 0 errors · 300/300 files, 7431 pass, 0 fail · coverage:gate exit 0 (203 gated modules; new route floored at 98 against a measured 99.37%) · e2e dev 18 · e2e:prod 18.
 
-### 2026-09-30 (c) — Release 1.5.0: the memory tab leads with state, and one field that must not be read
+### 2026-09-30 (c) — Release 1.5.0 *(moved to the archive: the memory panel leads with state)*
 
-**Version 1.4.0 → 1.5.0.** Eight stamped locations bumped, CHANGELOG heading cut, then released and deployed.
+**Version 1.4.0 → 1.5.0.** The AI Memory tab states which consumer is in use before offering any field; in the
+follow-chat state the fields are gone, because a blank form invites pinning memory to the chat model forever.
+`mode` is declared and deliberately NOT read (an enabled install with a down sidecar reports `mode: 'disabled'`).
+Negative-controlled on the frozen bytes: planting the `mode` read breaks 2 tests at md5 `80b94ebd…`.
 
-**The panel opened with a form; it now opens with the ANSWER.** The two consumers look identical to a compiler and must not look identical to an operator, so the memory tab states which one is in use before offering any field. In the follow-chat state the fields are GONE — a blank form invites a save that would pin memory to the chat model forever, which is the one irreversible-looking action the fallback exists to prevent.
+### 2026-10-01 — Release 1.6.0 *(moved to the archive: one IDOR, one PII leak, six row-cap bypasses)*
 
-**`mode` is declared in the function signature and deliberately NOT read.** `readSidecarState` decides from `diagnostics.components` presence plus `enabled`/`connected`, because `mode` is unreliable: an ENABLED install whose sidecar is down reports `mode: 'disabled'`, which would libel working memory as switched off. Declaring the field lets the tests hand over the exact server body and assert that changing `mode` alone never moves the verdict — the field that caused the misreading is the one being exercised, rather than the one nobody touches.
-
-**Negative-controlled on the frozen bytes.** Planting `if (data?.mode === 'disabled') return 'off'` breaks "an ENABLED install whose sidecar did not answer is unreachable, never 'off'" (2 fail), restoring byte-identical at md5 `80b94ebd…`. Test diff across the change: **+32 assertions, 0 removed** — no guard was weakened to make it pass. `readSidecarState` was extracted as a testable leaf so the four verdicts are pinned individually rather than only through rendered HTML.
-
-**Verified on the frozen hash:** tsc 0 · lint 0 errors · 300/300 files, 7441 pass, 0 fail · coverage:gate exit 0 (203 modules) · e2e dev 18 · build · e2e:prod 18. Rendered in a real browser at 1440px and 390px: no horizontal overflow at either width, no console errors, the four store rows render, mobile stacks to one column.
-
-**A process note worth keeping.** The e2e modes were NOT re-run by the implementer after its final edit, and it said so rather than implying otherwise — which is why the two runs above were measured by a second party on the frozen file. An unverified claim flagged as unverified costs nothing; the same claim left implicit would have shipped.
-
-### 2026-10-01 — Release 1.6.0: a live IDOR, a cross-tenant PII leak, six row-cap bypasses, and three silent-failure classes
-
-**Found by a 10-agent read-only audit, each finding then reproduced by hand before it was accepted.** Two of the agents were wrong in ways worth recording: one asserted a guard's content from its comment without reading the assertion (it withdrew the claim), and one reported "both runners agree" when their globs differed 303 vs 290 — the correction came from the Lead's own check.
-
-**A live cross-tenant IDOR.** `Order` carries `organizationId` but was missing from `ORG_SCOPED_MODELS` (30 models have the column, 28 were scoped). Proved by driving the real extension handler: `Document.findFirst` forwarded `{"where":{"id":"x","organizationId":"org-PROBE"}}`, `Order.findFirst` forwarded `{"where":{"id":"x"}}`. `GET /api/billing/orders/[id]` therefore served any org's order from a client id — while its docstring claimed the extension scoped it, which is why nobody re-checked. Fixed, docstring corrected, and `tenant-scope-coverage.test.ts` now PARSES the schema and asserts the set equals the scoped list plus an explicit justified exception (`invitation`), so a new unscoped model fails the build naming itself.
-
-**A cross-tenant PII leak.** The LLM trace ring buffer is a module-global with NO org field, and `/api/traces` called `enterWithOrg(...)` then never used it — passing the static tenant-route guard while being effectively unscoped, with no `requireRole`. Any authenticated user read the last 20 prompt bodies of EVERY tenant. Now stamped per org, filtered on read, admin-gated. The trap is documented in both routes: **`enterWithOrg` alone is NOT scoping when the data is in-process memory rather than a Prisma query.**
-
-**Six row-cap bypasses, and two corruptions introduced while fixing them.** `LIMIT ALL`/`NULL` returned byte-identical SQL; MySQL's `LIMIT a, b` clamped the OFFSET and left the COUNT at a million; `FETCH FIRST`/`TOP` got a second invalid `LIMIT` appended (a syntax error on MSSQL); `1_000_000`/`1e10` matched nothing. All clamp correctly now. The first fix then corrupted a STRING LITERAL (`'LIMIT 999999'` → `'LIMIT 100'`) and a DELIMITED IDENTIFIER (`[Credit Limit 5000]` → a different column; an aliased form changed the result set's field names while the query still succeeded) — caught by a second reader, fixed by clamping over masked SQL and splicing by offset, with masking extended to backtick/bracket identifiers keyed on bracket CONTENT so a PG array subscript stays visible.
-
-**A 631-line rewrite was DISCARDED rather than wired in.** It had zero callers (`grep enforceRowCap` → one comment): a fix in a place that could never run (class 9). Direct measurement showed it produced invalid syntax on `FETCH`/`TOP` and never applied `Math.min`. Deleting it and fixing the shipped 12-line clamp was the smaller, safer change.
-
-**Three silent-failure classes.** (11) The planner's system prompt measured 3023 chars against a ~2000 ceiling and was discarded whole — the rules MOVED to a `user` role (moved, not deleted; a test asserts every rule still arrives), 3023 → 579. The same guard then found a THIRD instance: `historyToMessages` embedded the entire history a second time, 20,116 chars on ten turns, discarded every time and paid for twice. (14) The container healthcheck probed `/api/v1/health`, which touches nothing and always answers ok — so a dead Postgres still reported `healthy`. Now probes `/api/health`; only `db` is CRITICAL, the other four are reported so an optional blip cannot restart-loop a healthy container. (13) `license-client.ts` stored `data.plan` verbatim, and an unrecognised plan resolves to `starter` — the MOST restrictive tier — so a renamed plan would cripple a flat-licence install with no test able to catch it (the e2e mock defaults unknown keys to `enterprise`). Now normalised at the boundary, unrecognised values dropped and logged.
-
-**Suite 40s → 20s, and two fail-open gates closed.** The wall time was ONE file: `ai.test.ts` 38.8s, of which 11 tests × 3.5s was pure backoff `setTimeout` (concurrency 8→32 moved it <0.8s, proving a critical path). `LLM_RETRY_BACKOFF_BASE_MS` is now env-overridable with the default UNCHANGED. The two runners globbed different sets (303 vs 290), so 13 benchmark suites ran but were never measured; both now share one `TEST_FILE_GLOB` with a parity guard. `coverage.ts` never exited non-zero on an inner failure and wrote a `failedTestFiles` field with no reader; `coverage-gate.ts` exited 0 when its summary was missing.
-
-**Seven floors re-derived, not loosened.** Each sat above its measurement because the files grew (guardrails 454 → 611 lines). Reset to measured-minus-one with the number and reason recorded. The gate's own refusal path was respected rather than bypassed.
-
-**Verified:** tsc 0 · lint 0 errors · 307/307 files, 7599 pass, 0 fail · coverage:gate OK (203 modules) · e2e dev 18 · e2e:prod 18 · `docker compose config` rc=0 on both composes. Negative controls restored byte-identical throughout, including one that reproduced the ORIGINAL leaks (an analyst got HTTP 200 when `requireRole` was deleted).
-
-**Recorded rather than hidden:** arithmetic counts (`LIMIT 1000000*100`) and `TOP n PERCENT` cannot be bounded by a lexical clamp — both pinned as DOCUMENTED GAP tests so the absence stays visible. A deliberately-failing negative-control artifact (`zz-nc-plant.test.ts`) was left in the tree by a subagent and removed; it was the cause of a transient 8-failure suite run.
+**Release 1.6.0.** A live cross-tenant IDOR (`Order` was missing from `ORG_SCOPED_MODELS`, so
+`GET /api/billing/orders/[id]` served any org's order), a cross-tenant PII leak in the process-global trace ring
+buffer (`enterWithOrg` is NOT scoping for in-process memory), six row-cap bypasses including two corruptions
+introduced while fixing them, and three silent-failure classes. Full detail: `docs/progress-log-archive.md`.
 
 ### 2026-10-01 (b) — v1.7.0–v1.7.2: faster answers, a security pass, two corrections
 
@@ -413,3 +391,31 @@ property ACCESS through a Proxy installed before the import, and the old form fa
 
 **Verified:** tsc 0 · lint 0 errors · 313 files, 7664 pass, 0 fail · coverage:gate OK · e2e 19 ·
 build · e2e:prod 19.
+
+### 2026-10-01 (c) — v1.7.8: routing accuracy — role-aware sources, a second chance after an empty database, both halves of a compound question
+
+**The routing error class was narrow.** Over 526 document questions in an eval, 5.7% reached the database, and they
+concentrated on two phrasings whose WORDS look like a data query while the answer is a policy figure. Three fixes, each
+negative-controlled at N=20–40 per arm:
+
+- **A database that cannot answer defers to the documents** (`sql-answerability.ts`, new). The verdict is read from the
+  ROWS — empty, all-NULL, or the generator's improvised "tidak tersedia" row — never from the answer's wording, which
+  is a documented failure class here. Needs documents present, is skipped when the user PINNED the database, and is a
+  SECOND ATTEMPT: rows that answer are kept, and if the documents find nothing the database answer stands.
+  49/60 → 56/60 on the affected questions; 24/24 genuine database questions unaffected.
+- **Tool descriptions state the ROLE.** `sql` answers what the records SAY, `rag` what the rules DEFINE. Reverting the
+  wording dropped the right choice 20/20 → 13/20; with it 240/240 at N=40. In the tool schemas, not the rule list,
+  because the rule list already costs ~37pp per rule.
+- **Every tool call is resolved, not just `result[0]`.** MEASURED: the model asked for BOTH sources on 5 of 16 tries of
+  a two-part question. The pre-existing trigger could never fire — it reads a marker from the model's TEXT and a
+  tool-calling reply has none (0 of 40). 4/12 → 11/12 on the old compound question; 6/12 on a new one.
+
+**Two of my own hypotheses were wrong**, recorded rather than dropped: the NULL rerank scores were not "unranked" (the
+reranker endorses ~2.24 of ~12; the rest are REJECTED — see 1.7.7), and the local reranker is not blind (only
+production carries the 377-char prefix). **One guard was vacuous**: deleting the line returning `extraTools` left every
+test green, because the selector guards asserted source TEXT and the router test mocks the selector; behaviour is now
+driven through the real module.
+
+**Verified:** tsc 0 · lint 0 · 315 files, 7712 pass, 0 fail · coverage:gate OK (204 modules) · build · e2e 19 ·
+e2e:prod 19. Full eval: **62/63** (was 53/54 before this work).
+
