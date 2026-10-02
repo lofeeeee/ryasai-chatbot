@@ -220,7 +220,7 @@ async function _runNonStreamingChatCompletion(args: {
 
   args.signal?.throwIfAborted()
 
-  const { decision, resolvedIntegrationId } = await settleRouting(speculativeRouting, () => resolveRouting(args, effectiveQuestion, dbData, memoryContext))
+  const { decision, resolvedIntegrationId, extraToolIds = [] } = await settleRouting(speculativeRouting, () => resolveRouting(args, effectiveQuestion, dbData, memoryContext))
 
   const effectiveDecision = applyToolGating(
     decision,
@@ -351,7 +351,7 @@ async function _runStreamingChatCompletion(args: {
     return prepareChatStream({ question: effectiveQuestion, systemPromptPrefix: args.systemPromptPrefix, memoryContext, chatHistory: args.chatHistory ?? [] })
   }
 
-  const { decision, resolvedIntegrationId } = await settleRouting(speculativeRouting, () => resolveRouting(args, effectiveQuestion, dbData, memoryContext))
+  const { decision, resolvedIntegrationId, extraToolIds = [] } = await settleRouting(speculativeRouting, () => resolveRouting(args, effectiveQuestion, dbData, memoryContext))
 
   const effectiveDecision = applyToolGating(
     decision,
@@ -376,8 +376,40 @@ async function _runStreamingChatCompletion(args: {
     integrationNames: intNames.map((i) => i.name),
   }
 
+  /*
+   * A COMPOUND QUESTION ASKED FOR MORE THAN ONE SOURCE — run them together.
+   *
+   * The model emitted several tool calls and `resolveRouting` used to act on the first only, so the other half of the
+   * question was answered from whatever the first source happened to contain (or dropped). The multi-step planner is
+   * the existing machinery for "several sources, one answer", and it is already reachable on this path when the model
+   * reports MULTI_STEP in TEXT; this extends it to the case it could never see, where the request arrives as TOOL
+   * CALLS. Guarded by `allowMultiStepDag` for the same reason the other DAG entry is: the planner costs an extra LLM
+   * call, and callers that opted out of multi-step must not be charged for it.
+   */
+  if (extraToolIds.length > 0 && args.allowMultiStepDag) {
+    const dag = await runMultiStepDag({
+      question: effectiveQuestion,
+      userId: args.userId,
+      sessionId: args.sessionId,
+      chatHistory: args.chatHistory,
+      documentIds: args.documentIds,
+    })
+    // A planner that declines (single chat step, or any failure) leaves the single-source decision intact: the
+    // first source still answers, which is exactly the behaviour before this change rather than a lost turn.
+    if (dag) {
+      return {
+        toolRuns: dag.toolRuns,
+        citations: dag.citations,
+        chartData: dag.chartData,
+        stream: singleShotStream(dag.answer),
+      }
+    }
+  }
+
   if (effectiveDecision === 'SQL') {
-    return await prepareSqlStream(branchArgs)
+    // `args.integrationId` is what the USER pinned; `resolvedIntegrationId` may be the router's own choice. Only a
+    // user's pin forbids the documents fallback — the router's choice is exactly what the fallback second-guesses.
+    return await prepareSqlStream({ ...branchArgs, userPinnedIntegration: Boolean(args.integrationId) })
   }
   if (effectiveDecision === 'RAG') return await prepareRagStream(branchArgs)
   if (effectiveDecision === 'REST') return await prepareRestStream(branchArgs)
@@ -570,6 +602,11 @@ function applyToolGating(
  * not needed, nobody awaits it, and a bare rejected promise nobody awaits is an unhandled rejection. The error is
  * re-thrown only by the caller that actually uses the result.
  */
+/** Yield an already-complete answer as a one-chunk stream, for paths that synthesize before dispatching. */
+async function* singleShotStream(answer: string): AsyncGenerator<string, void, unknown> {
+  yield answer
+}
+
 function startSpeculativeRouting(
   args: Parameters<typeof resolveRouting>[0],
   effectiveQuestion: string,
@@ -620,7 +657,7 @@ async function resolveRouting(
   effectiveQuestion: string,
   dbData: DbData,
   memoryContext: string,
-): Promise<{ decision: RouteDecision; resolvedIntegrationId: string | undefined }> {
+): Promise<{ decision: RouteDecision; resolvedIntegrationId: string | undefined; extraToolIds?: string[] }> {
   const [docCount, intCount, , , , restEndpoints] = dbData
   const restEndpointCount = restEndpoints.length
   const hasHistory = args.chatHistory && args.chatHistory.length > 0
@@ -633,6 +670,15 @@ async function resolveRouting(
   // Arguments the SELECTOR supplied, so the branch does not re-derive them.
   let selectionArgs: Record<string, unknown> = {}
   let selectionReason = ''
+  /**
+   * The tools the model asked for BEYOND the first one on a compound question.
+   *
+   * MEASURED: 'berapa hari cuti tahunan karyawan tetap dan berapa gaji pokok direktur utama?' — the model emitted
+   * `search_knowledge_base` AND `query_database` on 5 of 16 tries, and the selector acted on `result[0]` only, so one
+   * half of the question was dropped without anything reporting it. The existing multi-tool trigger could not catch
+   * this: it reads a "MULTI_STEP" marker out of the model's text, and a reply carrying tool calls has no text.
+   */
+  let extraToolIds: string[] = []
 
   // The LLM chooses the tool on BOTH paths (with and without history). History
   // previously routed through `routeQuery` while the first turn used the
@@ -649,6 +695,9 @@ async function resolveRouting(
     decision = sel.decision
     selectionArgs = sel.args
     selectionReason = sel.reason
+    // Compound questions: the model can ask for SEVERAL sources in one reply. Recorded here and acted on by
+    // `runStreamingChatCompletion`, because only that layer can route the follow-up turn.
+    extraToolIds = sel.extraTools?.map((t) => t.toolId) ?? []
     // The model named the database it wants. Taking it here is what keeps SQL
     // working at all now that the heuristic router (which used to supply this)
     // is gone.
@@ -719,7 +768,7 @@ async function resolveRouting(
     }
   }
 
-  return { decision, resolvedIntegrationId }
+  return { decision, resolvedIntegrationId, ...(extraToolIds.length > 0 ? { extraToolIds } : {}) }
 }
 
 async function loadContextualContext(decision: RouteDecision, sessionId?: string): Promise<string> {

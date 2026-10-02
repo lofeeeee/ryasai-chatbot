@@ -78,6 +78,19 @@ export interface ToolSelection {
    * instead of on every uncertain turn.
    */
   needsMultipleTools?: boolean
+  /**
+   * EVERY tool the model asked for, when it asked for more than one.
+   *
+   * WHY THIS FIELD EXISTS. The selector returned only `result[0]`, so a question with two independent parts lost one
+   * of them silently — MEASURED: 'berapa hari cuti tahunan … dan berapa gaji pokok direktur utama?' — the model
+   * emitted `search_knowledge_base` AND `query_database` on 5 of 16 tries, and only the first was ever acted on.
+   *
+   * The existing multi-tool signal could not cover that case: `needsMultipleTools` is parsed from the model's TEXT
+   * ("MULTI_STEP"), and a reply carrying TOOL CALLS has no text at all — `rawText` is '' whenever `result` is an
+   * array, so MEASURED over 40 selections the marker never once fired. A field read from the calls themselves is the
+   * one signal that cannot be empty by construction.
+   */
+  extraTools?: Array<{ toolId: string; args: Record<string, unknown> }>
   /** The route this maps to, for the existing branch dispatch. */
   decision: RouteDecision
   /** Arguments the model supplied, passed through so the branch does not re-derive them. */
@@ -358,6 +371,27 @@ export async function selectToolWithLlm(args: {
       return { toolId: null, decision: 'CHAT', args: {}, reason: `model called an unknown tool "${call.name}"`, llmUsed: true }
     }
 
+    /*
+     * The remaining calls are RESOLVED, not discarded. Each maps through the same table as the first, so an unknown
+     * name is dropped here exactly as it would be for the primary call, and a duplicate of the primary (the model
+     * sometimes repeats itself) is not carried twice.
+     */
+    const extraTools: Array<{ toolId: string; args: Record<string, unknown> }> = []
+    for (const other of result.slice(1)) {
+      const otherId = byFunctionName.get(other.name) ?? functionNameToToolId(other.name)
+      if (!otherId || otherId === toolId) continue
+      let otherArgs: Record<string, unknown> = {}
+      try {
+        otherArgs = JSON.parse(other.arguments || '{}') as Record<string, unknown>
+      } catch {
+        // A malformed blob still counts as a REQUEST for that source: the tool id is what the caller needs, and the
+        // branch falls back to the user's question when its argument is missing. Dropping the call entirely would
+        // lose a part of a compound question over a JSON detail.
+        otherArgs = {}
+      }
+      extraTools.push({ toolId: otherId, args: otherArgs })
+    }
+
     let parsed: Record<string, unknown> = {}
     try {
       parsed = JSON.parse(call.arguments || '{}') as Record<string, unknown>
@@ -393,6 +427,7 @@ export async function selectToolWithLlm(args: {
       decision: routeForTool(toolId),
       args: parsed,
       integrationId,
+      ...(extraTools.length > 0 ? { extraTools } : {}),
       needsMultipleTools: wantsMulti,
       reason: `model chose ${toolId}${integrationId ? ` on ${databases.find((d) => d.id === integrationId)?.name ?? integrationId}` : ''}`,
       llmUsed: true,

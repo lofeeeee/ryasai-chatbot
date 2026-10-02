@@ -61,7 +61,15 @@ export const QUESTIONS: EvalQuestion[] = [
   { id: 'sapaan', question: 'Halo, apa kabar?', any: [''] },
   // Questions the corpus CANNOT fully answer. A pipeline that gets faster by trusting weak evidence shows up HERE:
   // it would invent a figure instead of saying it found none. Correct = the answer admits the gap.
+  // GENUINE DATABASE QUESTIONS — the fallback must never take these away from the database. Added because every
+  // earlier question here was a document question, so a change that over-triggered the documents fallback could
+  // not have been seen failing. `any` holds the literal value the HR database returns for each.
+  { id: 'db-jumlah-it', question: 'Berapa jumlah karyawan di departemen IT?', any: ['3'] },
+  { id: 'db-total-cuti', question: 'Berapa total hari cuti yang sudah diajukan?', any: ['130'] },
   { id: 'tidak-ada', question: 'Berapa gaji pokok direktur utama?', any: NOT_FOUND },
+  // The compound case the multi-tool path exists for: one part answerable ONLY from a policy document, one part
+  // ONLY from the HR database. A single-source answer is necessarily half an answer.
+  { id: 'majemuk-dok-db', question: 'Berapa hari cuti tahunan karyawan tetap menurut kebijakan, dan berapa total hari cuti yang sudah diajukan?', any: ['12 hari'], all: ['130'] },
   { id: 'majemuk-separuh', question: 'Berapa hari cuti tahunan karyawan tetap dan berapa gaji pokok direktur utama?', any: ['12 hari'], also: NOT_FOUND },
   { id: 'tidak-ada-2', question: 'Apa nama vendor resmi untuk pengadaan laptop?', any: NOT_FOUND },
 ]

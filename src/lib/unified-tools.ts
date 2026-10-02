@@ -128,8 +128,23 @@ export function toLlmToolDef(tool: UnifiedTool): LlmToolDef {
 export const SQL_TOOL: UnifiedTool = {
   id: 'sql',
   name: toolIdToFunctionName('sql'),
+  /*
+   * THE DESCRIPTION STATES THE ROLE, NOT JUST THE TOPICS — and that is load-bearing on a deployment where a DATABASE
+   * and a DOCUMENT set cover the same subject. MEASURED: an HR database (karyawan, cuti, absensi) sits beside HR policy
+   * documents, and questions phrased like a data query ("berapa hari cuti tahunan karyawan tetap") were routed here on
+   * the strength of the table names, then answered with transaction figures instead of the policy rule — one answer
+   * said "Total cuti tahunan: 37 hari" from six leave requests where the policy says 12.
+   *
+   * The role distinction ("what the records SAY" vs "what the rules DEFINE") is what separates the two, so it is
+   * stated in the tool's own description. It is deliberately NOT a new rule in the system prompt: MEASURED at N=40, the
+   * existing rule list already costs accuracy, two separate rules costing ~37pp each, which is why it is kept short.
+   */
   description:
-    'Query structured relational data from connected databases (sales, orders, customers, inventory, invoices, financial figures). Input must be a clear natural language question.',
+    'Query the RECORDS held in connected business databases (transactions, balances, quantities, statuses, who-did-'
+    + 'what) — sales, orders, customers, inventory, invoices, employees, financial figures. Use this for what the data '
+    + 'SAYS: counts, totals, lists, the current state of records. Do NOT use it for what a policy, SOP or rule DEFINES '
+    + '(entitlements, procedures, thresholds, limits): those are stated in documents, even when a table of the same '
+    + 'subject exists. Input must be a clear natural language question.',
   category: 'database',
   requiresDataSource: 'integration',
   parameters: {
@@ -187,7 +202,10 @@ export const RAG_TOOL: UnifiedTool = {
   id: 'rag',
   name: toolIdToFunctionName('rag'),
   description:
-    'Search company documents, SOPs, policies, procedures, and internal regulations for grounded factual evidence.',
+    'Search company documents, SOPs, policies, procedures and internal regulations — what the RULES DEFINE: '
+    + 'entitlements, thresholds, limits, required steps and the conditions attached to them. Use this whenever the '
+    + 'question asks what is ALLOWED or REQUIRED or what the rule states, even when a database table of the same '
+    + 'subject exists: a leave entitlement is a policy figure, not a sum of leave requests.',
   category: 'knowledge',
   requiresDataSource: 'document',
   parameters: {

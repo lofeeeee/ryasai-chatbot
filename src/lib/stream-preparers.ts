@@ -36,6 +36,9 @@ import {
 } from '@/lib/tool-utils'
 import { executeRestRequest } from '@/lib/tool-branches'
 import { buildSourceGuidance } from '@/lib/source-guidance'
+import { judgeSqlAnswerability, type RelevanceJudge } from '@/lib/sql-answerability'
+import { chatOnce } from '@/lib/llm-client'
+import { getRoleLlmConfig } from '@/lib/llm-config'
 
 // ---------------------------------------------------------------------------
 // Streaming branch preparers — one per RouteDecision.
@@ -293,6 +296,15 @@ export async function prepareSqlStream(args: {
    * the axis could not be corrected in one place.
    */
   integrationIds?: string[] | null
+  /**
+   * The user explicitly pinned a database for this turn. A pin is a request to answer from THAT source, so the
+   * documents fallback is not attempted: silently answering from a different source than the one the user chose
+   * would contradict the control they used. Absent/false means the database was the ROUTER's choice, which is the
+   * only case the fallback exists for.
+   */
+  userPinnedIntegration?: boolean
+  /** Injected for tests; production uses the model-backed judge below. */
+  relevanceJudge?: RelevanceJudge
 }): Promise<StreamingCompletionResult> {
   const started = Date.now()
   /*
@@ -482,6 +494,27 @@ export async function prepareSqlStream(args: {
   }
 
   const result = executed
+
+  /*
+   * SECOND CHANCE FOR THE DOCUMENTS — only when the database provably did not answer.
+   *
+   * The router chose this source from the question's wording, and where a database and a document set both cover a
+   * topic that choice is wrong for a small, predictable class of questions: ones phrased like a data query whose
+   * answer is a POLICY figure ("berapa jam pelatihan per tahun …"). MEASURED: 5.7% of document questions in an eval
+   * reached this branch, almost all of them from two phrasings, and each ended as "cannot be computed" or a
+   * confident wrong number. The verdict is read off the ROWS (empty, all-NULL, or the generator's improvised "I
+   * cannot answer" placeholder), never off the answer's wording, and a relevance judge is only consulted on rows that
+   * look populated.
+   *
+   * Never a REPLACEMENT: when the rows answer, this does nothing, and the extra retrieval is only attempted when
+   * documents exist and the user did not pin this database. If the documents have nothing either, the database's own
+   * "no data" answer is what the user gets, exactly as before.
+   */
+  if (!args.userPinnedIntegration) {
+    const fallback = await tryDocumentsAfterSqlMiss(args, result.rows, started)
+    if (fallback) return fallback
+  }
+
   /*
    * The measured population travels WITH the rows, inside the untrusted wrapper (it is model-generated text ABOUT the
    * data, so it must not acquire system authority). Without it the answer cannot say which rows it counted — which is
@@ -526,6 +559,83 @@ export async function prepareSqlStream(args: {
     integrationId: integration.id,
     stream,
     get usage() { return usage },
+  }
+}
+
+/**
+ * The model-backed relevance judge. Same contract as the one measured in the eval: it must say "answers" only when
+ * the rows hold the specific value asked for. Returns `true` (keep the rows) whenever it cannot decide, because a
+ * judge outage must never turn a working database answer into a fallback.
+ */
+const defaultRelevanceJudge: RelevanceJudge = async (question, rows) => {
+  const cfg = await getRoleLlmConfig('query')
+  if (!cfg) return true
+  const raw = String(await chatOnce(cfg, [
+    {
+      role: 'system',
+      content:
+        'You judge whether a database result can answer a question. Reply ONLY with JSON {"answers": true|false}. ' +
+        '"answers" is true ONLY when the rows contain the specific value the question asks for. It is false when the ' +
+        'rows are unrelated records, a placeholder, NULL, or a message saying the data is unavailable.',
+    },
+    { role: 'user', content: `Question: ${question}\nRows (${rows.length}): ${JSON.stringify(rows.slice(0, 5)).slice(0, 600)}` },
+  ], 0, 'sql-answerability'))
+  if (/"answers"\s*:\s*false/i.test(raw)) return false
+  return true
+}
+
+/**
+ * Try the document corpus when the SQL result did not answer. Returns `null` — meaning "keep the database answer" —
+ * unless the rows are provably unhelpful AND the documents actually produced evidence. The documents' own result is
+ * returned as-is, so it carries its citations, reflection note and source guidance exactly like a routed RAG turn.
+ */
+async function tryDocumentsAfterSqlMiss(
+  args: {
+    question: string
+    systemPromptPrefix?: string
+    memoryContext?: string
+    chatHistory?: ChatHistoryEntry[]
+    documentIds?: string[] | null
+    relevanceJudge?: RelevanceJudge
+  },
+  rows: ReadonlyArray<Record<string, unknown>>,
+  started: number,
+): Promise<StreamingCompletionResult | null> {
+  const verdict = await judgeSqlAnswerability({
+    question: args.question,
+    rows,
+    judge: args.relevanceJudge ?? defaultRelevanceJudge,
+  })
+  if (verdict.answers) return null
+
+  const docScope = args.documentIds && args.documentIds.length > 0 ? { id: { in: args.documentIds } } : {}
+  const documents = await db.document.count({ where: { status: 'ready', isEnabled: true, ...docScope } })
+  if (documents === 0) return null
+
+  const viaDocuments = await prepareRagStream({
+    question: args.question,
+    systemPromptPrefix: args.systemPromptPrefix,
+    memoryContext: args.memoryContext,
+    chatHistory: args.chatHistory,
+    documentIds: args.documentIds,
+  })
+  // `prepareRagStream` degrades to plain CHAT when retrieval found nothing, and that carries no citations. Taking it
+  // would trade a real "the database has no data" answer for a general-knowledge reply, so it is not accepted.
+  if (viaDocuments.citations.length === 0) return null
+
+  return {
+    ...viaDocuments,
+    // Both attempts are recorded, so the audit trail shows that the database was tried and why it was not used.
+    toolRuns: [
+      {
+        type: 'SQL',
+        status: 'success',
+        latencyMs: Date.now() - started,
+        inputSummary: summarize(args.question),
+        outputSummary: `not used: ${verdict.reason}`,
+      },
+      ...viaDocuments.toolRuns,
+    ],
   }
 }
 

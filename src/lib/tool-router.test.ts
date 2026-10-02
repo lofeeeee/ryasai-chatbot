@@ -2313,3 +2313,60 @@ describe('the routing context is SCOPED — the prompt must not name sources the
     expect(where?.where).not.toHaveProperty('id')
   })
 })
+describe('runStreamingChatCompletion — a compound question is not reduced to its first tool', () => {
+  /*
+   * MEASURED DEFECT. On "berapa hari cuti tahunan karyawan tetap dan berapa gaji pokok direktur utama?" the model
+   * emitted `search_knowledge_base` AND `query_database` on 5 of 16 tries; the selector acted on `result[0]` and the
+   * second request was DROPPED. Nothing reported it, because the only existing multi-tool signal
+   * (`needsMultipleTools`) is parsed from the model's TEXT and a reply carrying tool calls has no text at all.
+   *
+   * The fix returns the extra calls and this path runs the existing multi-step planner. These tests drive the REAL
+   * `runMultiStepDag` (it stays unmocked in this file) through the planner mocks, so they measure the hand-off rather
+   * than a stub.
+   */
+  test('extra tool calls reach the planner, and its answer is what the caller gets', async () => {
+    mockIntegrationCount.mockImplementation(async () => 1)
+    intentState.value = { needsClarification: false, needsRetrieval: true }
+    mockSelectToolWithLlm.mockImplementation(async () => ({
+      toolId: 'rag', decision: 'RAG' as RouteDecision, args: {}, reason: 'stub', llmUsed: true,
+      extraTools: [{ toolId: 'sql', args: { question: 'gaji direktur' } }],
+    }))
+    mockPlanQuery.mockImplementation(async () => ({
+      steps: [{ id: 's1', tool: 'sql', input: { question: 'gaji' } }],
+      needsSynthesis: true,
+    }))
+    mockExecutePlan.mockImplementation(async () => [{ stepId: 's1', tool: 'sql', ok: true, output: 'gaji data', latencyMs: 5 }])
+    mockSynthesizeAnswer.mockImplementation(async () => 'COMBINED-ANSWER')
+
+    const r = await runStreamingChatCompletion({ question: 'dua hal sekaligus', userId: 'u1', allowMultiStepDag: true })
+    let text = ''
+    for await (const c of r.stream) text += c
+    expect(text).toContain('COMBINED-ANSWER')
+    expect(r.toolRuns.length).toBeGreaterThan(0)
+  })
+
+  test('ONE tool call does NOT enter the planner — the single-source path is unchanged', async () => {
+    mockIntegrationCount.mockImplementation(async () => 1)
+    intentState.value = { needsClarification: false, needsRetrieval: true }
+    mockSelectToolWithLlm.mockImplementation(async () => ({
+      toolId: 'rag', decision: 'RAG' as RouteDecision, args: {}, reason: 'stub', llmUsed: true,
+    }))
+    mockPlanQuery.mockClear()
+    const r = await runStreamingChatCompletion({ question: 'satu hal saja', userId: 'u1', allowMultiStepDag: true })
+    // The planner must not have been consulted at all, or every single-source turn would pay for a second LLM call.
+    expect(mockPlanQuery.mock.calls.length).toBe(0)
+    expect(r).toBeDefined()
+  })
+
+  test('a caller that did NOT opt into multi-step is not charged for the planner', async () => {
+    mockIntegrationCount.mockImplementation(async () => 1)
+    intentState.value = { needsClarification: false, needsRetrieval: true }
+    mockSelectToolWithLlm.mockImplementation(async () => ({
+      toolId: 'rag', decision: 'RAG' as RouteDecision, args: {}, reason: 'stub', llmUsed: true,
+      extraTools: [{ toolId: 'sql', args: {} }],
+    }))
+    mockPlanQuery.mockClear()
+    await runStreamingChatCompletion({ question: 'dua hal sekaligus', userId: 'u1' })
+    expect(mockPlanQuery.mock.calls.length).toBe(0)
+  })
+})

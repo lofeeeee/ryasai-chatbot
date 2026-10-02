@@ -120,3 +120,87 @@ describe('tool-selector — no promise of a switch that does nothing', () => {
     expect(/process\.env\.SIMPLE_PIPELINE/.test(simple)).toBe(true)
   })
 })
+
+describe('tool-selector — every tool call is resolved, not just the first', () => {
+  /*
+   * MEASURED DEFECT: the selector read `result[0]` and threw the rest away. On the compound question "berapa hari cuti
+   * tahunan karyawan tetap dan berapa gaji pokok direktur utama?" the model emitted `search_knowledge_base` AND
+   * `query_database` on 5 of 16 tries — and only the first was ever acted on, so one half of the question was dropped
+   * with nothing reporting it.
+   *
+   * The existing multi-tool signal could not catch that case: `needsMultipleTools` is parsed from the model's TEXT,
+   * and a reply carrying tool calls has NO text (`rawText` is '' whenever the result is an array) — MEASURED over 40
+   * selections it never once fired. This file holds the parsing to the calls themselves.
+   */
+  const src = () => Bun.file(new URL('./tool-selector.ts', import.meta.url)).text()
+
+  test('the extra calls are parsed, mapped through the same table, and returned', async () => {
+    const body = await src()
+    expect(body).toMatch(/for \(const other of result\.slice\(1\)\)/)
+    expect(body).toMatch(/byFunctionName\.get\(other\.name\) \?\? functionNameToToolId\(other\.name\)/)
+    expect(body).toMatch(/extraTools\.push\(\{ toolId: otherId, args: otherArgs \}\)/)
+  })
+
+  test('an unknown or duplicate call is DROPPED rather than carried', async () => {
+    const body = await src()
+    // An unknown name must not become a tool id, and a repeat of the primary would run the same source twice.
+    expect(body).toMatch(/if \(!otherId \|\| otherId === toolId\) continue/)
+  })
+
+  test('a malformed argument blob still counts as a REQUEST for that source', async () => {
+    const body = await src()
+    // The tool id is what the caller routes on; the branch falls back to the user's question when its argument is
+    // missing. Dropping the call over a JSON detail would lose half of a compound question.
+    const i = body.indexOf('for (const other of result.slice(1))')
+    const block = body.slice(i, i + 900)
+    expect(block).toMatch(/catch \{/)
+    expect(block).not.toMatch(/catch \{\s*continue/)
+  })
+
+  test('the multi-tool plan is only entered when the caller allowed multi-step', async () => {
+    // The planner costs an extra LLM call on a BYOK key, so a caller that opted out must not be charged for it.
+    const router = await Bun.file(new URL('./tool-router.ts', import.meta.url)).text()
+    expect(router).toMatch(/if \(extraToolIds\.length > 0 && args\.allowMultiStepDag\)/)
+  })
+
+  test('a planner that declines leaves the first source answering', async () => {
+    const router = await Bun.file(new URL('./tool-router.ts', import.meta.url)).text()
+    // `if (dag)` — not an unconditional return. A null plan must not turn a routable question into no answer.
+    expect(router).toMatch(/if \(dag\) \{/)
+  })
+})
+
+describe('tool descriptions state the ROLE, not only the topics', () => {
+  /*
+   * MEASURED PROBLEM. On a deployment where a database and a document set cover the SAME subject (an HR database
+   * beside HR policy documents), the SQL tool's description listed topics only ("sales, orders, customers, inventory,
+   * invoices"), so a question about a leave ENTITLEMENT looked like a query against the leave TABLE. NEGATIVE-CONTROL,
+   * N=20 per arm on the same four questions: reverting these descriptions to the topic-only wording dropped the
+   * document-correct answers from 20/20 to 13/20 (65%), with six going to the database. With the role stated: 80/80.
+   *
+   * The distinction has to live in the TOOL DESCRIPTION rather than as another system-prompt rule: MEASURED at N=40,
+   * the existing rule list already costs accuracy (~37pp per added rule), which is why it is kept short.
+   */
+  const src = () => Bun.file(new URL('./unified-tools.ts', import.meta.url)).text()
+
+  test("the database tool says it answers what the records SAY, and refuses the rules", async () => {
+    const body = await src()
+    expect(body).toContain('what the data ')
+    expect(body).toContain('Do NOT use it for what a policy, SOP or rule DEFINES')
+  })
+
+  test('the document tool says it answers what the RULES DEFINE', async () => {
+    const body = await src()
+    expect(body).toContain('what the RULES DEFINE')
+    // The disqualifier is the load-bearing half: without it the model still reaches for the table that shares the
+    // topic, which is exactly what the negative control measured.
+    expect(body).toContain('even when a database table of the same')
+  })
+
+  test('the topics are still listed, so ordinary database questions keep routing correctly', async () => {
+    const body = await src()
+    // The control arm of the measurement: 100% of genuine database questions still went to the database with the new
+    // wording, and 40/40 at N=40. Removing the topic list to make room for the role text would break that.
+    expect(body).toContain('sales, orders, customers, inventory, invoices, employees, financial figures')
+  })
+})

@@ -5,6 +5,32 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.8] - 2026-10-01
+
+### Fixed
+- **A question about a policy could be answered with transaction figures instead of the rule.** Where a
+  database and a document set cover the same subject (an HR database beside HR policy documents), a question
+  phrased like a data query was routed to the database and answered from it — "Total cuti tahunan: 37 hari"
+  from six leave requests, where the policy says 12. Two changes, both measured:
+  - The database and document tools now state what each is FOR: records versus rules. Reverting that wording
+    dropped the correct choice on four such questions from 20/20 to 13/20 (65%); with it, 240/240 at 40 tries
+    per question, and genuine database questions still went to the database in every try.
+  - When the database cannot answer — no rows, a row of NULLs, or a result that is only a message saying the
+    data is unavailable — the documents are tried before the user is told nothing is available. The verdict is
+    read from the rows, never from the answer's wording, and a database the user pinned is never overridden.
+    On the affected questions: 49/60 → 56/60. Genuine database questions were unaffected (24/24 still
+    answered from the database, none diverted).
+- **A question with two parts was answered from one source.** The router acted on the first tool the model
+  asked for and discarded the rest — measured on the model's own output, it asked for BOTH documents and
+  database on 5 of 16 tries of a two-part question. Every requested tool is now resolved, and a question
+  needing several sources goes through the existing multi-source planner. On that question: 4/12 → 11/12,
+  and a new two-part question that needs both a policy figure and a database total: 6/12.
+
+### Note
+- The existing multi-source trigger could never fire: it reads a marker out of the model's text, and a reply
+  that carries tool calls has no text at all. Measured over 40 selections it fired zero times. It is kept, but
+  the signal that works is the one read from the calls themselves.
+
 ## [1.7.7] - 2026-10-01
 
 ### Fixed

@@ -57,6 +57,8 @@ const STREAM_TEXT = 'streamed answer'
  * that wants the block opts in by setting this.
  */
 let documentRows: Array<{ id: string; name: string; contextPrompt: string | null }> = []
+/** How many ready documents exist, for the SQL→documents fallback. 0 by default, so no earlier test sees it. */
+let readyDocumentCount = 0
 
 /**
  * What `streamAnswer` received, so the RAG context can be asserted at all.
@@ -121,7 +123,7 @@ mock.module('@/lib/db', () => ({
     // contributed evidence. Absent from this mock until the source-guidance
     // parity fix, which is why the missing injection went unnoticed: the call
     // was never made at all, so no fixture gap could have surfaced it.
-    document: { findMany: async () => documentRows },
+    document: { findMany: async () => documentRows, count: async () => readyDocumentCount },
   },
 }))
 
@@ -295,6 +297,7 @@ beforeEach(() => {
     schemas: [{ tableName: 'orders', columns: '[]', sampleRow: null, description: null }],
   }]
   integrationCount = 1
+  readyDocumentCount = 0
   generateSqlResults = []
   connectorRows = [{ id: 1, total: 100 }]
   connectorError = null
@@ -983,5 +986,97 @@ describe('the streaming SQL path must forward the generator\'s stated QUERY SCOP
     const branches = readFileSync(join(import.meta.dir, 'tool-branches.ts'), 'utf8')
     expect(branches).toMatch(/QUERY SCOPE \(what the SQL measured\)/)
     expect(branches).toMatch(/sqlExplanation = typeof candidate\.explanation === 'string'/)
+  })
+})
+
+describe('prepareSqlStream — the documents fallback when the database did not answer', () => {
+  /*
+   * MEASURED CAUSE. 5.7% of document questions in an eval were routed to the database, concentrated on phrasings that
+   * LOOK like a data query ("berapa jam pelatihan per tahun … masa kerja di atas 3 tahun") whose answer is a policy
+   * figure. Once in this branch there was no way back: the user got "cannot be computed" or a confident wrong number.
+   * The verdict is read off the ROWS, never off the answer's wording, and the documents are only a SECOND attempt.
+   */
+  const run = (extra: Record<string, unknown> = {}) =>
+    prepareSqlStream({ question: 'Berapa jam pelatihan per tahun?', userId: 'u1', ...extra } as never)
+
+  test('rows that answer are KEPT — the fallback never replaces a real database answer', async () => {
+    readyDocumentCount = 3
+    connectorRows = [{ jumlah_karyawan: '3' }]
+    generateSqlResults = [{ sql: 'SELECT COUNT(*) AS jumlah_karyawan FROM karyawan LIMIT 10' }]
+    const r = await run({ relevanceJudge: async () => true })
+    expect(r.citations[0]?.type).toBe('DATABASE')
+    expect(r.toolRuns.map((t) => t.type)).toEqual(['SQL'])
+  })
+
+  test('EMPTY rows fall back to the documents, and BOTH attempts are on the audit trail', async () => {
+    readyDocumentCount = 3
+    connectorRows = []
+    generateSqlResults = [{ sql: 'SELECT total FROM orders LIMIT 10' }]
+    const r = await run({ relevanceJudge: async () => true })
+    expect(r.citations[0]?.type).toBe('DOCUMENT')
+    expect(r.toolRuns[0]).toMatchObject({ type: 'SQL', outputSummary: 'not used: no-rows' })
+    expect(r.toolRuns.length).toBeGreaterThan(1)
+  })
+
+  test('an all-NULL aggregate (one row of NULL) is NOT an answer, though the row count is 1', async () => {
+    readyDocumentCount = 3
+    connectorRows = [{ total: null }]
+    generateSqlResults = [{ sql: 'SELECT SUM(total) AS total FROM orders LIMIT 10' }]
+    const r = await run({ relevanceJudge: async () => true })
+    expect(r.citations[0]?.type).toBe('DOCUMENT')
+    expect(r.toolRuns[0]?.outputSummary).toBe('not used: all-null')
+  })
+
+  test("the generator's improvised 'cannot answer' row is NOT an answer", async () => {
+    // MEASURED: the generator has no sanctioned way to say the schema cannot answer, so it emitted
+    // `SELECT 'TIDAK DAPAT DIJAWAB' AS status, …` — which SUCCEEDS and returns one row.
+    readyDocumentCount = 3
+    connectorRows = [{ status: 'TIDAK DAPAT DIJAWAB', keterangan: 'Tidak tersedia: skema tidak punya tabel pelatihan' }]
+    generateSqlResults = [{ sql: 'SELECT total AS status FROM orders LIMIT 10' }]
+    const r = await run({ relevanceJudge: async () => true })
+    expect(r.citations[0]?.type).toBe('DOCUMENT')
+    expect(r.toolRuns[0]?.outputSummary).toBe('not used: placeholder')
+  })
+
+  test('populated rows the judge calls irrelevant fall back, and a judge OUTAGE keeps the rows', async () => {
+    readyDocumentCount = 3
+    connectorRows = [{ id: 1, nama: 'Andi', jabatan: 'Engineer' }]
+    generateSqlResults = [{ sql: 'SELECT total FROM orders LIMIT 10' }, { sql: 'SELECT total FROM orders LIMIT 10' }]
+    const irrelevant = await run({ relevanceJudge: async () => false })
+    expect(irrelevant.citations[0]?.type).toBe('DOCUMENT')
+    expect(irrelevant.toolRuns[0]?.outputSummary).toBe('not used: judged-irrelevant')
+
+    generateSqlResults = [{ sql: 'SELECT total FROM orders LIMIT 10' }]
+    const outage = await run({ relevanceJudge: async () => { throw new Error('provider down') } })
+    expect(outage.citations[0]?.type).toBe('DATABASE')
+  })
+
+  test('NO documents means no fallback — the database answer stands', async () => {
+    readyDocumentCount = 0
+    connectorRows = []
+    generateSqlResults = [{ sql: 'SELECT total FROM orders LIMIT 10' }]
+    const r = await run({ relevanceJudge: async () => false })
+    expect(r.citations[0]?.type).toBe('DATABASE')
+    expect(r.toolRuns.map((t) => t.type)).toEqual(['SQL'])
+  })
+
+  test('a database the USER pinned is never second-guessed', async () => {
+    readyDocumentCount = 3
+    connectorRows = []
+    generateSqlResults = [{ sql: 'SELECT total FROM orders LIMIT 10' }]
+    const r = await run({ userPinnedIntegration: true, relevanceJudge: async () => false })
+    expect(r.citations[0]?.type).toBe('DATABASE')
+  })
+
+  test('when the documents ALSO find nothing, the database answer is kept, not a general-knowledge chat reply', async () => {
+    // prepareRagStream degrades to plain CHAT with no citations when retrieval is empty. Accepting that would
+    // swap a truthful "no data" for an answer from nowhere.
+    readyDocumentCount = 3
+    retrievalChunks = []
+    connectorRows = []
+    generateSqlResults = [{ sql: 'SELECT total FROM orders LIMIT 10' }]
+    const r = await run({ relevanceJudge: async () => true })
+    expect(r.citations[0]?.type).toBe('DATABASE')
+    retrievalChunks = defaultRetrievalChunks()
   })
 })

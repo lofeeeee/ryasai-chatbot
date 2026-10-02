@@ -1,25 +1,16 @@
 {
-  "linePct": 74.88,
-  "linesHit": 26787,
-  "linesFound": 35775,
-  "reachableLinePct": 86.77,
-  "reachableLinesHit": 23355,
-  "reachableLinesFound": 26916,
-  "fnPct": 88.76,
-  "fnsHit": 2385,
-  "fnsFound": 2687,
-  "filesMeasured": 253,
+  "linePct": 75.06,
+  "linesHit": 27014,
+  "linesFound": 35992,
+  "reachableLinePct": 87.14,
+  "reachableLinesHit": 23556,
+  "reachableLinesFound": 27033,
+  "fnPct": 88.84,
+  "fnsHit": 2411,
+  "fnsFound": 2714,
+  "filesMeasured": 254,
   "failedTestFiles": [],
   "files": [
-    {
-      "file": "src/lib/tool-selector.ts",
-      "hit": 7,
-      "found": 281,
-      "pct": 2.491103202846975,
-      "fHit": 0,
-      "fFound": 3,
-      "fPct": 0
-    },
     {
       "file": "src/components/views/ai-configuration-view.tsx",
       "hit": 31,
@@ -138,15 +129,6 @@
       "fPct": 0
     },
     {
-      "file": "src/lib/unified-tools.ts",
-      "hit": 362,
-      "found": 796,
-      "pct": 45.47738693467337,
-      "fHit": 25,
-      "fFound": 38,
-      "fPct": 65.78947368421053
-    },
-    {
       "file": "src/components/ui/select.tsx",
       "hit": 63,
       "found": 138,
@@ -154,6 +136,24 @@
       "fHit": 4,
       "fFound": 10,
       "fPct": 40
+    },
+    {
+      "file": "src/lib/unified-tools.ts",
+      "hit": 365,
+      "found": 799,
+      "pct": 45.68210262828536,
+      "fHit": 25,
+      "fFound": 38,
+      "fPct": 65.78947368421053
+    },
+    {
+      "file": "src/lib/tool-selector.ts",
+      "hit": 140,
+      "found": 305,
+      "pct": 45.90163934426229,
+      "fHit": 9,
+      "fFound": 14,
+      "fPct": 64.28571428571429
     },
     {
       "file": "src/lib/evidence-boundary.ts",
@@ -192,6 +192,15 @@
       "fPct": 100
     },
     {
+      "file": "src/lib/sql-answerability.ts",
+      "hit": 24,
+      "found": 48,
+      "pct": 50,
+      "fHit": 9,
+      "fFound": 9,
+      "fPct": 100
+    },
+    {
       "file": "src/lib/system-message-ceiling.ts",
       "hit": 80,
       "found": 159,
@@ -202,12 +211,12 @@
     },
     {
       "file": "src/lib/tool-router.ts",
-      "hit": 319,
-      "found": 621,
-      "pct": 51.368760064412236,
-      "fHit": 42,
-      "fFound": 48,
-      "fPct": 87.5
+      "hit": 339,
+      "found": 667,
+      "pct": 50.82458770614693,
+      "fHit": 45,
+      "fFound": 51,
+      "fPct": 88.23529411764706
     },
     {
       "file": "src/lib/mcp-client.ts",
@@ -444,6 +453,15 @@
       "fPct": 100
     },
     {
+      "file": "src/lib/stream-preparers.ts",
+      "hit": 532,
+      "found": 764,
+      "pct": 69.63350785340315,
+      "fHit": 38,
+      "fFound": 48,
+      "fPct": 79.16666666666666
+    },
+    {
       "file": "src/lib/license-client.ts",
       "hit": 139,
       "found": 198,
@@ -469,15 +487,6 @@
       "fHit": 98,
       "fFound": 103,
       "fPct": 95.14563106796116
-    },
-    {
-      "file": "src/lib/stream-preparers.ts",
-      "hit": 485,
-      "found": 668,
-      "pct": 72.60479041916167,
-      "fHit": 33,
-      "fFound": 44,
-      "fPct": 75
     },
     {
       "file": "src/lib/web-fetch.ts",

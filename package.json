@@ -1,6 +1,6 @@
 {
   "name": "ryasai-chatbot",
-  "version": "1.7.7",
+  "version": "1.7.8",
   "private": true,
   "scripts": {
     "dev": "bun scripts/dev.ts",

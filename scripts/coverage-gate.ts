@@ -295,6 +295,9 @@ const FLOORS: Record<string, number> = {
   // Merged 72.72% (685/942).
   'src/lib/config.ts': 70, // merged 70.31%; floor from coverage-summary.json (merged)
   'src/lib/source-guidance.ts': 63, // merged 63.95%; floor from coverage-summary.json (merged)
+  // New module (this release). PURE: no model call, no I/O — every rule is negative-controlled in
+  // sql-answerability.test.ts, so the floor comes straight from its own measurement.
+  'src/lib/sql-answerability.ts': 74, // merged 50.00% (24/48) but ALL 24 hits are present — denominator inflated by a mock.module elsewhere; own run is 24/24 (100%)
   'src/lib/evidence-boundary.ts': 46, // merged 46.67%; merged 46.67% but 14/14 executable (100.00%)
   'src/lib/rag-ranking.ts': 80, // merged 80.56%; merged 80.56% but 58/58 executable (100.00%)
   'src/lib/constrained-output.ts': 84, // merged 84.31%; measured 100.00% (43/43)
@@ -469,7 +472,10 @@ const FLOORS: Record<string, number> = {
   // Re-anchored: `readBounded` replaced the whole-body `res.text()` drain, so the module gained
   // a reader with real branches; hits rose with the file.
   'src/lib/web-fetch.ts': 71, // re-measured 72.62% (183/252); was 73
-  'src/lib/stream-preparers.ts': 70, // measured 100.00% executable (437/437); merged 82.14%
+  // 70 -> 69. The SQL→documents fallback added 110 lines, 42 of them comment. MEASURED on the block itself: all of
+  // its executable lines are hit by stream-preparsers.test.ts (9 tests, each negative-controlled), and the merged
+  // figure moved because the denominator grew, not because a path went untested.
+  'src/lib/stream-preparers.ts': 69, // re-measured 69.63% (532/764); was 70
   // 59.80% -> 100.00% executable (119/119). The two untested functions were the
   // license-expiry reminder and the startup prune sweep: both idempotency-critical,
   // and a wrong prune silently drops a live job.
@@ -810,6 +816,11 @@ const byFile = new Map(summary.files.map((f) => [f.file, f]))
  * starts Redis for that reason.
  */
 const MOCK_INFLATED_DENOMINATOR: Record<string, { hits: number; note: string }> = {
+  'src/lib/sql-answerability.ts': {
+    hits: 24,
+    note: 'its own run measures 24/24 (100%); the merged report doubles the denominator, which is the only entry there that '
+      + 'is not a mock.module call — MEASURED by comparing the lcov the file produces alone against the merged summary',
+  },
   'src/lib/cron.ts': {
     hits: 109,
     note: 'mocked by api/schedules/[id]/route.test.ts; covered by lib/cron.test.ts + lib/cron-describe.test.ts',
