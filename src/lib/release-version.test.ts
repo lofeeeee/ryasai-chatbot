@@ -154,9 +154,16 @@ describe('release: one version across every stamped location', () => {
   })
 
   test('no location is still at a pre-1.0 or placeholder value', () => {
-    // Guards the specific historical failure: four numbers in eight places. A placeholder that
-    // survives into a release is the same defect as a stale one.
-    const bad = found.filter((f) => /^(0\.0\.0|0\.4\.0|0\.5\.0|2\.0\.0|1\.0\.0-beta|change-me)$/.test(String(f.value)))
+    /*
+     * Guards the specific historical failure: four numbers in eight places. A placeholder that survives into a
+     * release is the same defect as a stale one.
+     *
+     * `2.0.0` is REMOVED from the pattern. It was listed as a placeholder because this suite predated any 2.x
+     * release — the intent was "no fake future version" — but 2.0.0 is now a real, shipped version, and the guard
+     * failed on the actual release. The placeholder list must describe what a placeholder LOOKS like, not which
+     * versions happened not to exist when the test was written.
+     */
+    const bad = found.filter((f) => /^(0\.0\.0|0\.4\.0|0\.5\.0|1\.0\.0-beta|change-me)$/.test(String(f.value)))
     expect(bad.map((f) => `${f.file}=${f.value}`), 'placeholder or stale version stamped').toEqual([])
   })
 })

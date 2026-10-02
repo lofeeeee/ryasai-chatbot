@@ -1,7 +1,7 @@
 # CLAUDE.md — ryasai Chatbot (Super-App Track)
 
 > Living document. Update the **Progress Log** at the bottom every session.
-> Last updated 2026-10-01. Version 1.7.10. PostgreSQL 16. All PLAN.md phases P0–P5 + S4 + RAG complete. Language standardized to English.
+> Last updated 2026-10-01. Version 2.0.0. PostgreSQL 16. All PLAN.md phases P0–P5 + S4 + RAG complete. Language standardized to English.
 >
 > **Counts and versions in this file drift.** Section 1 and 8 describe CURRENT state — run the
 > command rather than trusting a number written here; section 9 (Progress Log) is HISTORICAL and
@@ -19,8 +19,8 @@
 | Stack | Next.js 16 (App Router) · React 19 · TypeScript 5 · Prisma 6 · PostgreSQL 16 (pgvector + pg_trgm) · Bun · Tailwind 4 · shadcn/ui |
 | Runtime | Bun for dev/test, Node standalone for prod build |
 | Domain | Multi-tenant AI assistant deployed **on-prem per customer**, licensed with a signed machine-bound key: natural-language → SQL, RAG over company docs, whitelisted REST calls, streaming chat |
-| Status | **Release 1.7.10** (2026-10-01). Latency + security. Verified by execution, not assertion: `tsc` 0 · `lint` 0 · `bun run test` 315/315 files, 7733 pass, 0 fail · coverage:gate exit 0 · `e2e` and `e2e:prod` both 19 passed |
-| Version | 1.7.10 |
+| Status | **Release 2.0.0** (2026-10-01). Latency + security. Verified by execution, not assertion: `tsc` 0 · `lint` 0 · `bun run test` 322/322 files, 7938 pass, 0 fail · coverage:gate exit 0 · `e2e` and `e2e:prod` both 19 passed |
+| Version | 2.0.0 |
 | Language | English (standardized — all UI, errors, system prompts, comments in English) |
 
 ---
@@ -391,6 +391,24 @@ property ACCESS through a Proxy installed before the import, and the old form fa
 
 **Verified:** tsc 0 · lint 0 errors · 313 files, 7664 pass, 0 fail · coverage:gate OK · e2e 19 ·
 build · e2e:prod 19.
+
+### 2026-10-03 — v2.0.0: security architecture
+
+Six parallel streams, integration-reviewed before landing (the review caught three real defects in the first pass —
+all fixed with the measurement recorded): memory-queue shedding at 1,000 pending; Redis-shared rate limiting on the
+LLM routes (middleware moved to `runtime='nodejs'` — the Edge build stubbed `node:net`, so the counter silently never
+reached Redis while shipping ~700 KB of dead ioredis); a tamper-evident audit hash chain with a verify script whose
+exit codes are the contract; opt-in RLS via `scripts/enable-rls.ts` (its first version crashed on real Postgres —
+`IN (${array})` binds as one parameter and `information_schema.tables` has no `table_owner`; both fixed and the test
+now models the real catalog); per-org daily token/request budgets that make NO db call when unset; and a consolidated
+tool-policy layer (ALLOW/DENY with reasons, compatibility-checked against `applyToolGating` across 32 cases, router
+adoption deliberately deferred). Also: SECURITY.md de-staled, four ADRs (0009-0012), digest pinning in install.sh,
+native fs walk replacing `execSync('du -sb')`, PR #45 merged with its dropped `allowIds` scoping restored.
+
+An e2e failure that looked like a product defect was traced to a zombie standalone server on port 3000 stealing
+BullMQ jobs with the wrong DATABASE_URL — reproduced (embed 0/1 with the zombie, 1/1 after killing it), then both
+suites green: **e2e 19 and e2e:prod 19**. Eval 61/63; both misses are `majemuk-dok-db`, at 60% across 45 historical
+samples. tsc 0 · lint 0 · 322 files, 7,938 pass, 0 fail · coverage gate OK (208 modules) · build.
 
 ### 2026-10-01 (c) — v1.7.8: routing accuracy — role-aware sources, a second chance after an empty database, both halves of a compound question
 

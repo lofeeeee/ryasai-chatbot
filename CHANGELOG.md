@@ -5,6 +5,71 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2026-10-03
+
+### Security architecture (why this is a major)
+
+Six streams, built in parallel, each verified by an independent integration review before landing.
+That review found three real defects in the first pass — a script that crashed on a live database its
+tests modelled as a fantasy catalog, a "distributed" limiter that never reached Redis because of the
+Edge runtime, and a verifier that exited 0 on the one case it existed to catch. All three are fixed
+with the measurement recorded.
+
+**1. A stuck memory sidecar can no longer pile jobs unbounded.** Past 1,000 pending writes (counting
+retries in backoff, the signature of an outage), new writes are dropped with a logged reason — not
+queued, not run inline. About 3,600 jobs an hour would otherwise accumulate, each carrying two
+message bodies.
+
+**2. The expensive LLM routes now share one rate-limit counter in Redis.** `next dev`'s middleware
+runs on the Edge runtime, where `node:net` is stubbed out — the Redis client could never connect, so
+the shared counter silently degraded to the per-instance bucket while shipping ~700 KB of dead
+ioredis. The middleware now declares `runtime = 'nodejs'`; MEASURED: the same 22-request burst went
+from per-instance 429s to a Redis `ratelimit:*` key appearing and the limit enforced once. Redis down
+falls back to the in-memory bucket, which still bounds a single instance.
+
+**3. The audit log is now tamper-evident.** `scripts/verify-audit-chain.ts` re-derives a SHA-256
+chain over each organization's AuditLog and compares it against a stored snapshot; any edited or
+deleted row changes every subsequent hash. Exit codes are the contract: tamper, growth, a stale
+snapshot and a malformed snapshot all exit 1. An empty-log baseline used to exit 0 on the first
+appended row — found by review, fixed, and measured exiting 1.
+
+**4. Opt-in PostgreSQL row-level security.** `scripts/enable-rls.ts` enables and forces RLS with a
+per-table policy on every table carrying `organizationId`, discovered from the database rather than
+hardcoded. Report mode by default; `--apply` and `--drop` are explicit. The first version crashed in
+report mode on a real Postgres — `IN (${array})` binds as one parameter and `information_schema.tables`
+has no `table_owner` column — because its unit test modelled a catalog that does not exist. Both are
+fixed and the test now fails if the query regresses. ADR-0009 records why RLS is opt-in: the Prisma
+pool cannot set a per-request GUC without a connection-per-request.
+
+**5. Per-organization daily token and request budgets.** `ORG_DAILY_TOKEN_BUDGET` and
+`ORG_DAILY_REQUEST_BUDGET` cap an organization's aggregate LLM usage from LlmUsageLog, with a 5-second
+cache so a turn's burst does not re-query. Unset means unlimited and performs NO database call at all —
+the hot path stays free.
+
+**6. A consolidated tool-policy layer.** `evaluateToolPolicy` returns an ALLOW/DENY decision with a
+reason for every requested action — the primary plus each extra source a compound question asked
+for — distinguishing "source absent" from "tool toggled off". Behaviour-compatible with the existing
+`applyToolGating` across a 32-case cross-product; the router does not consult it yet, so adoption is
+a deliberate follow-up rather than a silent behaviour change.
+
+### Also in this release
+
+- `SECURITY.md` no longer names a version line (it said `0.4.x` through the entire 1.x series).
+- Four ADRs record decisions that previously lived only in comments: tenant isolation (0009), MCP
+  isolation limits (0010), dependency security as invariants (0011), rate limiting (0012).
+- `install.sh` accepts `APP_IMAGE`/`SCHEDULER_IMAGE`/`EMBEDDINGS_IMAGE` for digest pinning;
+  byte-identical when unset.
+- MCP sandbox directory sizing uses a native fs walk instead of `execSync('du -sb')`.
+- PR #45 merged: UI fixes, orphaned smartRoute helper cleanup, and new tests for mcp-client resources
+  and plugin-registry stdio. Its dropped `allowIds` scoping was restored — that removal would have
+  reopened the API-key cross-scope leak the filter exists to close.
+
+### Verified
+- tsc 0 · lint 0 errors · 322 files, 7,938 pass, 0 fail · coverage gate OK (208 modules) · build ·
+  **e2e 19 and e2e:prod 19** (after an environment failure was diagnosed to a zombie server on port
+  3000 stealing BullMQ jobs with the wrong DATABASE_URL — reproduced, killed, and both suites green).
+- Evaluation 61/63; both misses are `majemuk-dok-db`, measured at 60% across 45 historical samples.
+
 ## [1.7.10] - 2026-10-02
 
 ### Fixed
