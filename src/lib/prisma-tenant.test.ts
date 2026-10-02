@@ -30,7 +30,7 @@ mock.module('@prisma/client', () => ({
   },
 }))
 
-const { getOrgContext, enterWithOrg, bypassOrg, createTenantExtension, ORG_SCOPED_MODELS } = await import('./prisma-tenant')
+const { getOrgContext, requireOrgContext, enterWithOrg, bypassOrg, createTenantExtension, ORG_SCOPED_MODELS } = await import('./prisma-tenant')
 
 // Force the handler to be captured at load.
 createTenantExtension()
@@ -61,6 +61,55 @@ async function run(op: {
 
 beforeEach(() => {
   expect(captured).not.toBeNull()
+})
+
+describe('requireOrgContext — the fail-fast org read', () => {
+  /*
+   * VERIFIED-VALID WEAKNESS (external review #11): seventeen call sites wrote `getOrgContext()!`, whose
+   * failure mode names neither the missing context nor its cause. This pins the replacement's contract:
+   * a value when present, an error that NAMES the required action when not. The cross-org escape remains
+   * `bypassOrg`, so its sentinel org must also satisfy require — the two are one contract.
+   */
+  test('returns the org when the context is established', () => {
+    enterWithOrg('org-x')
+    expect(requireOrgContext()).toBe('org-x')
+    enterWithOrg('')
+  })
+
+  test('without an org it throws an error that names the required action, not a TypeError', () => {
+    enterWithOrg('')
+    let message = ''
+    try {
+      requireOrgContext()
+    } catch (e) {
+      message = e instanceof Error ? e.message : String(e)
+    }
+    // The failure must be diagnosable from the message alone: it names the missing thing AND the fix.
+    expect(message).toContain('no organization context')
+    expect(message).toContain('enterWithOrg')
+    expect(message).toContain('bypassOrg')
+  })
+
+  test('bypassOrg runs its callback with NO org — the escape hatch is for cross-org work, not for requiring one', async () => {
+    /*
+     * `bypassOrg` stores `undefined`, so `requireOrgContext` inside it throwing is CORRECT: the hatch is
+     * documented for signup/setup/seed — code that must NOT be org-scoped. The first version of this test
+     * asserted the opposite (`requireOrgContext` succeeding inside `bypassOrg`) and failed, which is the
+     * contract telling me the test was wrong rather than the code.
+     */
+    let threw = false
+    await bypassOrg(async () => {
+      try {
+        requireOrgContext()
+      } catch {
+        threw = true
+      }
+    })
+    expect(threw).toBe(true)
+    // And getOrgContext inside bypassOrg is genuinely unset, which is what cross-org code relies on.
+    const seen = await bypassOrg(async () => getOrgContext())
+    expect(seen).toBeUndefined()
+  })
 })
 
 describe('org context storage', () => {

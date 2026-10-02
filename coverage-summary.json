@@ -1,13 +1,13 @@
 {
-  "linePct": 74.94,
-  "linesHit": 27074,
-  "linesFound": 36129,
-  "reachableLinePct": 87.15,
-  "reachableLinesHit": 23608,
-  "reachableLinesFound": 27089,
-  "fnPct": 88.86,
-  "fnsHit": 2417,
-  "fnsFound": 2720,
+  "linePct": 74.86,
+  "linesHit": 27140,
+  "linesFound": 36252,
+  "reachableLinePct": 87.16,
+  "reachableLinesHit": 23660,
+  "reachableLinesFound": 27146,
+  "fnPct": 88.88,
+  "fnsHit": 2421,
+  "fnsFound": 2724,
   "filesMeasured": 254,
   "failedTestFiles": [],
   "files": [
@@ -175,9 +175,9 @@
     },
     {
       "file": "src/lib/memory-queue.ts",
-      "hit": 48,
-      "found": 97,
-      "pct": 49.48453608247423,
+      "hit": 65,
+      "found": 131,
+      "pct": 49.61832061068702,
       "fHit": 5,
       "fFound": 6,
       "fPct": 83.33333333333334
@@ -444,6 +444,15 @@
       "fPct": 45.45454545454545
     },
     {
+      "file": "src/lib/stream-preparers.ts",
+      "hit": 554,
+      "found": 800,
+      "pct": 69.25,
+      "fHit": 40,
+      "fFound": 49,
+      "fPct": 81.63265306122449
+    },
+    {
       "file": "src/lib/rag-fts.ts",
       "hit": 109,
       "found": 157,
@@ -451,15 +460,6 @@
       "fHit": 15,
       "fFound": 15,
       "fPct": 100
-    },
-    {
-      "file": "src/lib/stream-preparers.ts",
-      "hit": 533,
-      "found": 767,
-      "pct": 69.49152542372882,
-      "fHit": 38,
-      "fFound": 48,
-      "fPct": 79.16666666666666
     },
     {
       "file": "src/lib/license-client.ts",
@@ -489,6 +489,15 @@
       "fPct": 95.14563106796116
     },
     {
+      "file": "src/lib/tool-branches.ts",
+      "hit": 688,
+      "found": 958,
+      "pct": 71.81628392484343,
+      "fHit": 34,
+      "fFound": 36,
+      "fPct": 94.44444444444444
+    },
+    {
       "file": "src/lib/web-fetch.ts",
       "hit": 183,
       "found": 252,
@@ -505,15 +514,6 @@
       "fHit": 21,
       "fFound": 21,
       "fPct": 100
-    },
-    {
-      "file": "src/lib/tool-branches.ts",
-      "hit": 671,
-      "found": 913,
-      "pct": 73.49397590361446,
-      "fHit": 34,
-      "fFound": 36,
-      "fPct": 94.44444444444444
     },
     {
       "file": "src/lib/llm-config.ts",
@@ -876,15 +876,6 @@
       "fPct": 97.14285714285714
     },
     {
-      "file": "src/lib/prisma-tenant.ts",
-      "hit": 94,
-      "found": 107,
-      "pct": 87.85046728971963,
-      "fHit": 8,
-      "fFound": 8,
-      "fPct": 100
-    },
-    {
       "file": "src/lib/smart-router-helpers.ts",
       "hit": 332,
       "found": 377,
@@ -901,6 +892,15 @@
       "fHit": 5,
       "fFound": 6,
       "fPct": 83.33333333333334
+    },
+    {
+      "file": "src/lib/prisma-tenant.ts",
+      "hit": 103,
+      "found": 116,
+      "pct": 88.79310344827587,
+      "fHit": 9,
+      "fFound": 9,
+      "fPct": 100
     },
     {
       "file": "src/lib/tool-utils.ts",
@@ -1291,12 +1291,12 @@
     },
     {
       "file": "src/lib/constants.ts",
-      "hit": 41,
-      "found": 41,
+      "hit": 43,
+      "found": 43,
       "pct": 100,
-      "fHit": 1,
-      "fFound": 1,
-      "fPct": 100
+      "fHit": 2,
+      "fFound": 3,
+      "fPct": 66.66666666666666
     },
     {
       "file": "src/lib/db-provider.ts",

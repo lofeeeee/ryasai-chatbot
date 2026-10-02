@@ -94,8 +94,11 @@ async function* gen(text: string): AsyncGenerator<string> {
   for (const ch of text.split('')) yield ch
 }
 
+// `requireOrgContext` must be in the mock: the module under test imports it (the fail-fast org read used by
+// its audit-log writes), and a partial mock that omits it makes the import itself fail at collection time.
 mock.module('@/lib/prisma-tenant', () => ({
   getOrgContext: () => 'org-a',
+  requireOrgContext: () => 'org-a',
   enterWithOrg: () => undefined,
   bypassOrg: async (fn: () => unknown) => fn(),
 }))
@@ -1077,6 +1080,89 @@ describe('prepareSqlStream — the documents fallback when the database did not 
     generateSqlResults = [{ sql: 'SELECT total FROM orders LIMIT 10' }]
     const r = await run({ relevanceJudge: async () => true })
     expect(r.citations[0]?.type).toBe('DATABASE')
+    retrievalChunks = defaultRetrievalChunks()
+  })
+})
+
+describe('prepareSqlStream — the repair loop respects the time budget', () => {
+  test('a retry DOES run when the budget allows it (the control direction)', async () => {
+    integrations = [{
+      id: 'int-1', name: 'Sales', status: 'active', provider: 'POSTGRESQL', encryptedConfig: 'deadbeef',
+      schemas: [{ tableName: 'orders', columns: '[]', sampleRow: null, description: null }],
+    }]
+    integrationCount = 1
+    connectorRows = [{ total: 7 }]
+    // The FIRST attempt must FAIL, or there is nothing to repair: an execution error is the trigger. Two
+    // scripted results: attempt 1 errors, attempt 2 succeeds — a repair in the budget must consume both.
+    connectorErrors = [new Error('relation "nope" does not exist')]
+    generateSqlResults = [{ sql: 'SELECT total FROM nope LIMIT 10' }, { sql: 'SELECT total FROM orders LIMIT 5' }]
+    const r = await prepareSqlStream({ question: 'repairable', userId: 'u1' })
+    let text = ''
+    for await (const c of r.stream) text += c
+    expect(generateSqlResults.length, 'the retry consumed the second scripted result').toBe(0)
+    expect(r.citations[0]?.type).toBe('DATABASE')
+  })
+
+
+  /*
+   * VERIFIED-VALID WEAKNESS (external review #4, narrow form): one attempt is an LLM call plus a query, each
+   * ~30s worst case, and the loop counted ATTEMPTS, never elapsed time — so attempt 3 could start at t=100s on
+   * a turn whose 120s deadline was gone. The check breaks the loop BEFORE a retry that cannot finish.
+   *
+   * The budget is injected by rewinding `started`: the branch records it once at entry, so backdating it past
+   * the total budget makes the check see an exhausted clock without sleeping.
+   */
+  test('a retry is NOT started when the clock is already spent, and the recorded failure is what the answer gets', async () => {
+    integrations = [{
+      id: 'int-1', name: 'Sales', status: 'active', provider: 'POSTGRESQL', encryptedConfig: 'deadbeef',
+      schemas: [{ tableName: 'orders', columns: '[]', sampleRow: null, description: null }],
+    }]
+    integrationCount = 1
+    connectorRows = [{ total: 7 }]
+    // The first attempt must FAIL on EXECUTION, or no repair is ever attempted and the test measures
+    // nothing (MEASURED: with a succeeding first attempt it stayed green with the check deleted).
+    connectorErrors = [new Error('relation "nope" does not exist')]
+    generateSqlResults = [{ sql: 'SELECT total FROM nope LIMIT 10' }, { sql: 'SELECT total FROM orders LIMIT 5' }]
+    // Budget of 1ms: any elapsed time exceeds it, so the retry must be refused.
+    process.env.SQL_REPAIR_TOTAL_BUDGET_MS = '1'
+    try {
+      const r = await prepareSqlStream({ question: 'late turn', userId: 'u1' })
+      let text = ''
+      for await (const c of r.stream) text += c
+      /*
+       * The loop STOPPED after attempt 0. The queue was loaded with TWO results; attempt 0 shifted one,
+       * so exactly ONE remains — a full repair would have consumed both. (The first version of this
+       * assertion expected 0 and failed on the WORKING code, which is how the arithmetic error surfaced:
+       * the budget check was doing its job while the test demanded the impossible.)
+       */
+      expect(generateSqlResults.length, 'the retry was refused — its scripted result is still queued').toBe(1)
+      expect(r.toolRuns.length).toBeGreaterThan(0)
+    } finally {
+      process.env.SQL_REPAIR_TOTAL_BUDGET_MS = undefined
+    }
+  })
+})
+
+describe('prepareRagStream — a failed retrieval leaves a DEGRADED trace', () => {
+  /*
+   * The streaming twin of tool-branches' marker. The chat UI is THIS transport, so without the marker
+   * here the fix would exist only on the path nothing calls — the transport-drift class this repo has
+   * recorded three times.
+   */
+  test('a retrieval ERROR marks the tool run DEGRADED from RAG with the reason', async () => {
+    retrievalError = new Error('cognee http 503')
+    const r = await prepareRagStream({ question: 'what is the policy?' })
+    const chatRun = r.toolRuns.find((t) => t.type === 'CHAT')
+    expect(chatRun?.outputSummary ?? '').toContain('DEGRADED from RAG')
+    expect(chatRun?.outputSummary ?? '').toContain('cognee http 503')
+    expect(r.citations).toEqual([])
+  })
+
+  test('an EMPTY retrieval is not degraded', async () => {
+    retrievalChunks = []
+    const r = await prepareRagStream({ question: 'hello' })
+    const chatRun = r.toolRuns.find((t) => t.type === 'CHAT')
+    expect(chatRun?.outputSummary ?? '').not.toContain('DEGRADED')
     retrievalChunks = defaultRetrievalChunks()
   })
 })

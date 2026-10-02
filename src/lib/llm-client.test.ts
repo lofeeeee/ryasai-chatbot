@@ -10,6 +10,16 @@ mock.module('@/lib/llm-config', () => ({
   getLlmRuntimeConfig: mockGetLlmRuntimeConfig,
   getAgentLlmConfig: mockGetAgentLlmConfig,
 }))
+// `logLlmUsage` records the org with `requireOrgContext()` (the fail-fast replacement for
+// `getOrgContext()!`); without this mock the usage-log write throws the org error instead of testing
+// the transport. The old `!` wrote `organizationId: undefined` into the mocked db silently.
+mock.module('@/lib/prisma-tenant', () => ({
+  getOrgContext: () => 'org-llm-test',
+  requireOrgContext: () => 'org-llm-test',
+  enterWithOrg: () => undefined,
+  bypassOrg: async (fn: () => unknown) => fn(),
+}))
+
 mock.module('@/lib/observability', () => ({
   traceLlmCall: mockTraceLlmCall,
 }))

@@ -79,6 +79,8 @@ mock.module('@/lib/plugin-seeds', () => ({
 }))
 mock.module('@/lib/prisma-tenant', () => ({
   getOrgContext: () => 'org-1',
+  // Fail-fast org read used by admin-tools' writes; omitting it throws the org error mid-test.
+  requireOrgContext: () => 'org-1',
   enterWithOrg: () => undefined,
   bypassOrg: async (fn: () => unknown) => fn(),
 }))

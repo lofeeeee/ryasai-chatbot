@@ -7,7 +7,7 @@ import type { LlmRuntimeConfig } from '@/lib/llm-config'
 import { traceLlmCall } from '@/lib/observability'
 import { recordTurnLlmCall } from '@/lib/turn-timing'
 import { db } from '@/lib/db'
-import { getOrgContext } from '@/lib/prisma-tenant'
+import { getOrgContext, requireOrgContext } from '@/lib/prisma-tenant'
 import { logSwallowed } from '@/lib/logger'
 import {
   LLM_MAX_RETRIES,
@@ -60,7 +60,7 @@ export function logLlmUsage(
   db.llmUsageLog
     .create({
       data: {
-        organizationId: getOrgContext()!,
+        organizationId: requireOrgContext(),
         purpose,
         provider,
         model: cfg.model,

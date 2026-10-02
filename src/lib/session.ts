@@ -1,6 +1,6 @@
 import crypto from 'crypto'
 import { db } from '@/lib/db'
-import { bypassOrg, enterWithOrg, getOrgContext } from '@/lib/prisma-tenant'
+import { bypassOrg, enterWithOrg, getOrgContext, requireOrgContext } from '@/lib/prisma-tenant'
 import { serverConfig } from '@/lib/config'
 import { extractSessionVersion, verifySession } from '@/lib/crypto'
 import { cookies } from 'next/headers'
@@ -232,7 +232,7 @@ export async function writeAudit(args: {
     const hash = crypto.createHash('sha256').update(content).digest('hex')
     await db.auditLog.create({
       data: {
-        organizationId: getOrgContext()!,
+        organizationId: requireOrgContext(),
         userId: args.userId,
         action: args.action,
         severity,

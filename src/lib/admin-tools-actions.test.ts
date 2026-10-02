@@ -100,6 +100,8 @@ mock.module('@/lib/db', () => ({
 }))
 mock.module('@/lib/prisma-tenant', () => ({
   getOrgContext: () => 'org-1',
+  // Fail-fast org read used by admin-tools' writes; omitting it throws the org error mid-test.
+  requireOrgContext: () => 'org-1',
   enterWithOrg: () => {},
   // bypassOrg is a ONE-argument callback wrapper: bypassOrg(fn). This mock used to
   // be `(_o, fn) => fn()`, which is a signature the real module does not have — so

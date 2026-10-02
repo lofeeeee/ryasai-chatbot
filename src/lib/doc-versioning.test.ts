@@ -41,6 +41,14 @@ const mockReadFile = mock(async () => Buffer.from('hello\n\nworld'))
 const mockExtractFileText = mock(async () => ({ text: 'hello\n\nworld', isPlaceholder: false }))
 const mockChunkText = mock((s: string) => s.split(/\n\n+/).filter(Boolean))
 
+// createDocVersion records the org with requireOrgContext() (fail-fast); this harness supplies one.
+mock.module('@/lib/prisma-tenant', () => ({
+  getOrgContext: () => 'org-docver-test',
+  requireOrgContext: () => 'org-docver-test',
+  enterWithOrg: () => undefined,
+  bypassOrg: async (fn: () => unknown) => fn(),
+}))
+
 mock.module('@/lib/db', () => ({
   db: {
     document: {

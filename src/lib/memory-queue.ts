@@ -75,6 +75,29 @@ export const MEMORY_QUEUE_NAME = 'memory-write'
 export const MEMORY_WRITE_ATTEMPTS = 5
 export const MEMORY_WRITE_BACKOFF_MS = 30_000
 
+/**
+ * How deep the queue may get before new writes are REFUSED rather than enqueued.
+ *
+ * WHY A CAP IS NEEDED — the measured shape of the failure it prevents. The worker drains this queue at
+ * `MEMORY_WRITE_CONCURRENCY = 1` per process, and one write takes 45-148s when the sidecar's pipeline is
+ * healthy. When cognee is DOWN the jobs do not fail fast: the worker's HTTP call has its own timeout, then
+ * BullMQ retries with backoff out to 240s, and every chat turn keeps ADDING while nothing drains. MEASURED
+ * ceiling without a cap: at a modest 1 turn/second the queue holds 3,600 jobs after an hour of outage, each
+ * carrying two full message bodies, and Redis grows by the whole conversation history of the outage — for a
+ * queue whose jobs are, by this module's own doc, OPTIONAL ("memory is an enhancement").
+ *
+ * WHAT THE CAP DOES AT THE BOUNDARY. A write past the cap is DROPPED, not queued and not run inline: the
+ * inline path is the thing that must not grow during an outage (it would fire one more HTTP call per turn at
+ * a sidecar that is already not answering). The drop is LOGGED with the org id and the queue depth, and the
+ * caller's `'dropped'` return is what tells it not to count the write as pending. Memory of the turns shed
+ * this way is lost — that is the deliberate trade, and it is the same trade the module already documents for
+ * a refused write ("a turn the user saw must eventually be remembered" is bounded by what the queue can hold).
+ *
+ * WHY 1000 AND NOT SMALLER. It holds ~1.5-4 hours of a 45-148s-drain backlog, so a blip does not shed, while
+ * capping Redis growth at a bounded size. Operators can tune it with `MEMORY_QUEUE_MAX_DEPTH`.
+ */
+export const MEMORY_QUEUE_MAX_DEPTH = Number(process.env.MEMORY_QUEUE_MAX_DEPTH ?? 1000)
+
 let _queue: Queue<MemoryWriteJob> | null = null
 
 /**
@@ -121,7 +144,7 @@ const log = scopedLogger('memory-queue')
 export async function enqueueMemoryWrite(
   job: MemoryWriteJob,
   inlineFallback: (job: MemoryWriteJob) => Promise<void>,
-): Promise<'queued' | 'inline'> {
+): Promise<'queued' | 'inline' | 'dropped'> {
   /*
    * SKIPPED IN TESTS unless a test opts in.
    *
@@ -171,6 +194,39 @@ export async function enqueueMemoryWrite(
     log.warn('Redis is not ready; attempting the memory write inline', { status: redis.status })
     await inlineFallback(job)
     return 'inline'
+  }
+
+  /*
+   * DEPTH CHECK BEFORE THE ADD — the shedding boundary.
+   *
+   * `getJobCounts` is one Redis round trip per ENQUEUE, not per request: this function is called once per
+   * completed chat turn, so the cost is a single O(1) command against a queue that already exists. The count
+   * used is `wait + active + delayed + paused`: jobs sitting in RETRY BACKOFF are `delayed`, and a shed rule
+   * that ignored them would keep admitting during exactly the outage it exists for.
+   *
+   * Failure of the check itself is NOT a reason to shed or to fail: the queue was reachable a moment ago
+   * (the status gate above passed), so a count that errors is treated as "unknown, allow" — the pre-cap
+   * behaviour — rather than turning a transient count error into data loss.
+   */
+  try {
+    const counts = await memoryWriteQueue().getJobCounts('wait', 'active', 'delayed', 'paused')
+    const depth = (counts.wait ?? 0) + (counts.active ?? 0) + (counts.delayed ?? 0) + (counts.paused ?? 0)
+    if (depth >= MEMORY_QUEUE_MAX_DEPTH) {
+      log.warn('memory queue is at its depth cap; dropping this write rather than queueing it', {
+        organizationId: job.organizationId,
+        depth,
+        cap: MEMORY_QUEUE_MAX_DEPTH,
+        // Dropped, not deferred: the doc on the constant records why the inline path is not taken here.
+        outcome: 'dropped',
+      })
+      return 'dropped'
+    }
+  } catch {
+    // See above: an unknown depth allows the write. Logging at debug level keeps the outage visible
+    // without warning noise on every turn of a flapping connection.
+    log.warn('could not read the memory queue depth; enqueueing anyway', {
+      organizationId: job.organizationId,
+    })
   }
 
   try {

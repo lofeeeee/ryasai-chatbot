@@ -25,6 +25,15 @@ const mockDelete = mock(async () => ({}))
 // test.
 const mockFindFirst = mock<() => Promise<SavedPrompt | null>>(async () => makePrompt())
 
+// `createPrompt` records the org with `requireOrgContext()` (fail-fast); without this mock the create
+// throws the org error instead of testing the prompt write.
+mock.module('@/lib/prisma-tenant', () => ({
+  getOrgContext: () => 'org-prompt-test',
+  requireOrgContext: () => 'org-prompt-test',
+  enterWithOrg: () => undefined,
+  bypassOrg: async (fn: () => unknown) => fn(),
+}))
+
 mock.module('@/lib/db', () => ({
   db: {
     savedPrompt: {

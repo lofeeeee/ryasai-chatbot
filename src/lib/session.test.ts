@@ -28,6 +28,16 @@ mock.module('@/lib/redis', () => ({
   redisCmd: { get: async () => null, set: async () => 'OK' },
 }))
 
+// `session.ts` reads the org with `requireOrgContext()` (the fail-fast replacement for
+// `getOrgContext()!`), so this harness must supply one — without it every audit write throws the
+// error it is designed to name, and the writeAudit tests fail on the org read rather than the write.
+mock.module('@/lib/prisma-tenant', () => ({
+  getOrgContext: () => 'org-session-test',
+  requireOrgContext: () => 'org-session-test',
+  enterWithOrg: () => undefined,
+  bypassOrg: async (fn: () => unknown) => fn(),
+}))
+
 import { handleApiError, writeAudit, getActiveUser, UnauthorizedError, LicenseError } from './session'
 
 beforeEach(() => {

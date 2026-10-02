@@ -36,6 +36,7 @@ const embedCalls: string[][] = []
 
 mock.module('@/lib/prisma-tenant', () => ({
   getOrgContext: () => orgContext,
+  requireOrgContext: () => orgContext,
   enterWithOrg: () => undefined,
   bypassOrg: async (fn: () => unknown) => fn(),
 }))

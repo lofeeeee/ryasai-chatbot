@@ -8,6 +8,37 @@ export const SQL_MAX_LIMIT = 100
 // SQL error-correction loop: how many regeneration attempts (with the DB
 // error fed back to the LLM) after a failed execution or guardrail rejection.
 export const SQL_REPAIR_ATTEMPTS = 2
+/**
+ * Minimum wall-clock time that must REMAIN before the SQL repair loop starts another attempt.
+ *
+ * WHY THE LOOP NEEDS IT (verified-valid weakness, external review #4, in its narrow form). Each attempt is one
+ * `generateSql` (LLM_TIMEOUT_MS = 30s) plus one `executeQuery` (query_timeout = 30s), so a full attempt is
+ * ~60s of budget. The chat route's overall deadline is 120s, and the loop counted only ATTEMPTS — never
+ * elapsed time — so attempt 3 could begin at t=100s with the turn already doomed: the route would time out
+ * while the loop was still working, and the answer the user got was a timeout instead of the failure the
+ * branch had already diagnosed. Every individual call IS bounded; what was missing is a check that the
+ * TOTAL has not run out.
+ *
+ * The floor is one attempt's worst case (60s), rounded down to a round number: with less than that left,
+ * starting an attempt that cannot finish helps nobody. It is checked BEFORE an attempt begins, never
+ * mid-call — a started attempt runs to its own timeout, so there is nothing to cancel mid-flight.
+ */
+export const SQL_REPAIR_MIN_REMAINING_MS = () => Number(process.env.SQL_REPAIR_MIN_REMAINING_MS ?? 60_000)
+/**
+ * The total wall-clock the SQL repair loop may spend across ALL attempts, measured from the branch's start.
+ *
+ * Sits below the chat route's CHAT_OVERALL_DEADLINE_MS (120s) on purpose: the answer synthesis still needs
+ * its own share after the loop ends, and a loop that consumed the full deadline would leave nothing for the
+ * reply the user actually reads.
+ */
+/*
+ * A FUNCTION, not a const, and that is for the TESTS: the value is env-overridable precisely so a test can
+ * drive the budget boundary, but a module-level const binds the env ONCE at import — a test that sets the
+ * variable after import then measures nothing (MEASURED: the budget test passed with the value unset,
+ * because the const held the default and no retry was ever refused). Reading it per CHECK makes the
+ * override observable, which is the only reason the override exists.
+ */
+export const SQL_REPAIR_TOTAL_BUDGET_MS = () => Number(process.env.SQL_REPAIR_TOTAL_BUDGET_MS ?? 100_000)
 
 // RAG
 export const RAG_CHUNK_SIZE = 1400

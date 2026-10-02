@@ -166,6 +166,9 @@ mock.module('@/lib/prisma-tenant', () => ({
    * the thing under test.
    */
   getOrgContext: () => undefined,
+  // Same reason as getOrgContext above: the real llm-client-utils imports requireOrgContext too, and a
+  // partial mock that omits it fails the file at collection time with an export error.
+  requireOrgContext: () => { throw new Error('requireOrgContext called in a route test with no org') },
 }))
 
 // The predicate under test is mocked at the BOUNDARY (this module), not reimplemented: what the route

@@ -56,6 +56,30 @@ export function getOrgContext(): string | undefined {
   return orgStorage.getStore()
 }
 
+/**
+ * `getOrgContext()`, but with the two things its `!`-asserting callers each had to improvise.
+ *
+ * WHY THIS EXISTS (verified-valid weakness, external review #11). Seventeen call sites wrote
+ * `getOrgContext()!`, which does the OPPOSITE of what they intended: when the context is genuinely missing the
+ * non-null assertion throws `TypeError: Cannot read properties of undefined` (or Prisma's own error on
+ * `organizationId: undefined`) — a message that names neither the org context nor the likely cause. The
+ * instruction every route follows ("call enterWithOrg itself") is what normally guarantees the store; a
+ * missing value therefore means the guard was skipped, and the useful error is the one that SAYS so.
+ *
+ * The name is the contract: `require` — the caller cannot proceed without it. Cross-org work goes through
+ * `bypassOrg`, which is the documented escape hatch for the no-org cases (signup, setup, seed).
+ */
+export function requireOrgContext(): string {
+  const orgId = orgStorage.getStore()
+  if (!orgId) {
+    throw new Error(
+      'requireOrgContext: no organization context — the route or worker must call enterWithOrg(...) ' +
+        'before any org-scoped write (cross-org work belongs in bypassOrg(fn))',
+    )
+  }
+  return orgId
+}
+
 export function enterWithOrg(orgId: string): void {
   orgStorage.enterWith(orgId)
 }

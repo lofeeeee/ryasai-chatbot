@@ -33,6 +33,9 @@ mock.module('@/lib/llm-client', () => ({
 }))
 mock.module('@/lib/prisma-tenant', () => ({
   getOrgContext: () => 'org-1',
+  // The fail-fast org read used by the audit-log call sites; without it they throw the error they are
+  // designed to name, and every executeRestRequest test fails on the log write rather than on the request.
+  requireOrgContext: () => 'org-1',
   enterWithOrg: () => {},
 }))
 

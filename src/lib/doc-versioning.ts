@@ -1,6 +1,6 @@
 import crypto from 'crypto'
 import { db } from '@/lib/db'
-import { getOrgContext } from '@/lib/prisma-tenant'
+import { getOrgContext, requireOrgContext } from '@/lib/prisma-tenant'
 import { scopedLogger } from '@/lib/logger'
 
 const log = scopedLogger('doc-versioning')
@@ -40,7 +40,7 @@ export async function createDocVersion(documentId: string): Promise<DocVersionSn
 
   const snapshot = await db.documentVersion.create({
     data: {
-      organizationId: getOrgContext()!,
+      organizationId: requireOrgContext(),
       documentId,
       version: nextVersion,
       contentHash: hash,

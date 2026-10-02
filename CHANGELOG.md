@@ -5,6 +5,40 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.10] - 2026-10-02
+
+### Fixed
+Four weaknesses from an external review, each first verified against the code — of the review's fourteen
+claims, eight did not survive measurement (a cited SQL bypass was blocked when actually run; a "type
+safety gap" typechecked clean), and these four did. Fixes, each negative-controlled:
+
+- **A stuck memory sidecar can no longer pile jobs unbounded.** The write queue drains at one job per
+  process while a write takes 45-148s, so with cognee down every chat turn kept adding to a queue nothing
+  drained — about 3,600 jobs an hour, each carrying two message bodies, on a queue whose own doc calls
+  memory optional. Past 1,000 pending (counting retries in backoff, the signature of an outage) new
+  writes are now dropped with a logged reason, not queued and not run inline — inline would fire one
+  more HTTP call per turn at a sidecar that is not answering.
+- **A missing org context now fails with an error naming the cause.** Seventeen call sites wrote
+  `getOrgContext()!`, whose failure mode is a TypeError that names neither the org nor the fix.
+  `requireOrgContext()` throws an error that says both. The change exposed that seven router tests and
+  ten other harnesses had never established an org at all — the `!` had been writing
+  `organizationId: undefined` into their mocks silently.
+- **The SQL repair loop counts the clock, not just attempts.** One attempt is an LLM call plus a query,
+  ~30s each, so a third attempt could begin at t=100s on a turn whose 120s deadline was spent — the user
+  got a timeout instead of the failure the branch had already diagnosed. A retry now only starts when a
+  full attempt's worst case still fits. The first version of the guard test passed with the check
+  deleted: its first attempt succeeded, so no retry was ever attempted either way.
+- **A failed retrieval is now recorded, not silent.** The RAG→CHAT fallback left a plain CHAT tool run,
+  indistinguishable from a turn that never wanted documents — a policy question during a knowledge
+  outage got an un-cited answer with no way to tell why. The run now carries `DEGRADED from RAG` and the
+  failure reason. An EMPTY retrieval is deliberately not marked: a small corpus is a legitimate chat
+  answer, and labelling it degraded would cry wolf.
+
+### Verified
+- 315 files, 7,733 pass, 0 fail · coverage gate OK (204 modules) · build · e2e 19 · e2e:prod 19.
+- Evaluation 62/63; the single miss is the compound doc+db question, measured historically at 22/34 —
+  an A/B at n=8 gave 6/8 (old) vs 5/8 (new), inside that question's own noise.
+
 ## [1.7.9] - 2026-10-02
 
 ### Fixed

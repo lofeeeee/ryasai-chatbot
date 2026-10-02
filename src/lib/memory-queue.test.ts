@@ -26,6 +26,12 @@ const state = {
   addShouldThrow: null as Error | null,
   addCalls: 0,
   closed: 0,
+  /**
+   * What `getJobCounts` returns, and whether it throws. The shedding rule reads `wait + active +
+   * delayed + paused`, so a test controls the depth by setting those four fields.
+   */
+  counts: { wait: 0, active: 0, delayed: 0, paused: 0 } as Record<string, number>,
+  countsShouldThrow: null as Error | null,
 }
 
 mock.module('@/lib/redis', () => ({
@@ -56,6 +62,13 @@ const actualBullmq = await import('bullmq')
 mock.module('bullmq', () => ({
   ...actualBullmq,
   Queue: class {
+    async getJobCounts(...types: string[]) {
+      if (state.countsShouldThrow) throw state.countsShouldThrow
+      // BullMQ returns only the requested keys; the implementation asks for exactly these four.
+      const out: Record<string, number> = {}
+      for (const t of types) out[t] = state.counts[t] ?? 0
+      return out
+    }
     async add() {
       state.addCalls++
       if (state.addShouldThrow) throw state.addShouldThrow
@@ -102,6 +115,8 @@ beforeEach(async () => {
   state.addShouldThrow = null
   state.addCalls = 0
   state.closed = 0
+  state.counts = { wait: 0, active: 0, delayed: 0, paused: 0 }
+  state.countsShouldThrow = null
 })
 
 describe('enqueueMemoryWrite — a Redis outage must FALL BACK, not hang', () => {
@@ -214,5 +229,58 @@ describe('the memory-write retry schedule', () => {
     const lockDuration = Number(match![1]!.replace(/_/g, ''))
     const LONGEST_MEASURED_WRITE_MS = 148_000
     expect(lockDuration).toBeGreaterThan(LONGEST_MEASURED_WRITE_MS)
+  })
+})
+
+
+describe('enqueueMemoryWrite — the depth cap (backpressure against a stuck sidecar)', () => {
+  /*
+   * VERIFIED-VALID WEAKNESS, and the shape it prevents. The worker drains at concurrency 1 and a write
+   * takes 45-148s healthy; when cognee is down the jobs retry out to 240s while every chat turn keeps
+   * ADDING. Without a cap, Redis holds the entire conversation history of the outage in jobs for a queue
+   * whose own doc calls memory an enhancement. MEASURED ceiling: 1 turn/second = 3,600 jobs/hour.
+   *
+   * The drop is deliberate and recorded in the test names, because it is the trade: at the cap, a turn's
+   * memory is lost rather than allowed to grow the backlog. The inline path is NOT taken (that would fire
+   * an HTTP call per turn at a sidecar that is already not answering).
+   */
+  const base = { organizationId: 'org-1', sessionId: 's1', userMessage: 'hi', aiMessage: 'hello', toolRuns: [] }
+
+  test('a queue AT the cap DROPS the write: no add, no inline call', async () => {
+    state.counts = { wait: 1000, active: 0, delayed: 0, paused: 0 }
+    const fb = fallbackSpy()
+    const outcome = await enqueueMemoryWrite(base, fb.fn)
+    expect(outcome).toBe('dropped')
+    expect(state.addCalls).toBe(0)      // never enqueued
+    expect(fb.calls.length).toBe(0)     // and NOT run inline — that would fire an HTTP call at a dead sidecar
+  })
+
+  test('retry backoff COUNTS toward the depth: delayed jobs are the outage signature', async () => {
+    // A stuck sidecar parks its failures in `delayed` (retry backoff to 240s). A cap that ignored them
+    // would keep admitting during exactly the outage it exists for.
+    state.counts = { wait: 0, active: 1, delayed: 999, paused: 0 }
+    const fb = fallbackSpy()
+    const outcome = await enqueueMemoryWrite(base, fb.fn)
+    expect(outcome).toBe('dropped')
+    expect(state.addCalls).toBe(0)
+  })
+
+  test('a queue just UNDER the cap still enqueues', async () => {
+    state.counts = { wait: 99, active: 1, delayed: 899, paused: 0 }   // 999 < 1000
+    const fb = fallbackSpy()
+    const outcome = await enqueueMemoryWrite(base, fb.fn)
+    expect(outcome).toBe('queued')
+    expect(state.addCalls).toBe(1)
+    expect(fb.calls.length).toBe(0)
+  })
+
+  test('a count that FAILS is treated as unknown-and-allow, not as a reason to shed', async () => {
+    // The status gate passed a moment ago, so a count error is transient. Shedding on it would turn a
+    // flapping connection into data loss; the pre-cap behaviour is the safer default.
+    state.countsShouldThrow = new Error('connection reset')
+    const fb = fallbackSpy()
+    const outcome = await enqueueMemoryWrite(base, fb.fn)
+    expect(outcome).toBe('queued')
+    expect(state.addCalls).toBe(1)
   })
 })

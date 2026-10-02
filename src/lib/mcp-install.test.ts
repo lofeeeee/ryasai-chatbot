@@ -39,6 +39,8 @@ mock.module('@/lib/db', () => ({
 }))
 mock.module('@/lib/prisma-tenant', () => ({
   getOrgContext: () => 'org-1',
+  // Fail-fast org read used by the module under test; omitting it fails the import at collection time.
+  requireOrgContext: () => 'org-1',
   bypassOrg: async (fn: () => unknown) => fn(),
   enterWithOrg: () => {},
 }))

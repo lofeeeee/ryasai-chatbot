@@ -1,12 +1,13 @@
 import { db } from '@/lib/db'
-import { getOrgContext } from '@/lib/prisma-tenant'
+import { scopedLogger } from '@/lib/logger'
+import { getOrgContext, requireOrgContext } from '@/lib/prisma-tenant'
 import { decryptConfig } from '@/lib/crypto'
 import {
   connectorRegistry,
   describeSchema,
 } from '@/lib/connectors'
 import { validateAndSanitizeLlmSql } from '@/lib/guardrails'
-import { SQL_REPAIR_ATTEMPTS, SQL_MAX_LIMIT } from '@/lib/constants'
+import { SQL_REPAIR_ATTEMPTS, SQL_MAX_LIMIT , SQL_REPAIR_MIN_REMAINING_MS, SQL_REPAIR_TOTAL_BUDGET_MS } from '@/lib/constants'
 import {
   generateAnswer,
   generateChat,
@@ -49,17 +50,22 @@ import {
   type ChatHistoryEntry,
 } from '@/lib/tool-utils'
 
+const log = scopedLogger('tool-branches')
+
 // ---------------------------------------------------------------------------
 // Non-streaming branch executors — one function per RouteDecision.
 // Called by runNonStreamingChatCompletion in tool-router.ts.
 // ----------------------------------------------------------------------------
 
-export async function runChatBranch(args: {
-  question: string
-  systemPromptPrefix?: string
-  memoryContext?: string
-  chatHistory?: ChatHistoryEntry[]
-}): Promise<CompletionResult> {
+export async function runChatBranch(
+  args: {
+    question: string
+    systemPromptPrefix?: string
+    memoryContext?: string
+    chatHistory?: ChatHistoryEntry[]
+  },
+  degradation?: { degradedFrom: string; degradedReason: string },
+): Promise<CompletionResult> {
   const started = Date.now()
   const answer = await generateChat(args.question, args.systemPromptPrefix, args.memoryContext, args.chatHistory)
   return {
@@ -74,6 +80,15 @@ export async function runChatBranch(args: {
         latencyMs: Date.now() - started,
         inputSummary: summarize(args.question),
         outputSummary: summarize(answer),
+        /*
+         * Present ONLY on a degraded turn, so its absence continues to mean "an ordinary chat answer".
+         * The reason travels with the run: an operator reading the audit trail sees what failed, not just
+         * that something did. (Verified-valid weakness #1: the fallback previously left a plain CHAT run,
+         * indistinguishable from a turn that never wanted documents.)
+         */
+        ...(degradation
+          ? { outputSummary: summarize(`DEGRADED from ${degradation.degradedFrom}: ${degradation.degradedReason}`) }
+          : {}),
       },
     ],
   }
@@ -127,13 +142,28 @@ export async function runRagBranch(args: {
       documentIds: args.documentIds,
       topK: 4,
     })
-  } catch {
-    // ponytail: RAG is best-effort — if the knowledge backend is down, degrade
-    // to plain chat instead of failing the whole turn.
-    return runChatBranch(args)
+  } catch (e) {
+    /*
+     * RAG is best-effort — if the knowledge backend is down, degrade to plain chat instead of failing the
+     * whole turn. The degradation is RECORDED rather than silent: `degradedFrom` names the route that was
+     * attempted, so the tool run reads as "answered from chat because retrieval failed" instead of as a
+     * plain chat turn. A user asking a policy question during a sidecar outage otherwise gets a
+     * confident-sounding answer with no citation and no way to tell why.
+     */
+    log.warn('RAG retrieval failed; answering from chat', {
+      error: e instanceof Error ? e.message : String(e),
+    })
+    return runChatBranch(args, {
+      degradedFrom: 'RAG',
+      degradedReason: e instanceof Error ? e.message : String(e),
+    })
   }
   const topChunks = retrieval.chunks
-  if (topChunks.length === 0 && !retrieval.graphContext) return runChatBranch(args)
+  if (topChunks.length === 0 && !retrieval.graphContext) {
+    // Distinct from the error above: retrieval RAN and found nothing. Not degraded — an empty corpus is a
+    // legitimate chat answer, and labelling it degraded would cry wolf on every small install.
+    return runChatBranch(args)
+  }
 
   const chunkContext = topChunks
     .map(
@@ -224,7 +254,7 @@ export async function runRagBranch(args: {
 
   await db.auditLog.create({
     data: {
-      organizationId: getOrgContext()!,
+      organizationId: requireOrgContext(),
       userId: null,
       action: 'RAG_SEARCH',
       severity: 'info',
@@ -450,6 +480,22 @@ export async function runSqlBranch(args: {
   let sqlExplanation = ''
 
   for (let attempt = 0; attempt <= SQL_REPAIR_ATTEMPTS; attempt++) {
+    /*
+     * TIME BUDGET BEFORE EVERY RETRY (attempt 0 runs unconditionally: a check before the first attempt
+     * would mean a turn that started late answers nothing at all). One attempt is an LLM call plus a query,
+     * each ~30s worst case; the loop previously counted only attempts, so attempt 3 could start at t=100s
+     * on a turn whose 120s deadline was already gone — the user got a timeout instead of the failure this
+     * branch had already diagnosed. Breaking out here hands the turn to the answer with the failure
+     * recorded in `lastSqlError`, which is the honest outcome.
+     */
+    if (attempt > 0 && Date.now() - started + SQL_REPAIR_MIN_REMAINING_MS() > SQL_REPAIR_TOTAL_BUDGET_MS()) {
+      log.warn('sql repair loop: not enough budget left for another attempt', {
+        elapsedMs: Date.now() - started,
+        budgetMs: SQL_REPAIR_TOTAL_BUDGET_MS(),
+        attemptsDone: attempt,
+      })
+      break
+    }
     const feedback = attempt > 0
       ? `The previous SQL was:\n${attemptedSql[attemptedSql.length - 1]}\nIt failed with error:\n${lastSqlError}`
       : undefined
@@ -483,7 +529,7 @@ export async function runSqlBranch(args: {
       attemptedSql.push(candidate.sql)
       await db.auditLog.create({
         data: {
-          organizationId: getOrgContext()!,
+          organizationId: requireOrgContext(),
           userId: args.userId,
           action: 'GUARDRAIL_BLOCK',
           severity: 'critical',
@@ -512,7 +558,7 @@ export async function runSqlBranch(args: {
       attemptedSql.push(sanitizedSql)
       await db.queryHistory.create({
         data: {
-          organizationId: getOrgContext()!,
+          organizationId: requireOrgContext(),
           integrationId: integration.id,
           userId: args.userId,
           naturalQuery: args.question,
@@ -523,7 +569,7 @@ export async function runSqlBranch(args: {
       })
       await db.auditLog.create({
         data: {
-          organizationId: getOrgContext()!,
+          organizationId: requireOrgContext(),
           userId: args.userId,
           action: 'SQL_EXECUTE_ERROR',
           severity: 'warning',
@@ -554,7 +600,7 @@ export async function runSqlBranch(args: {
   const result = executed
   await db.queryHistory.create({
     data: {
-      organizationId: getOrgContext()!,
+      organizationId: requireOrgContext(),
       integrationId: integration.id,
       userId: args.userId,
       naturalQuery: args.question,
@@ -566,7 +612,7 @@ export async function runSqlBranch(args: {
   })
   await db.auditLog.create({
     data: {
-      organizationId: getOrgContext()!,
+      organizationId: requireOrgContext(),
       userId: args.userId,
       action: 'SQL_EXECUTE',
       severity: 'info',
@@ -764,7 +810,7 @@ export async function runRestBranch(args: {
 
   await db.auditLog.create({
     data: {
-      organizationId: getOrgContext()!,
+      organizationId: requireOrgContext(),
       userId: args.userId,
       action: 'REST_ENDPOINT_EXECUTE',
       severity: result.statusCode >= 200 && result.statusCode < 400 ? 'info' : 'warning',
@@ -927,7 +973,7 @@ export async function executeRestRequest(args: {
     const latencyMs = Date.now() - started
     await db.restApiRequestLog.create({
       data: {
-        organizationId: getOrgContext()!,
+        organizationId: requireOrgContext(),
         connectorId: args.connector.id,
         endpointId: args.endpointId,
         statusCode: response.status,
@@ -955,7 +1001,7 @@ export async function executeRestRequest(args: {
     const error = e instanceof Error ? e.message : String(e)
     await db.restApiRequestLog.create({
       data: {
-        organizationId: getOrgContext()!,
+        organizationId: requireOrgContext(),
         connectorId: args.connector.id,
         endpointId: args.endpointId,
         latencyMs,

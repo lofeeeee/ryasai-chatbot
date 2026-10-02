@@ -128,7 +128,9 @@ mock.module('@/lib/smart-router', () => ({
   resolveIntegrationForQuestion: async (...a: any[]) => { sr.calls.push(a); return sr.choice },
   tokenize: (t: string) => t.toLowerCase().split(/\s+/).filter(Boolean),
 }))
-mock.module('@/lib/prisma-tenant', () => ({ getOrgContext: () => 'org-1' }))
+// `requireOrgContext` is included so the module under test's fail-fast org read resolves in this harness;
+// without it every audit-log call site throws the very error it is supposed to name.
+mock.module('@/lib/prisma-tenant', () => ({ getOrgContext: () => 'org-1', requireOrgContext: () => 'org-1' }))
 let planImpl: (args: any) => Promise<any> = async () => ({ endpointId: 'ep-1', query: {}, explanation: '', body: null })
 let pluginImpl: (args: any) => Promise<any> = async () => ({ ok: true, output: '', error: null })
 let globalFetch: (url: any, init?: any) => Promise<Response> = async () => new Response('ok', { status: 200 })
@@ -1169,5 +1171,29 @@ describe('runSqlBranch — the answer must be TOLD which other sources exist', (
     await runSqlBranch({ question: 'Berapa jumlah pelanggan?', userId: 'u1', integrationNames: ['Only DB'] })
     const system = JSON.stringify(mockGenerateAnswer.mock.calls.at(-1)?.[0] ?? {})
     expect(system).not.toContain('Other connected data sources')
+  })
+})
+
+describe('runRagBranch — a failed retrieval leaves a DEGRADED trace', () => {
+  /*
+   * VERIFIED-VALID WEAKNESS (#1): the RAG->CHAT fallback left a plain CHAT tool run, indistinguishable
+   * from a turn that never wanted documents. A user asking a policy question during a knowledge-backend
+   * outage got an un-cited answer with no way to tell why. The marker names the route that was attempted
+   * and the reason it failed.
+   */
+  test('a retrieval ERROR produces a tool run marked DEGRADED from RAG with the reason', async () => {
+    mockRetrieveWithReflection.mockImplementationOnce(async () => { throw new Error('sidecar unreachable') })
+    const r = await runRagBranch({ question: 'what is the policy?' })
+    expect(r.toolRuns[0].type).toBe('CHAT')
+    expect(r.toolRuns[0].outputSummary ?? '').toContain('DEGRADED from RAG')
+    expect(r.toolRuns[0].outputSummary ?? '').toContain('sidecar unreachable')
+    expect(r.citations).toEqual([])
+  })
+
+  test('an EMPTY retrieval is NOT degraded — a small corpus is a legitimate chat answer', async () => {
+    // Retrieval ran and found nothing: labelling that degraded would cry wolf on every small install.
+    mockRetrieveWithReflection.mockImplementationOnce(async () => ({ chunks: [], graphContext: '', queryTokens: [], candidatesScanned: 0, reflection: { sufficient: false }, retrievalPasses: 1 }))
+    const r = await runRagBranch({ question: 'hello' })
+    expect(r.toolRuns[0].outputSummary ?? '').not.toContain('DEGRADED')
   })
 })

@@ -89,6 +89,7 @@ mock.module('@/lib/session', () => ({
 }))
 
 mock.module('@/lib/prisma-tenant', () => ({
+  requireOrgContext: () => 'org-mock',
   enterWithOrg: (orgId: string) => {
     events.push(`enterWithOrg:${orgId}`)
     enteredOrgs.push(orgId)
@@ -409,7 +410,10 @@ describe('the org stamp is the library contract, checked against the REAL source
     // Path depth: this file sits at src/app/api/prompts/, so `src/lib` is THREE levels up
     // (prompts -> api -> app -> src). Four would land on the repo root.
     const lib = readFileSync(join(import.meta.dir, '..', '..', '..', 'lib', 'prompt-library.ts'), 'utf8')
-    expect(lib).toContain('organizationId: getOrgContext()!')
+    // UPDATED with the fail-fast org read: the old assertion pinned `getOrgContext()!`, whose failure mode
+    // was a TypeError naming neither the org nor the cause. `requireOrgContext()` throws an error that names
+    // both (see prisma-tenant.ts); pinning the old form here would demand the weaker failure mode back.
+    expect(lib).toContain('organizationId: requireOrgContext()')
     expect(lib).toMatch(/export async function listPrompts\([\s\S]{0,400}?db\.savedPrompt\.findMany/)
     // INVERTED. The single-row read used to be the ONE unscoped read in this library (`findUnique`), which is what
     // the sibling [id] test file pinned as a cross-tenant IDOR. It is now a FILTER op, so the extension appends the

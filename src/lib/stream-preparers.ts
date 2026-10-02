@@ -1,13 +1,14 @@
 import { db } from '@/lib/db'
+import { scopedLogger } from '@/lib/logger'
 import { getPromptSettings, resolveSqlRulesPrompt } from '@/lib/prompt-settings'
-import { getOrgContext } from '@/lib/prisma-tenant'
+import { getOrgContext, requireOrgContext } from '@/lib/prisma-tenant'
 import { decryptConfig } from '@/lib/crypto'
 import {
   connectorRegistry,
   describeSchema,
 } from '@/lib/connectors'
 import { validateAndSanitizeLlmSql } from '@/lib/guardrails'
-import { SQL_REPAIR_ATTEMPTS, SQL_MAX_LIMIT } from '@/lib/constants'
+import { SQL_REPAIR_ATTEMPTS, SQL_MAX_LIMIT , SQL_REPAIR_MIN_REMAINING_MS, SQL_REPAIR_TOTAL_BUDGET_MS } from '@/lib/constants'
 import {
   generateRestCall,
   generateSql,
@@ -39,6 +40,8 @@ import { buildSourceGuidance } from '@/lib/source-guidance'
 import { judgeSqlAnswerability, type RelevanceJudge } from '@/lib/sql-answerability'
 import { chatOnce } from '@/lib/llm-client'
 import { getRoleLlmConfig } from '@/lib/llm-config'
+
+const log = scopedLogger('stream-preparers')
 
 // ---------------------------------------------------------------------------
 // Streaming branch preparers — one per RouteDecision.
@@ -118,12 +121,28 @@ export async function prepareRagStream(args: {
   let retrieval: Awaited<ReturnType<typeof retrieveWithReflection>>
   try {
     retrieval = await retrieveWithReflection({ query: args.question, topK: 4, documentIds: args.documentIds })
-  } catch {
-    // ponytail: RAG is best-effort — if the knowledge backend is down, degrade
-    // to plain chat instead of failing the whole stream.
-    return prepareChatStream(args)
+  } catch (e) {
+    /*
+     * Same recording as the non-streaming twin: the fallback is correct, but it must not be SILENT. The
+     * tool run carries `DEGRADED from RAG` with the failure reason, so the audit trail distinguishes
+     * "answered from chat because retrieval failed" from an ordinary chat turn — the verified weakness
+     * was precisely that the two looked identical.
+     */
+    log.warn('RAG retrieval failed; answering from chat', {
+      error: e instanceof Error ? e.message : String(e),
+    })
+    const degraded = await prepareChatStream({ ...args })
+    return {
+      ...degraded,
+      toolRuns: degraded.toolRuns.map((run) =>
+        run.type === 'CHAT' && run.status === 'success'
+          ? { ...run, outputSummary: summarize(`DEGRADED from RAG: ${e instanceof Error ? e.message : String(e)}`) }
+          : run,
+      ),
+    }
   }
   const topChunks = retrieval.chunks
+  // An empty corpus is NOT degraded (see the twin's comment): retrieval ran and found nothing.
   if (topChunks.length === 0 && !retrieval.graphContext) return prepareChatStream(args)
 
   const chunkContext = topChunks
@@ -207,7 +226,7 @@ export async function prepareRagStream(args: {
 
   await db.auditLog.create({
     data: {
-      organizationId: getOrgContext()!,
+      organizationId: requireOrgContext(),
       userId: null,
       action: 'RAG_SEARCH',
       severity: 'info',
@@ -402,6 +421,21 @@ export async function prepareSqlStream(args: {
   let sqlExplanation = ''
 
   for (let attempt = 0; attempt <= SQL_REPAIR_ATTEMPTS; attempt++) {
+    /*
+     * TIME BUDGET BEFORE EVERY RETRY — the streaming twin of tool-branches' check, with the same rule:
+     * attempt 0 always runs, and a retry only starts when one attempt's worst case still fits. The loop
+     * previously counted attempts and never the clock, so a retry could begin with the route's deadline
+     * already spent. Both transports must carry the check or the one that does not becomes the slow path
+     * that re-introduces the defect — the transport-drift class this repo has recorded three times.
+     */
+    if (attempt > 0 && Date.now() - started + SQL_REPAIR_MIN_REMAINING_MS() > SQL_REPAIR_TOTAL_BUDGET_MS()) {
+      log.warn('sql repair loop: not enough budget left for another attempt', {
+        elapsedMs: Date.now() - started,
+        budgetMs: SQL_REPAIR_TOTAL_BUDGET_MS(),
+        attemptsDone: attempt,
+      })
+      break
+    }
     const feedback = attempt > 0
       ? `The previous SQL was:\n${attemptedSql[attemptedSql.length - 1]}\nIt failed with error:\n${lastSqlError}`
       : undefined

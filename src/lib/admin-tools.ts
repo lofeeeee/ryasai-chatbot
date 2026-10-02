@@ -9,7 +9,7 @@
  * toggle_document) require explicit confirmation from the user before executing.
  */
 import { db } from '@/lib/db'
-import { getOrgContext } from '@/lib/prisma-tenant'
+import { getOrgContext, requireOrgContext } from '@/lib/prisma-tenant'
 import { generateApiKey, maskApiKey } from '@/lib/api-keys'
 import { writeAudit } from '@/lib/session'
 import { getPromptSettings, mergePromptSettings } from '@/lib/prompt-settings'
@@ -121,7 +121,7 @@ async function generateApiKeyAction(input: Record<string, string>, userId: strin
   const ratePerMin = Number(process.env.DEFAULT_API_RATE_PER_MINUTE ?? 60)
   const dailyLimit = Number(process.env.DEFAULT_API_DAILY_LIMIT ?? 1000)
   const item = await db.apiKey.create({
-    data: { organizationId: getOrgContext()!, label, keyPrefix: generated.prefix, keyHash: generated.hash, requestLimitPerMinute: ratePerMin, dailyRequestLimit: dailyLimit },
+    data: { organizationId: requireOrgContext(), label, keyPrefix: generated.prefix, keyHash: generated.hash, requestLimitPerMinute: ratePerMin, dailyRequestLimit: dailyLimit },
   })
   await writeAudit({ userId, action: 'API_KEY_GENERATED', severity: 'warning', detail: { label, keyId: item.id } })
   return {
@@ -201,7 +201,7 @@ async function setPromptAction(input: Record<string, string>, userId: string, is
   const merged = mergePromptSettings(current, { systemPrompt: newPrompt })
   const existing = await db.appConfig.findFirst()
   if (existing) await db.appConfig.update({ where: { id: existing.id }, data: { promptSettings: JSON.stringify(merged) } })
-  else await db.appConfig.create({ data: { organizationId: getOrgContext()!, promptSettings: JSON.stringify(merged) } })
+  else await db.appConfig.create({ data: { organizationId: requireOrgContext(), promptSettings: JSON.stringify(merged) } })
   await writeAudit({ userId, action: 'PROMPT_TOOLS_UPDATE', severity: 'warning', detail: { systemPromptLength: merged.systemPrompt.length, via: 'agentic' } })
   return { ok: true, output: `System Prompt updated (${newPrompt.length} characters).\n\nPreview: ${newPrompt.slice(0, 200)}${newPrompt.length > 200 ? '...' : ''}` }
 }
@@ -226,7 +226,7 @@ async function toggleToolAction(input: Record<string, string>, userId: string, i
   const merged = mergePromptSettings(current, { tools: { [toolKey]: enabled } })
   const existing = await db.appConfig.findFirst()
   if (existing) await db.appConfig.update({ where: { id: existing.id }, data: { promptSettings: JSON.stringify(merged) } })
-  else await db.appConfig.create({ data: { organizationId: getOrgContext()!, promptSettings: JSON.stringify(merged) } })
+  else await db.appConfig.create({ data: { organizationId: requireOrgContext(), promptSettings: JSON.stringify(merged) } })
   await writeAudit({ userId, action: 'PROMPT_TOOLS_UPDATE', severity: 'warning', detail: { tool: toolKey, enabled, via: 'agentic' } })
   return { ok: true, output: `Tool ${toolKey.toUpperCase()} ${enabled ? 'enabled' : 'disabled'}.\n\nStatus: SQL=${merged.tools.sql ? 'ON' : 'OFF'}, RAG=${merged.tools.rag ? 'ON' : 'OFF'}, REST=${merged.tools.restApi ? 'ON' : 'OFF'}` }
 }

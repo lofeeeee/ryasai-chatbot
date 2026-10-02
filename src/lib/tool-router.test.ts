@@ -349,6 +349,21 @@ import {
   withSqlConcurrency,
 } from './tool-router'
 import { invalidateRagCache } from './rag'
+import { enterWithOrg } from '@/lib/prisma-tenant'
+
+/**
+ * Establishes the org INSIDE the test body it wraps.
+ *
+ * WHY A WRAPPER AND NOT `beforeEach`: MEASURED on Bun 1.4.2 (see the note in knowledge-graph.test.ts),
+ * `AsyncLocalStorage.enterWith()` called in a hook does not reach the test body. The real
+ * `requireOrgContext()` in the tool branches FAILS FAST without an org, which exposed the gap: this file
+ * never set one, and the old `getOrgContext()!` wrote `organizationId: undefined` into a mocked
+ * `auditLog.create` that accepted it silently.
+ */
+function withOrg<T>(fn: () => Promise<T> | T): Promise<T> {
+  enterWithOrg('org-router-test')
+  return Promise.resolve(fn()).finally(() => enterWithOrg(''))
+}
 
 // --- Setup / teardown ---
 
@@ -741,170 +756,180 @@ describe('runNonStreamingChatCompletion', () => {
   })
 
   test('SQL branch: returns answer with query results and citation', async () => {
-    mockIntegrationCount.mockImplementation(async () => 1)
-    mockDocumentCount.mockImplementation(async () => 0)
-    mockRestEndpointCount.mockImplementation(async () => 0)
-    mockSelectToolWithLlm.mockImplementation(async () => ({ toolId: 'sql', decision: 'SQL' as RouteDecision, args: {}, integrationId: 'int-1', reason: 'stub', llmUsed: true }))
-    mockIntegrationFindFirst.mockImplementation(async () => ({
-      id: 'int-1',
-      name: 'Test DB',
-      provider: 'POSTGRESQL',
-      encryptedConfig: 'encrypted',
-      schemas: [{ tableName: 'users', columns: '[]', rowCount: 10, sampleRow: null }],
-    }))
-    mockGenerateSql.mockImplementation(async () => ({ sql: 'SELECT * FROM users LIMIT 10', explanation: 'all users' }))
-    mockValidateSql.mockImplementation(() => ({ ok: true, sanitized: 'SELECT * FROM users LIMIT 10' }))
-    mockExecuteQuery.mockImplementation(async () => ({
-      rows: [{ id: 1, name: 'Alice' }],
-      rowCount: 1,
-      executionMs: 5,
-    }))
-    mockGenerateAnswer.mockImplementation(async () => 'Found 1 user named Alice.')
+    return withOrg(async () => {
+      mockIntegrationCount.mockImplementation(async () => 1)
+      mockDocumentCount.mockImplementation(async () => 0)
+      mockRestEndpointCount.mockImplementation(async () => 0)
+      mockSelectToolWithLlm.mockImplementation(async () => ({ toolId: 'sql', decision: 'SQL' as RouteDecision, args: {}, integrationId: 'int-1', reason: 'stub', llmUsed: true }))
+      mockIntegrationFindFirst.mockImplementation(async () => ({
+        id: 'int-1',
+        name: 'Test DB',
+        provider: 'POSTGRESQL',
+        encryptedConfig: 'encrypted',
+        schemas: [{ tableName: 'users', columns: '[]', rowCount: 10, sampleRow: null }],
+      }))
+      mockGenerateSql.mockImplementation(async () => ({ sql: 'SELECT * FROM users LIMIT 10', explanation: 'all users' }))
+      mockValidateSql.mockImplementation(() => ({ ok: true, sanitized: 'SELECT * FROM users LIMIT 10' }))
+      mockExecuteQuery.mockImplementation(async () => ({
+        rows: [{ id: 1, name: 'Alice' }],
+        rowCount: 1,
+        executionMs: 5,
+      }))
+      mockGenerateAnswer.mockImplementation(async () => 'Found 1 user named Alice.')
 
-    const result = await runNonStreamingChatCompletion({
-      question: 'Show me all users',
-      userId: 'user-1',
-    })
+      const result = await runNonStreamingChatCompletion({
+        question: 'Show me all users',
+        userId: 'user-1',
+      })
 
-    expect(result.answer).toBe('Found 1 user named Alice.')
-    expect(result.integrationId).toBe('int-1')
-    expect(result.toolRuns).toHaveLength(1)
-    expect(result.toolRuns[0].type).toBe('SQL')
-    expect(result.toolRuns[0].status).toBe('success')
-    expect(result.citations).toHaveLength(1)
-    expect(result.citations[0].type).toBe('DATABASE')
-    expect(result.citations[0].query_used).toContain('SELECT * FROM users')
-    expect(mockQueryHistoryCreate).toHaveBeenCalledTimes(1)
-    expect(mockAuditLogCreate).toHaveBeenCalledTimes(1)
-  })
+      expect(result.answer).toBe('Found 1 user named Alice.')
+      expect(result.integrationId).toBe('int-1')
+      expect(result.toolRuns).toHaveLength(1)
+      expect(result.toolRuns[0].type).toBe('SQL')
+      expect(result.toolRuns[0].status).toBe('success')
+      expect(result.citations).toHaveLength(1)
+      expect(result.citations[0].type).toBe('DATABASE')
+      expect(result.citations[0].query_used).toContain('SELECT * FROM users')
+      expect(mockQueryHistoryCreate).toHaveBeenCalledTimes(1)
+      expect(mockAuditLogCreate).toHaveBeenCalledTimes(1)
+  
+    })})
 
   // ponytail: with the SQL repair loop, a guardrail rejection is retried
   // (SQL_REPAIR_ATTEMPTS) before giving up — the terminal status is 'error'
   // with the last guardrail reason. 'blocked' is reserved for rate limits.
   test('SQL branch: persistent guardrail rejection retries then returns error status', async () => {
-    mockIntegrationCount.mockImplementation(async () => 1)
-    mockSelectToolWithLlm.mockImplementation(async () => ({ toolId: 'sql', decision: 'SQL' as RouteDecision, args: {}, integrationId: 'int-1', reason: 'stub', llmUsed: true }))
-    mockIntegrationFindFirst.mockImplementation(async () => ({
-      id: 'int-1',
-      name: 'Test DB',
-      provider: 'POSTGRESQL',
-      encryptedConfig: 'encrypted',
-      schemas: [{ tableName: 'users', columns: '[]', rowCount: 10, sampleRow: null }],
-    }))
-    mockGenerateSql.mockImplementation(async () => ({ sql: 'DROP TABLE users', explanation: 'drop' }))
-    mockValidateSql.mockImplementation(() => ({ ok: false, reason: 'DROP not allowed', detectedNodes: [] }))
+    return withOrg(async () => {
+      mockIntegrationCount.mockImplementation(async () => 1)
+      mockSelectToolWithLlm.mockImplementation(async () => ({ toolId: 'sql', decision: 'SQL' as RouteDecision, args: {}, integrationId: 'int-1', reason: 'stub', llmUsed: true }))
+      mockIntegrationFindFirst.mockImplementation(async () => ({
+        id: 'int-1',
+        name: 'Test DB',
+        provider: 'POSTGRESQL',
+        encryptedConfig: 'encrypted',
+        schemas: [{ tableName: 'users', columns: '[]', rowCount: 10, sampleRow: null }],
+      }))
+      mockGenerateSql.mockImplementation(async () => ({ sql: 'DROP TABLE users', explanation: 'drop' }))
+      mockValidateSql.mockImplementation(() => ({ ok: false, reason: 'DROP not allowed', detectedNodes: [] }))
 
-    const result = await runNonStreamingChatCompletion({
-      question: 'Delete all users',
-      userId: 'user-1',
-    })
+      const result = await runNonStreamingChatCompletion({
+        question: 'Delete all users',
+        userId: 'user-1',
+      })
 
-    expect(result.toolRuns[0].type).toBe('SQL')
-    expect(result.toolRuns[0].status).toBe('error')
-    expect(result.toolRuns[0].errorMessage).toContain('DROP')
-    // 1 initial + 2 repair attempts
-    expect(mockGenerateSql).toHaveBeenCalledTimes(3)
-  })
+      expect(result.toolRuns[0].type).toBe('SQL')
+      expect(result.toolRuns[0].status).toBe('error')
+      expect(result.toolRuns[0].errorMessage).toContain('DROP')
+      // 1 initial + 2 repair attempts
+      expect(mockGenerateSql).toHaveBeenCalledTimes(3)
+  
+    })})
 
   test('SQL branch: guardrail rejection recovers on repair attempt', async () => {
-    mockIntegrationCount.mockImplementation(async () => 1)
-    mockSelectToolWithLlm.mockImplementation(async () => ({ toolId: 'sql', decision: 'SQL' as RouteDecision, args: {}, integrationId: 'int-1', reason: 'stub', llmUsed: true }))
-    mockIntegrationFindFirst.mockImplementation(async () => ({
-      id: 'int-1',
-      name: 'Test DB',
-      provider: 'POSTGRESQL',
-      encryptedConfig: 'encrypted',
-      schemas: [{ tableName: 'users', columns: '[]', rowCount: 10, sampleRow: null }],
-    }))
-    let call = 0
-    mockGenerateSql.mockImplementation(async () => {
-      call++
-      return call === 1
-        ? { sql: 'DELETE FROM users', explanation: 'bad' }
-        : { sql: 'SELECT * FROM users LIMIT 10', explanation: 'fixed' }
-    })
-    let guardCall = 0
-    mockValidateSql.mockImplementation(() => {
-      guardCall++
-      return guardCall === 1
-        ? { ok: false, reason: 'DELETE not allowed', detectedNodes: [] }
-        : { ok: true, sanitized: 'SELECT * FROM users LIMIT 10' }
-    })
-    mockExecuteQuery.mockImplementation(async () => ({ rows: [{ id: 1, name: 'Alice' }], rowCount: 1, executionMs: 5 }))
+    return withOrg(async () => {
+      mockIntegrationCount.mockImplementation(async () => 1)
+      mockSelectToolWithLlm.mockImplementation(async () => ({ toolId: 'sql', decision: 'SQL' as RouteDecision, args: {}, integrationId: 'int-1', reason: 'stub', llmUsed: true }))
+      mockIntegrationFindFirst.mockImplementation(async () => ({
+        id: 'int-1',
+        name: 'Test DB',
+        provider: 'POSTGRESQL',
+        encryptedConfig: 'encrypted',
+        schemas: [{ tableName: 'users', columns: '[]', rowCount: 10, sampleRow: null }],
+      }))
+      let call = 0
+      mockGenerateSql.mockImplementation(async () => {
+        call++
+        return call === 1
+          ? { sql: 'DELETE FROM users', explanation: 'bad' }
+          : { sql: 'SELECT * FROM users LIMIT 10', explanation: 'fixed' }
+      })
+      let guardCall = 0
+      mockValidateSql.mockImplementation(() => {
+        guardCall++
+        return guardCall === 1
+          ? { ok: false, reason: 'DELETE not allowed', detectedNodes: [] }
+          : { ok: true, sanitized: 'SELECT * FROM users LIMIT 10' }
+      })
+      mockExecuteQuery.mockImplementation(async () => ({ rows: [{ id: 1, name: 'Alice' }], rowCount: 1, executionMs: 5 }))
 
-    const result = await runNonStreamingChatCompletion({
-      question: 'Show users',
-      userId: 'user-1',
-    })
+      const result = await runNonStreamingChatCompletion({
+        question: 'Show users',
+        userId: 'user-1',
+      })
 
-    expect(result.toolRuns[0].status).toBe('success')
-    expect(mockGenerateSql).toHaveBeenCalledTimes(2)
-    // repair feedback reached the second generateSql call
-    const secondCallArgs = (mockGenerateSql.mock.calls as unknown as Array<[{ repairFeedback?: string }]>)[1]?.[0]
-    expect(secondCallArgs?.repairFeedback).toContain('DELETE not allowed')
-  })
+      expect(result.toolRuns[0].status).toBe('success')
+      expect(mockGenerateSql).toHaveBeenCalledTimes(2)
+      // repair feedback reached the second generateSql call
+      const secondCallArgs = (mockGenerateSql.mock.calls as unknown as Array<[{ repairFeedback?: string }]>)[1]?.[0]
+      expect(secondCallArgs?.repairFeedback).toContain('DELETE not allowed')
+  
+    })})
 
   test('SQL branch: execute error returns error status with sanitized message', async () => {
-    mockIntegrationCount.mockImplementation(async () => 1)
-    mockSelectToolWithLlm.mockImplementation(async () => ({ toolId: 'sql', decision: 'SQL' as RouteDecision, args: {}, integrationId: 'int-1', reason: 'stub', llmUsed: true }))
-    mockIntegrationFindFirst.mockImplementation(async () => ({
-      id: 'int-1',
-      name: 'Test DB',
-      provider: 'POSTGRESQL',
-      encryptedConfig: 'encrypted',
-      schemas: [{ tableName: 'users', columns: '[]', rowCount: 10, sampleRow: null }],
-    }))
-    mockGenerateSql.mockImplementation(async () => ({ sql: 'SELECT * FROM users LIMIT 10', explanation: 'test' }))
-    mockValidateSql.mockImplementation(() => ({ ok: true, sanitized: 'SELECT * FROM users LIMIT 10' }))
-    mockExecuteQuery.mockImplementation(async () => {
-      throw new Error('connect: postgres://admin:secret@host:5432/db failed')
-    })
+    return withOrg(async () => {
+      mockIntegrationCount.mockImplementation(async () => 1)
+      mockSelectToolWithLlm.mockImplementation(async () => ({ toolId: 'sql', decision: 'SQL' as RouteDecision, args: {}, integrationId: 'int-1', reason: 'stub', llmUsed: true }))
+      mockIntegrationFindFirst.mockImplementation(async () => ({
+        id: 'int-1',
+        name: 'Test DB',
+        provider: 'POSTGRESQL',
+        encryptedConfig: 'encrypted',
+        schemas: [{ tableName: 'users', columns: '[]', rowCount: 10, sampleRow: null }],
+      }))
+      mockGenerateSql.mockImplementation(async () => ({ sql: 'SELECT * FROM users LIMIT 10', explanation: 'test' }))
+      mockValidateSql.mockImplementation(() => ({ ok: true, sanitized: 'SELECT * FROM users LIMIT 10' }))
+      mockExecuteQuery.mockImplementation(async () => {
+        throw new Error('connect: postgres://admin:secret@host:5432/db failed')
+      })
 
-    const result = await runNonStreamingChatCompletion({
-      question: 'Show users',
-      userId: 'user-1',
-    })
+      const result = await runNonStreamingChatCompletion({
+        question: 'Show users',
+        userId: 'user-1',
+      })
 
-    expect(result.toolRuns[0].status).toBe('error')
-    // errorMessage in toolRun is raw; sanitized version is in the answer
-    expect(result.answer).toContain('postgres://***')
-    expect(result.answer).not.toContain('secret')
-    expect(result.answer).toContain('database query failed')
-  })
+      expect(result.toolRuns[0].status).toBe('error')
+      // errorMessage in toolRun is raw; sanitized version is in the answer
+      expect(result.answer).toContain('postgres://***')
+      expect(result.answer).not.toContain('secret')
+      expect(result.answer).toContain('database query failed')
+  
+    })})
 
   test('RAG branch: returns answer with citations from retrieved chunks', async () => {
-    mockIntegrationCount.mockImplementation(async () => 0)
-    mockDocumentCount.mockImplementation(async () => 1)
-    mockRestEndpointCount.mockImplementation(async () => 0)
-    mockSelectToolWithLlm.mockImplementation(async () => ({ toolId: 'rag', decision: 'RAG' as RouteDecision, args: {}, reason: 'stub', llmUsed: true }))
-    // Set up FTS + chunk data for real retrieveRelevantChunks
-    mockSearchFtsChunkIds.mockImplementation(async () => ['chunk-1'])
-    mockDocChunkFindMany.mockImplementation(async () => [
-      {
-        id: 'chunk-1',
-        chunkIndex: 0,
-        content: 'The return policy allows 30 days for returns.',
-        keywords: 'return,policy',
-        embeddingJson: null,
-        embeddingModel: null,
-        document: { id: 'doc-1', name: 'policy.txt' },
-      },
-    ])
-    mockGenerateAnswer.mockImplementation(async () => 'The return policy allows 30 days.')
+    return withOrg(async () => {
+      mockIntegrationCount.mockImplementation(async () => 0)
+      mockDocumentCount.mockImplementation(async () => 1)
+      mockRestEndpointCount.mockImplementation(async () => 0)
+      mockSelectToolWithLlm.mockImplementation(async () => ({ toolId: 'rag', decision: 'RAG' as RouteDecision, args: {}, reason: 'stub', llmUsed: true }))
+      // Set up FTS + chunk data for real retrieveRelevantChunks
+      mockSearchFtsChunkIds.mockImplementation(async () => ['chunk-1'])
+      mockDocChunkFindMany.mockImplementation(async () => [
+        {
+          id: 'chunk-1',
+          chunkIndex: 0,
+          content: 'The return policy allows 30 days for returns.',
+          keywords: 'return,policy',
+          embeddingJson: null,
+          embeddingModel: null,
+          document: { id: 'doc-1', name: 'policy.txt' },
+        },
+      ])
+      mockGenerateAnswer.mockImplementation(async () => 'The return policy allows 30 days.')
 
-    const result = await runNonStreamingChatCompletion({
-      question: 'What is the return policy?',
-      userId: 'user-1',
-    })
+      const result = await runNonStreamingChatCompletion({
+        question: 'What is the return policy?',
+        userId: 'user-1',
+      })
 
-    expect(result.answer).toBe('The return policy allows 30 days.')
-    expect(result.citations).toHaveLength(1)
-    expect(result.citations[0].type).toBe('DOCUMENT')
-    expect(result.citations[0].source).toBe('policy.txt')
-    expect(result.toolRuns[0].type).toBe('RAG')
-    expect(result.toolRuns[0].status).toBe('success')
-    expect(mockAuditLogCreate).toHaveBeenCalledTimes(1)
-  })
+      expect(result.answer).toBe('The return policy allows 30 days.')
+      expect(result.citations).toHaveLength(1)
+      expect(result.citations[0].type).toBe('DOCUMENT')
+      expect(result.citations[0].source).toBe('policy.txt')
+      expect(result.toolRuns[0].type).toBe('RAG')
+      expect(result.toolRuns[0].status).toBe('success')
+      expect(mockAuditLogCreate).toHaveBeenCalledTimes(1)
+  
+    })})
 
   test('RAG branch: no chunks found falls back to CHAT', async () => {
     mockDocumentCount.mockImplementation(async () => 1)
@@ -1256,51 +1281,53 @@ describe('runNonStreamingChatCompletion — the agentic hand-off', () => {
 
 describe('tool-router — an ambiguous data source', () => {
   test('the integration the MODEL named is what reaches runSqlBranch', async () => {
-    // Two integrations must EXIST for the choice to be meaningful: with intCount
-    // 0, chooseAvailableDecision forces CHAT and the code never runs.
-    //
-    // The SELECTOR supplies the database now. It used to come from smartRoute's
-    // score gap, so this test asserted the highest-scoring candidate won; that
-    // mechanism is gone and the property worth pinning is different — the id the
-    // model chose is the one looked up, out of several it was shown.
-    mockIntegrationCount.mockImplementation(async () => 2)
-    mockIntegrationFindMany.mockImplementation(async () => [
-      { id: 'integ-low', name: 'Low', type: 'postgresql' },
-      { id: 'integ-high', name: 'High', type: 'postgresql' },
-      { id: 'integ-mid', name: 'Mid', type: 'postgresql' },
-    ])
-    mockSelectToolWithLlm.mockImplementation(async () => ({
-      toolId: 'sql',
-      decision: 'SQL' as RouteDecision,
-      args: {},
-      integrationId: 'integ-high',
-      reason: 'stub',
-      llmUsed: true,
-    }))
-    // This fixture is REQUIRED. Without it findFirst returns null (the default) and
-    // runSqlBranch concludes the row does not exist and asks the user — a test that
-    // then "passes" while measuring an unrelated path. I hit exactly that: my
-    // rewritten version dropped this line and the assertion still went green,
-    // because the question is also a valid-looking answer.
-    mockIntegrationFindFirst.mockImplementation(async () => ({
-      id: 'integ-high', name: 'High', provider: 'POSTGRESQL', encryptedConfig: 'enc',
-      schemas: [{ tableName: 'orders', columns: [{ name: 'total', type: 'numeric' }] }],
-    }))
+    return withOrg(async () => {
+      // Two integrations must EXIST for the choice to be meaningful: with intCount
+      // 0, chooseAvailableDecision forces CHAT and the code never runs.
+      //
+      // The SELECTOR supplies the database now. It used to come from smartRoute's
+      // score gap, so this test asserted the highest-scoring candidate won; that
+      // mechanism is gone and the property worth pinning is different — the id the
+      // model chose is the one looked up, out of several it was shown.
+      mockIntegrationCount.mockImplementation(async () => 2)
+      mockIntegrationFindMany.mockImplementation(async () => [
+        { id: 'integ-low', name: 'Low', type: 'postgresql' },
+        { id: 'integ-high', name: 'High', type: 'postgresql' },
+        { id: 'integ-mid', name: 'Mid', type: 'postgresql' },
+      ])
+      mockSelectToolWithLlm.mockImplementation(async () => ({
+        toolId: 'sql',
+        decision: 'SQL' as RouteDecision,
+        args: {},
+        integrationId: 'integ-high',
+        reason: 'stub',
+        llmUsed: true,
+      }))
+      // This fixture is REQUIRED. Without it findFirst returns null (the default) and
+      // runSqlBranch concludes the row does not exist and asks the user — a test that
+      // then "passes" while measuring an unrelated path. I hit exactly that: my
+      // rewritten version dropped this line and the assertion still went green,
+      // because the question is also a valid-looking answer.
+      mockIntegrationFindFirst.mockImplementation(async () => ({
+        id: 'integ-high', name: 'High', provider: 'POSTGRESQL', encryptedConfig: 'enc',
+        schemas: [{ tableName: 'orders', columns: [{ name: 'total', type: 'numeric' }] }],
+      }))
 
-    const r = await runNonStreamingChatCompletion({ question: 'total sales', userId: 'u1' })
-    // MEASURED: the highest score wins, and the winning id is the one looked up —
-    // not the first candidate in the array, whose order is whatever produced it.
-    const looked = (mockIntegrationFindFirst.mock.calls as unknown[][])
-      .map((c) => (c[0] as { where?: { id?: string } })?.where?.id)
-      .filter(Boolean)
-    expect(looked).toContain('integ-high')
-    expect(looked).not.toContain('integ-low')
-    // The last-resort strategies must not run: the model already named a
-    // database, so there is nothing left to search for.
-    expect(mockPickBestIntegrationByKeywords).toHaveBeenCalledTimes(0)
-    expect(mockPickBestIntegration).toHaveBeenCalledTimes(0)
-    expect(r).toBeTruthy()
-  })
+      const r = await runNonStreamingChatCompletion({ question: 'total sales', userId: 'u1' })
+      // MEASURED: the highest score wins, and the winning id is the one looked up —
+      // not the first candidate in the array, whose order is whatever produced it.
+      const looked = (mockIntegrationFindFirst.mock.calls as unknown[][])
+        .map((c) => (c[0] as { where?: { id?: string } })?.where?.id)
+        .filter(Boolean)
+      expect(looked).toContain('integ-high')
+      expect(looked).not.toContain('integ-low')
+      // The last-resort strategies must not run: the model already named a
+      // database, so there is nothing left to search for.
+      expect(mockPickBestIntegrationByKeywords).toHaveBeenCalledTimes(0)
+      expect(mockPickBestIntegration).toHaveBeenCalledTimes(0)
+      expect(r).toBeTruthy()
+  
+    })})
 
   test('a resolved id whose row is MISSING asks instead of guessing', async () => {
     // The integration list says 2 exist, but the row the router resolved cannot be
@@ -1356,28 +1383,30 @@ describe('tool-router — an ambiguous data source', () => {
   })
 
   test('the keyword strategy short-circuits before the slow embedding one', async () => {
-    // pickBestIntegration calls an embedding API; the keyword scan does not. The
-    // keyword pass must win so a slow or unavailable embedding service cannot stall
-    // a question the fast path could already route.
-    mockIntegrationCount.mockImplementation(async () => 2)
-    mockIntegrationFindMany.mockImplementation(async () => [
-      { id: 'integ-kw', name: 'Warehouse', type: 'postgresql' },
-      { id: 'integ-other', name: 'Other', type: 'postgresql' },
-    ])
-    // NO integrationId: the model named a tool but not a database, which is the
-    // only situation where the last-resort strategies run. Supplying one would
-    // skip them entirely and the assertion would measure nothing.
-    mockSelectToolWithLlm.mockImplementation(async () => ({ toolId: 'sql', decision: 'SQL' as RouteDecision, args: {}, reason: 'stub', llmUsed: true }))
-    mockPickBestIntegrationByKeywords.mockImplementation(async () => 'integ-kw')
-    mockIntegrationFindFirst.mockImplementation(async () => ({
-      id: 'integ-kw', name: 'Warehouse', provider: 'POSTGRESQL', encryptedConfig: 'enc',
-      schemas: [{ tableName: 'stock', columns: [{ name: 'qty', type: 'integer' }] }],
-    }))
+    return withOrg(async () => {
+      // pickBestIntegration calls an embedding API; the keyword scan does not. The
+      // keyword pass must win so a slow or unavailable embedding service cannot stall
+      // a question the fast path could already route.
+      mockIntegrationCount.mockImplementation(async () => 2)
+      mockIntegrationFindMany.mockImplementation(async () => [
+        { id: 'integ-kw', name: 'Warehouse', type: 'postgresql' },
+        { id: 'integ-other', name: 'Other', type: 'postgresql' },
+      ])
+      // NO integrationId: the model named a tool but not a database, which is the
+      // only situation where the last-resort strategies run. Supplying one would
+      // skip them entirely and the assertion would measure nothing.
+      mockSelectToolWithLlm.mockImplementation(async () => ({ toolId: 'sql', decision: 'SQL' as RouteDecision, args: {}, reason: 'stub', llmUsed: true }))
+      mockPickBestIntegrationByKeywords.mockImplementation(async () => 'integ-kw')
+      mockIntegrationFindFirst.mockImplementation(async () => ({
+        id: 'integ-kw', name: 'Warehouse', provider: 'POSTGRESQL', encryptedConfig: 'enc',
+        schemas: [{ tableName: 'stock', columns: [{ name: 'qty', type: 'integer' }] }],
+      }))
 
-    await runNonStreamingChatCompletion({ question: 'warehouse stock', userId: 'u1' })
-    expect(mockPickBestIntegrationByKeywords).toHaveBeenCalledTimes(1)
-    expect(mockPickBestIntegration).toHaveBeenCalledTimes(0)
-  })
+      await runNonStreamingChatCompletion({ question: 'warehouse stock', userId: 'u1' })
+      expect(mockPickBestIntegrationByKeywords).toHaveBeenCalledTimes(1)
+      expect(mockPickBestIntegration).toHaveBeenCalledTimes(0)
+  
+    })})
 })
 
 describe('preflight DB load — a failing query surfaces, it is not swallowed', () => {

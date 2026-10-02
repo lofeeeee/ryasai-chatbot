@@ -1,5 +1,5 @@
 import { db } from '@/lib/db'
-import { getOrgContext } from '@/lib/prisma-tenant'
+import { getOrgContext, requireOrgContext } from '@/lib/prisma-tenant'
 import type { SavedPrompt } from '@prisma/client'
 
 export interface PromptInput {
@@ -12,7 +12,7 @@ export interface PromptInput {
 export async function createPrompt(userId: string, input: PromptInput): Promise<SavedPrompt> {
   return db.savedPrompt.create({
     data: {
-      organizationId: getOrgContext()!,
+      organizationId: requireOrgContext(),
       userId,
       title: input.title,
       content: input.content,

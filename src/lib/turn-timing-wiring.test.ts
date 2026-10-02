@@ -5,7 +5,7 @@ import { describe, expect, mock, test } from 'bun:test'
 // side-effecting neighbours (trace buffer, DB) replaced.
 mock.module('@/lib/observability', () => ({ traceLlmCall: () => {} }))
 mock.module('@/lib/db', () => ({ db: { llmUsageLog: { create: () => Promise.resolve({}) } } }))
-mock.module('@/lib/prisma-tenant', () => ({ getOrgContext: () => 'org-1' }))
+mock.module('@/lib/prisma-tenant', () => ({ getOrgContext: () => 'org-1', requireOrgContext: () => 'org-1' }))
 
 const { logLlmUsage } = await import('./llm-client-utils')
 const { enterTurnTiming, summarizeTurn } = await import('./turn-timing')

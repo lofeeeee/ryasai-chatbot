@@ -54,6 +54,7 @@ let orgCtx: string | null = null
 
 mock.module('@/lib/prisma-tenant', () => ({
   getOrgContext: () => orgCtx,
+  requireOrgContext: () => orgCtx,
   enterWithOrg: (id: string) => { orgCtx = id },
   bypassOrg: async (fn: () => unknown) => fn(),
 }))
