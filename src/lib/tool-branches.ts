@@ -663,6 +663,8 @@ export async function runRestBranch(args: {
       endpoints: {
         where: { isEnabled: true },
         orderBy: [{ method: 'asc' }, { path: 'asc' }],
+        // The streaming twin's comment applies here too: the prompt caps the listing, so loading more is wasted.
+        take: 40,
       },
     },
   })

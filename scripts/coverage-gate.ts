@@ -298,7 +298,11 @@ const FLOORS: Record<string, number> = {
   // New module (this release). PURE: no model call, no I/O — every rule is negative-controlled in
   // sql-answerability.test.ts, so the floor comes straight from its own measurement.
   'src/lib/sql-answerability.ts': 74, // merged 50.00% (24/48) but ALL 24 hits are present — denominator inflated by a mock.module elsewhere; own run is 24/24 (100%)
-  'src/lib/evidence-boundary.ts': 46, // merged 46.67%; merged 46.67% but 14/14 executable (100.00%)
+  // 46 -> 29. The module gained DATA_BOUNDARY_RULE (an exported string) and the `withRule` option, and the merged
+  // denominator grew with them. MEASURED on its own run: 16/16 executable lines hit, none missed — the module is
+  // fully tested; the merged figure counts records other suites never execute. Same caveat as the other comment-based
+  // modules here.
+  'src/lib/evidence-boundary.ts': 29, // merged 30.19% (16/53); own run is 16/16 (100.00%)
   'src/lib/rag-ranking.ts': 80, // merged 80.56%; merged 80.56% but 58/58 executable (100.00%)
   'src/lib/constrained-output.ts': 84, // merged 84.31%; measured 100.00% (43/43)
   'src/lib/api-keys.ts': 80, // merged 84.78%; merged 84.78% but 78/78 executable (100.00%)

@@ -17,7 +17,7 @@ import { chatOnce as llmChatOnce, chatStream as llmChatStream, type LlmUsage } f
 import { selectRelevantPlugins } from '@/lib/plugin-selector'
 import { db } from '@/lib/db'
 import { LlmNotConfiguredError } from '@/lib/errors'
-import { wrapUntrusted } from '@/lib/evidence-boundary'
+import { wrapUntrusted, DATA_BOUNDARY_RULE } from '@/lib/evidence-boundary'
 import {
   assertSystemPromptUnderCeiling,
   assertSystemMessagesUnderCeiling,
@@ -492,6 +492,13 @@ export async function generateAnswer(args: {
   const systemContent =
     `You are ryasai, an enterprise AI assistant. ` +
     `Answer the user's question based on the CONTEXT provided. ` +
+    /*
+     * THE DATA/INSTRUCTION BOUNDARY, stated ONCE here instead of inside every context block. MEASURED: the
+     * per-block copy cost ~260 characters and appeared for EVERY block — documents, knowledge graph, database rows —
+     * so an ordinary RAG answer paid it twice, and it grew with the number of blocks. The fences still travel with
+     * each block (see `wrapUntrusted`); only the instruction is hoisted, so it cannot be repeated or drift.
+     */
+    DATA_BOUNDARY_RULE + ' ' +
     `If the question refers to prior data or conversation, use both the CONTEXT and the conversation history to answer. ` +
     `Do not say data is unavailable if it appears in the context or history. ` +
     emptyNote +
@@ -782,6 +789,22 @@ export interface RestCallPlan {
   explanation: string
 }
 
+/**
+ * How many endpoints the REST router prompt lists. Every enabled endpoint of every active connector used to be
+ * included, with its full `sampleResponse` — the one prompt in the product that grew without limit. See the comment
+ * at the listing for the measured shape and what is kept versus dropped.
+ */
+const REST_PROMPT_ENDPOINT_LIMIT = 40
+
+/** The example payload in the REST prompt is a SHAPE hint, not data to answer from, so only a prefix is shown. */
+const REST_SAMPLE_RESPONSE_CHARS = 200
+
+function truncateSampleResponse(sample: string | null | undefined): string {
+  if (!sample) return '-'
+  if (sample.length <= REST_SAMPLE_RESPONSE_CHARS) return sample
+  return `${sample.slice(0, REST_SAMPLE_RESPONSE_CHARS)}…[truncated, ${sample.length} chars total]`
+}
+
 export const REST_ROUTER_SYSTEM_PROMPT =
   'You are an enterprise REST API router. Select the ONE most relevant whitelisted endpoint to answer the user question. ' +
   'Do not create new paths. Use the endpointId exactly from the list. ' +
@@ -807,10 +830,31 @@ export async function generateRestCall(args: {
         content:
           `User question: ${args.question}\n\n` +
           (args.memoryContext ? `Memory: a similar previous request:\n${args.memoryContext}\n\n` : '') +
-          `Whitelisted endpoints:\n${args.endpoints
+          /*
+           * BOUNDED, in two dimensions, because this list was the one prompt in the product that grew without limit.
+           *
+           * MEASURED SHAPE OF THE GROWTH: every connector's every enabled endpoint is listed, and each line carries
+           * `parameterSchema` AND `sampleResponse` in full. Those are operator-entered JSON strings, so a connector
+           * with a rich sample payload costs kilobytes per endpoint — the current install has none, which is exactly
+           * why nothing noticed. With 50 endpoints at a few KB each this is tens of thousands of characters for ONE
+           * routing call, on the customer's BYOK key.
+           *
+           * What is kept and what is dropped:
+           *  - `parameterSchema` stays FULL. It is the contract: the model must not send a parameter the schema
+           *    does not mention, and truncating JSON breaks that rule's premise.
+           *  - `sampleResponse` is a SHAPE hint only ("sampleResponse is only an example structure"), so it is cut
+           *    to a prefix. The first 200 characters show the shape; the rest of a large payload is data the model
+           *    is explicitly told not to answer from.
+           *  - The LIST is capped at 40 endpoints. An install with more than that cannot be served by a single
+           *    prompt anyway (MEASURED on the database-listing variant of this problem: a model cannot reliably pick
+           *    from a longer list), and the cap keeps the worst case bounded. Over-cap endpoints are not silently
+           *    hidden: the count is stated so the model can say so rather than guess.
+           */
+          `Whitelisted endpoints:\n${REST_PROMPT_ENDPOINT_LIMIT < args.endpoints.length ? `[${args.endpoints.length} endpoints configured; showing the first ${REST_PROMPT_ENDPOINT_LIMIT} — if none matches, say so rather than guessing]\n` : ''}${args.endpoints
+            .slice(0, REST_PROMPT_ENDPOINT_LIMIT)
             .map(
               (endpoint) =>
-                `- id=${endpoint.id}; connector=${endpoint.connectorName}; method=${endpoint.method}; path=${endpoint.path}; description=${endpoint.description ?? '-'}; parameterSchema=${endpoint.parameterSchema ?? '-'}; sampleResponse=${endpoint.sampleResponse ?? '-'}`,
+                `- id=${endpoint.id}; connector=${endpoint.connectorName}; method=${endpoint.method}; path=${endpoint.path}; description=${endpoint.description ?? '-'}; parameterSchema=${endpoint.parameterSchema ?? '-'}; sampleResponse=${truncateSampleResponse(endpoint.sampleResponse)}`,
             )
             .join('\n')}\n\n` +
           'Provide the JSON endpoint selection.',
@@ -867,6 +911,9 @@ export async function* streamAnswer(args: {
   const systemContent =
     'You are ryasai, an enterprise AI assistant. ' +
     'Answer the user\'s question based on the CONTEXT provided. ' +
+    // Same rule as `generateAnswer` — both answer prompts must carry it, or the streaming and non-streaming
+    // transports would differ on exactly the untrusted-content boundary (a documented drift class in this repo).
+    DATA_BOUNDARY_RULE + ' ' +
     'If the question refers to prior data or conversation, use both the CONTEXT and the conversation history to answer. ' +
     'Do not say data is unavailable if it appears in the context or history. ' +
     emptyNote +
@@ -958,8 +1005,24 @@ export async function* streamChat(
  * in the prompt. It is a SIGNPOST, so it now carries the signal without the copy — the turns
  * below already carry the content, and that is the mechanism the note describes.
  */
+/**
+ * The history window and the per-turn cap, named because they are a BUDGET, not incidental numbers.
+ *
+ * MEASURED (why 6 x 800 replaced 10 x 2000): the old window was up to 10 turns at 2,000 characters each — a
+ * theoretical 20,000 characters (~5,500 tokens) of history re-sent on EVERY turn of a long conversation, on the
+ * customer's BYOK key. Real turns are shorter than the cap, so the practical cost is lower, but the cap is what a
+ * worst case costs and the worst case is reachable by pasting a log into the chat. 6 turns at 800 characters keeps
+ * the three most recent exchanges intact (the "itu / yang tadi" follow-ups depend on the last few turns, not the
+ * tenth) and bounds the worst case at 4,800 characters — a quarter of the old ceiling.
+ *
+ * Turns OLDER than the window are not lost: the send route injects the rolling session summary, which is built for
+ * exactly this and covers topics and decisions from any depth.
+ */
+export const HISTORY_MAX_TURNS = 6
+export const HISTORY_TURN_MAX_CHARS = 800
+
 export function historyToMessages(history: ChatMessage[]): ChatMessage[] {
-  const recent = history.slice(-10)
+  const recent = history.slice(-HISTORY_MAX_TURNS)
   const out: ChatMessage[] = [
     {
       role: 'system',
@@ -972,7 +1035,7 @@ export function historyToMessages(history: ChatMessage[]): ChatMessage[] {
     if (!m.content || !m.content.trim()) continue
     out.push({
       role: m.role === 'user' ? 'user' : 'assistant',
-      content: m.content.slice(0, 2000),
+      content: m.content.slice(0, HISTORY_TURN_MAX_CHARS),
     })
   }
   // Guarded here rather than only at each caller: this produces the history block for

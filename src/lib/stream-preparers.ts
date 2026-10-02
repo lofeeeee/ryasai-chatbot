@@ -653,6 +653,9 @@ export async function prepareRestStream(args: {
       endpoints: {
         where: { isEnabled: true },
         orderBy: [{ method: 'asc' }, { path: 'asc' }],
+        // The prompt caps how many endpoints it lists (see generateRestCall); more than this can never be
+        // shown, so loading them is wasted work — and the payload grows with every enabled endpoint.
+        take: 40,
       },
     },
   })

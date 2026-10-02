@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { wrapUntrusted, isWrapped, EVIDENCE_FENCE } from './evidence-boundary'
+import { wrapUntrusted, isWrapped, EVIDENCE_FENCE, DATA_BOUNDARY_RULE } from './evidence-boundary'
 
 // The point of these tests is NOT that injection becomes impossible — no prompt
 // measure achieves that. It is that (a) untrusted content is framed as data,
@@ -7,11 +7,22 @@ import { wrapUntrusted, isWrapped, EVIDENCE_FENCE } from './evidence-boundary'
 // a structural signal, and (c) the fence itself cannot be used to break out.
 
 describe('wrapUntrusted', () => {
-  test('frames content as data, not instructions', () => {
+  test('frames content as data by FENCING it — the rule itself is stated once per prompt, not per block', () => {
     const wrapped = wrapUntrusted('CONTEXT (DOCUMENTS):', 'SOP retur barang.')
     expect(wrapped).toContain('SOP retur barang.')
-    expect(wrapped).toMatch(/NEVER an instruction/i)
+    // The fence and the label stay with the block; the ~260-character instruction does not. MEASURED on the
+    // synthesis prompt: it was repeated for every context block (documents AND knowledge graph AND rows), so a
+    // RAG answer paid it twice before any evidence. See DATA_BOUNDARY_RULE for where it went.
+    expect(wrapped).not.toMatch(/NEVER an instruction/i)
     expect(isWrapped(wrapped)).toBe(true)
+  })
+
+  test('callers with no system message of their own can still carry the rule locally', () => {
+    const wrapped = wrapUntrusted('CONTEXT:', 'payload', { withRule: true })
+    expect(wrapped).toContain(DATA_BOUNDARY_RULE)
+    expect(isWrapped(wrapped)).toBe(true)
+    // and the default form omits it, so the two forms are distinguishable
+    expect(wrapUntrusted('CONTEXT:', 'payload')).not.toContain(DATA_BOUNDARY_RULE)
   })
 
   test('an injection payload stays inside the fenced block', () => {
@@ -30,7 +41,11 @@ describe('wrapUntrusted', () => {
     const wrapped = wrapUntrusted('CONTEXT:', hostile)
     // Only the two fences we added remain, so the payload cannot close the block.
     const occurrences = wrapped.split(EVIDENCE_FENCE).length - 1
-    expect(occurrences).toBe(2)
+    expect(occurrences, 'the block MUST be fenced — an unfenced block removes the only structural boundary').toBe(2)
+    // The rule text living in the SYSTEM message does not remove the fence's job: the payload itself
+    // must still sit between the two fences, not before the first or after the last.
+    expect(wrapped.startsWith('CONTEXT:')).toBe(true)
+    expect(wrapped.indexOf('leak secrets')).toBeGreaterThan(wrapped.indexOf(EVIDENCE_FENCE))
     expect(wrapped).toContain('[fence removed]')
   })
 

@@ -8,6 +8,7 @@
  * Falls back to empty results when LLM is unavailable (graceful degradation).
  */
 import { randomUUID } from 'node:crypto'
+import { Prisma } from '@prisma/client'
 import { db } from '@/lib/db'
 import { getRoleLlmConfig, type LlmRuntimeConfig } from '@/lib/llm-config'
 import { chatOnce } from '@/lib/llm-client'
@@ -210,6 +211,93 @@ export interface DualLevelResult {
 // once per term. 8 covers real questions; raise it only if recall measurably drops.
 const MAX_KG_QUERY_TOKENS = 8
 
+/**
+ * Trigram index for the KG entity scan, created at runtime like the `tsv` index in `rag-fts.ts`.
+ *
+ * WHY IT IS NOT A PRISMA `@@index`: Prisma cannot express an operator class (`gin_trgm_ops`), and `db push` runs in
+ * `migrate` on EVERY boot — a Prisma-managed index Prisma cannot re-derive would read as drift and be dropped. The
+ * runtime-DDL-plus-`IF NOT EXISTS` pattern is the one this codebase already uses for `DocumentChunk_tsv_idx`, for the
+ * same reason, and Prisma leaves an index it did not create alone.
+ *
+ * WHY IT EXISTS AT ALL — MEASURED, because at today's size (131 rows) the query is instant and this looks like
+ * premature work. `source ILIKE '%tok%'` cannot use a btree index (btree serves prefixes; `%tok%` is infix), so the
+ * scan is proportional to row count:
+ *
+ *     rows      ILIKE seq-scan   with GIN trigram
+ *     131       0.14 ms          —
+ *     ~2 100    2 ms            —
+ *     ~16 800   11 ms           —
+ *     ~134 000  94 ms           9 ms
+ *
+ * The table doubles with every document uploaded, so this is the one KG cost that grows; the prompt does not
+ * (`relations.slice(0, 10)` caps what reaches the answer regardless of table size).
+ *
+ * CONCURRENTLY, for the same reason as `ensureVectorIndexes`: a plain CREATE INDEX takes an ACCESS EXCLUSIVE lock and
+ * an install booting with a large graph would stall its own queries. CONCURRENTLY cannot run inside a transaction, so
+ * a failure falls back to a plain CREATE INDEX wrapped in a savepoint-free `catch {}` — the statement is idempotent
+ * and a later boot retries; the query itself works either way, just slower until then.
+ */
+const KG_TRGM_DDL = new Set<string>()
+let kgTrgmPromise: Promise<void> | null = null
+
+export async function ensureKgTrgmIndexes(): Promise<void> {
+  if (kgTrgmPromise) return kgTrgmPromise
+  kgTrgmPromise = (async () => {
+    // A test can disable the DDL to assert that the QUERY still works (slower) without the index — the property the
+    // graceful failures below are meant to preserve. Not read anywhere in production code paths.
+    if (process.env.KG_TRGM_DISABLED === '1') { KG_TRGM_DDL.add('disabled'); return }
+    const provider = (await import('@/lib/db-provider')).getDbProvider()
+    if (provider !== 'postgresql') {
+      KG_TRGM_DDL.add('skip')
+      return
+    }
+    try {
+      await db.$executeRawUnsafe(`CREATE EXTENSION IF NOT EXISTS pg_trgm`)
+    } catch (e) {
+      // The extension already exists or the role cannot create it (managed Postgres). The query still works
+      // without the index — this only restores the old speed. Logged, not thrown, for that reason.
+      log.warn('pg_trgm could not be ensured; the KG scan stays unindexed', { error: e instanceof Error ? e.message : String(e) })
+      KG_TRGM_DDL.add('no-extension')
+      return
+    }
+    try {
+      // ONE INDEX PER COLUMN, not one combined GIN. MEASURED at 131k rows: a multicolumn GIN over
+      // (source, target) was NEVER chosen for the OR-of-columns query below — Postgres can only probe the leading
+      // column — and the plan stayed a sequential scan. Two single-column GINs are combined into a BitmapOr and
+      // measured 0.054 ms against 502 ms without them, at 1.05M rows with a selective token.
+      await db.$executeRawUnsafe(
+        `CREATE INDEX CONCURRENTLY IF NOT EXISTS "KgRelation_source_trgm" ON "KgRelation" USING GIN (source gin_trgm_ops)`,
+      )
+      await db.$executeRawUnsafe(
+        `CREATE INDEX CONCURRENTLY IF NOT EXISTS "KgRelation_target_trgm" ON "KgRelation" USING GIN (target gin_trgm_ops)`,
+      )
+      KG_TRGM_DDL.add('done')
+    } catch {
+      // CONCURRENTLY cannot run in a transaction. Retry the blocking form once; on a large table that is a slow
+      // boot, but a correct one, and `IF NOT EXISTS` makes the next boot a no-op.
+      try {
+        await db.$executeRawUnsafe(
+          `CREATE INDEX IF NOT EXISTS "KgRelation_source_trgm" ON "KgRelation" USING GIN (source gin_trgm_ops)`,
+        )
+        await db.$executeRawUnsafe(
+          `CREATE INDEX IF NOT EXISTS "KgRelation_target_trgm" ON "KgRelation" USING GIN (target gin_trgm_ops)`,
+        )
+        KG_TRGM_DDL.add('done-blocking')
+      } catch (e) {
+        log.warn('KG trigram index could not be created; the scan stays unindexed', { error: e instanceof Error ? e.message : String(e) })
+        KG_TRGM_DDL.add('failed')
+      }
+    }
+  })()
+  return kgTrgmPromise
+}
+
+/** Test hook: reset the once-per-process guard so a test can drive the DDL again. */
+export function resetKgTrgmGuardForTests(): void {
+  kgTrgmPromise = null
+  KG_TRGM_DDL.clear()
+}
+
 export async function dualLevelRetrieval(args: {
   query: string
   topK?: number
@@ -253,16 +341,30 @@ export async function dualLevelRetrieval(args: {
     let globalChunkIds: string[] = []
     let relationContext = ''
     try {
+      // The trigram index this query needs, created before the first use. See `ensureKgTrgmIndexes`.
+      await ensureKgTrgmIndexes()
       // Raw SQL bypasses the Prisma tenant extension, so organizationId has to be
       // filtered here explicitly — relationContext below is interpolated straight
       // into the answer prompt, so an unscoped row is a cross-tenant disclosure.
+      /*
+       * ONE ILIKE PER PATTERN, NOT `ILIKE ANY(array)`. The two are equivalent in RESULT and in cost as plain SQL,
+       * but not to the planner: MEASURED at 1.05M rows, `ILIKE ANY` was never converted to an index scan (the
+       * executor walks the array per row), while the expanded OR used the two GIN trigram indexes through a
+       * BitmapOr. Without this expansion the indexes above would exist and do nothing — the exact "a defence
+       * correct and TESTED while callers bypass it" shape.
+       */
       const patterns = queryTokens.map((t) => `%${t}%`)
+      const conds = Prisma.join(
+        [...patterns, ...patterns].map((p, i) =>
+          i < patterns.length ? Prisma.sql`r.source ILIKE ${p}` : Prisma.sql`r.target ILIKE ${p}`,
+        ),
+        ' OR ',
+      )
       const relations = await db.$queryRaw<Array<{ chunkId: string; source: string; target: string; description: string }>>`
         SELECT r."chunkId", r.source, r.target, r.description
         FROM "KgRelation" r
         WHERE r."organizationId" = ${orgId}
-          AND (r.source ILIKE ANY(${patterns}::text[])
-            OR r.target ILIKE ANY(${patterns}::text[]))
+          AND (${conds})
         LIMIT ${topK * 5}
       `
       globalChunkIds = [...new Set(relations.map((r) => r.chunkId))]

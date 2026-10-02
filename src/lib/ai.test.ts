@@ -1778,30 +1778,37 @@ describe('homepage documentation routes', () => {
 })
 
 describe('historyToMessages — the window and the blank-turn filter', () => {
-  // MUTATION-CONFIRMED GAP: widening the window from `slice(-10)` to
-  // `slice(-100)` turned ZERO tests red. The 10-message window is a real budget
-  // (the send route already fetched 10; every downstream consumer truncates
-  // again), and history is not free -- each turn is re-sent on every request.
-  // Without this test the window could silently grow and inflate every prompt.
-  test('at most the last 10 turns are carried, in chronological order', async () => {
+  /*
+   * MUTATION-CONFIRMED GAP: widening the window from `slice(-10)` to `slice(-100)` turned ZERO tests red, which is
+   * why this test exists. The window is a real BUDGET: history is re-sent on every request, on the customer's BYOK
+   * key, so a silent widening inflates every prompt. The 10 x 2000 window was reduced to 6 x 800 — see
+   * `HISTORY_MAX_TURNS` in `ai.ts` for the measurement — and this test pins the NEW budget in both dimensions.
+   */
+  test('at most the last 6 turns are carried, in chronological order', async () => {
     const { historyToMessages } = await import('./ai')
     const history = Array.from({ length: 12 }, (_, i) => ({
       role: (i % 2 === 0 ? 'user' : 'assistant') as 'user' | 'assistant',
       content: `msg${i}`,
     }))
     const out = historyToMessages(history)
-    // 1 system label + exactly 10 turns.
-    expect(out).toHaveLength(11)
+    // 1 system label + exactly 6 turns.
+    expect(out).toHaveLength(7)
     expect(out[0].role).toBe('system')
-    // The two OLDEST turns are dropped, and the newest survives. Membership must
-    // be tested on whole strings: 'msg0' is a SUBSTRING of 'msg10'/'msg11', so a
-    // naive toContain('msg0') would fail even when msg0 was correctly dropped.
+    // The six OLDEST turns are dropped, the newest survives. Membership must be tested on whole strings:
+    // 'msg0' is a SUBSTRING of 'msg10'/'msg11', so a naive toContain('msg0') fails even when msg0 was dropped.
     const bodies = out.slice(1).map((m) => m.content)
     expect(bodies).not.toContain('msg0')
-    expect(bodies).not.toContain('msg1')
+    expect(bodies).not.toContain('msg5')
     expect(bodies.at(-1)).toBe('msg11')
-    // Order must be chronological: a reversed history would be incoherent dialogue.
-    expect(bodies).toEqual(['msg2', 'msg3', 'msg4', 'msg5', 'msg6', 'msg7', 'msg8', 'msg9', 'msg10', 'msg11'])
+    expect(bodies).toEqual(['msg6', 'msg7', 'msg8', 'msg9', 'msg10', 'msg11'])
+  })
+
+  test('the window is the DECLARED budget, not a magic number in the slice', async () => {
+    // The caps are exported so callers and this test read ONE source. A change to the budget must be a change to
+    // the named constants, or the send route and this test disagree about what the window is.
+    const { HISTORY_MAX_TURNS, HISTORY_TURN_MAX_CHARS } = await import('./ai')
+    expect(HISTORY_MAX_TURNS).toBe(6)
+    expect(HISTORY_TURN_MAX_CHARS).toBe(800)
   })
 
   test('the system label precedes the turns but never appears as a dialogue turn', async () => {
@@ -1826,15 +1833,14 @@ describe('historyToMessages — the window and the blank-turn filter', () => {
     expect(bodies).toEqual(['real question', 'real answer'])
   })
 
-  test('a long turn is truncated to 2000 characters in the dialogue turn', async () => {
+  test('a long turn is truncated to 800 characters in the dialogue turn', async () => {
     const { historyToMessages } = await import('./ai')
     const out = historyToMessages([{ role: 'user', content: 'x'.repeat(5000) }])
-    // The dialogue turn itself carries exactly the 2000-char window.
-    expect(out[1].content).toHaveLength(2000)
-    expect(out[1].content).toBe('x'.repeat(2000))
-    // The 3000 dropped characters never reach the prompt.
-    expect(out[0].content).not.toContain('x'.repeat(2001))
-    expect(out[1].content).not.toContain('x'.repeat(2001))
+    // The dialogue turn itself carries exactly the 800-char window.
+    expect(out[1].content).toHaveLength(800)
+    expect(out[1].content).toBe('x'.repeat(800))
+    // The dropped characters never reach the prompt.
+    expect(out[1].content).not.toContain('x'.repeat(801))
   })
 
   test('the system label does NOT duplicate the history — it was 20116 chars and got discarded', async () => {
@@ -1850,6 +1856,8 @@ describe('historyToMessages — the window and the blank-turn filter', () => {
      * test pinning a lossy stage entrenches it. The assertion is now inverted on purpose.
      */
     const { historyToMessages } = await import('./ai')
+    // Ten full-length turns, because the OLD budget (10 x 2000) is what produced the 20,116-char label. The
+    // new window keeps six of them; the label still carries none of the payload either way.
     const tenFullTurns = Array.from({ length: 10 }, (_, i) => ({
       role: 'user' as const,
       content: `turn ${i} ` + 'y'.repeat(2000),
@@ -1860,12 +1868,15 @@ describe('historyToMessages — the window and the blank-turn filter', () => {
     // The label carries the SIGNAL — that these are prior turns — and none of the payload.
     expect(label.content).toContain('Prior conversation history')
     expect(label.content).not.toContain('y'.repeat(50))
+    // And the NEW window really is smaller: 6 turns, not 10, is what keeps this defect un-reachable at the new cap.
+    expect(out).toHaveLength(7)
     // Measured against the real ceiling, not a vibe: the joined system text must fit.
     const joinedSystem = out.filter((m) => m.role === 'system').map((m) => m.content).join('\n\n')
     expect(joinedSystem.length).toBeLessThan(2000)
-    // The payload itself is still delivered — in the TURNS, which is the whole point.
-    expect(out).toHaveLength(11)
-    expect(out[10].content).toContain('y'.repeat(500))
+    // The payload itself is still delivered — in the TURNS, which is the whole point. The sixth-newest turn
+    // is the oldest that survives the window, and it carries its full 800-character share.
+    expect(out).toHaveLength(7)
+    expect(out[6].content).toContain('y'.repeat(500))
   })
 
   test('an assistant turn stays assistant (not relabelled user)', async () => {
@@ -2093,5 +2104,55 @@ describe('routeQuery — a user-pinned source must reach the router PROMPT', () 
     await routeQuery({ question: 'Berapa jumlah pesanan?', hasIntegrations: true, hasDocuments: true })
     const prompt = getSentMessages().map((m) => m.content).join('\n')
     expect(prompt).not.toContain('THE USER EXPLICITLY CHOSE THIS SOURCE')
+  })
+})
+
+describe('generateRestCall — the endpoint list is bounded', () => {
+  /*
+   * MEASURED SHAPE OF THE RISK: every enabled endpoint of every active connector used to be listed with its FULL
+   * `sampleResponse` and `parameterSchema`. Those are operator-entered JSON, so a rich sample payload costs
+   * kilobytes per endpoint; nothing in the current install exercises REST, which is exactly why the growth went
+   * unnoticed. With 50 endpoints this is tens of thousands of characters on one routing call.
+   */
+  const eps = (n: number, sampleLen: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      id: `e${i}`, connectorName: 'CRM', method: 'GET', path: `/p${i}`,
+      description: 'desc', parameterSchema: '{"q":"string"}',
+      sampleResponse: 'x'.repeat(sampleLen),
+    }))
+
+  test('a large sampleResponse is cut to a PREFIX, not sent whole', async () => {
+    fetchRestResponse = '{"endpointId":"e0","query":{},"body":null,"explanation":"x"}'
+    await generateRestCall({ question: 'q', endpoints: eps(1, 10_000) })
+    const user = getSentMessages().find((m) => m.role === 'user')!.content
+    expect(user).toContain('…[truncated, 10000 chars total]')
+    expect(user.length, 'the sample must not be sent whole').toBeLessThan(2_000)
+  })
+
+  test('a SHORT sampleResponse is sent as-is (no truncation marker on healthy data)', async () => {
+    fetchRestResponse = '{"endpointId":"e0","query":{},"body":null,"explanation":"x"}'
+    await generateRestCall({ question: 'q', endpoints: eps(1, 50) })
+    const user = getSentMessages().find((m) => m.role === 'user')!.content
+    expect(user).toContain('x'.repeat(50))
+    expect(user).not.toContain('[truncated')
+  })
+
+  test('more than 40 endpoints are not listed, and the model is TOLD how many there are', async () => {
+    fetchRestResponse = '{"endpointId":"e0","query":{},"body":null,"explanation":"x"}'
+    await generateRestCall({ question: 'q', endpoints: eps(60, 10) })
+    const user = getSentMessages().find((m) => m.role === 'user')!.content
+    // The notice is the part that keeps the cap honest: without it the model believes it has seen every endpoint.
+    expect(user).toContain('[60 endpoints configured; showing the first 40')
+    expect(user).toContain('if none matches, say so rather than guessing')
+    expect(user).toContain('id=e39;')
+    expect(user).not.toContain('id=e40;')
+  })
+
+  test('parameterSchema stays FULL — it is the contract the model must not violate', async () => {
+    const schema = '{' + '"k":"v",'.repeat(400) + '"last":1}'
+    fetchRestResponse = '{"endpointId":"e0","query":{},"body":null,"explanation":"x"}'
+    await generateRestCall({ question: 'q', endpoints: [{ id: 'e0', connectorName: 'C', method: 'GET', path: '/p', description: 'd', parameterSchema: schema, sampleResponse: null }] })
+    const user = getSentMessages().find((m) => m.role === 'user')!.content
+    expect(user).toContain(schema)
   })
 })

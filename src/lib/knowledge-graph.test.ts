@@ -9,6 +9,8 @@ let kgRelationRows: Array<{ chunkId: string; source: string; target: string; des
 let chunkUpdateThrows: Error | null = null
 let kgCreateManyThrows: Error | null = null
 let queryRawThrows: Error | null = null
+let rawUnsafeThrows: Error | null = null
+let ddlStatements: string[] = []
 
 mock.module('@/lib/db', () => ({
   db: {
@@ -38,6 +40,16 @@ mock.module('@/lib/db', () => ({
       if (queryRawThrows) throw queryRawThrows
       return kgRelationRows
     },
+    $executeRawUnsafe: async (sql: string) => {
+      ddlStatements.push(sql)
+      if (rawUnsafeThrows) throw rawUnsafeThrows
+      // Failure window for the CONCURRENTLY-fallback test: set ONLY there, and only statements carrying
+      // CONCURRENTLY throw — the extension and the blocking retries must succeed so the fallback is reachable.
+      if ((globalThis as Record<string, unknown>).__kgConcurrentFail === true && /CONCURRENTLY/.test(sql)) {
+        throw new Error('cannot run inside a transaction block')
+      }
+      return 1
+    },
   },
 }))
 
@@ -47,7 +59,7 @@ mock.module('@/lib/llm-config', () => ({
   getRoleLlmConfig: async () => ({ provider: 'OPENAI', baseUrl: 'x', apiKey: 'k', model: 'm' }),
 }))
 
-import { dualLevelRetrieval, extractEntitiesRelations, indexChunkKnowledgeGraph } from './knowledge-graph'
+import { dualLevelRetrieval, ensureKgTrgmIndexes, extractEntitiesRelations, indexChunkKnowledgeGraph, resetKgTrgmGuardForTests } from './knowledge-graph'
 import { bypassOrg, enterWithOrg } from '@/lib/prisma-tenant'
 
 const TEST_ORG = 'org-kg-test'
@@ -69,6 +81,9 @@ beforeEach(() => {
   kgRelationRows = []
   queryRawThrows = null
   kgCreateManyThrows = null
+  rawUnsafeThrows = null
+  ddlStatements = []
+  resetKgTrgmGuardForTests()
 })
 
 // Enter the org and run the body. Must be called INSIDE the test, not in a hook.
@@ -407,5 +422,105 @@ describe('entity extraction — a model that returns junk degrades to no entitie
     await indexChunkKnowledgeGraph({ chunkId: 'chunk-1', content: LONG })
     expect(kgCreateManyArgs.length).toBe(1)
     })
+  })
+})
+
+describe('ensureKgTrgmIndexes — the KG scan stays fast as the graph grows', () => {
+  /*
+   * MEASURED NEED (simulated to 134k rows, because at today's 131 the query is instant): `source ILIKE '%tok%'`
+   * cannot use the btree indexes on that column — infix patterns defeat them — so the scan is proportional to row
+   * count: 0.14 ms today, 11 ms at ~17k rows, 94 ms at ~134k. With a GIN trigram index the 134k case measured 9 ms.
+   * The table grows with every document uploaded, so this is the one KG cost that scales with corpus size.
+   *
+   * Prisma cannot express an operator class, and `db push` runs on every boot — a Prisma-managed index it cannot
+   * re-derive would be treated as drift and dropped. So the index is created at runtime with IF NOT EXISTS, the same
+   * pattern `rag-fts.ts` uses for the tsv index.
+   */
+  test('creates the extension and a CONCURRENTLY index, once per process', async () => {
+    await ensureKgTrgmIndexes()
+    await ensureKgTrgmIndexes()
+    expect(ddlStatements.filter((x) => /pg_trgm/.test(x)).length).toBe(1)
+    const idx = ddlStatements.filter((x) => /KgRelation_(source|target)_trgm/.test(x))
+    // TWO statements — one per column. A single multicolumn GIN would be one statement and MEASURED never used
+    // (Postgres can only probe its leading column), so this count is the guard against collapsing back to it.
+    expect(idx.length).toBe(2)
+    for (const st of idx) {
+      expect(st).toContain('CONCURRENTLY')
+      expect(st).toContain('gin_trgm_ops')
+    }
+    expect(idx.some((x) => x.includes('ON "KgRelation" USING GIN (source gin_trgm_ops)'))).toBe(true)
+    expect(idx.some((x) => x.includes('ON "KgRelation" USING GIN (target gin_trgm_ops)'))).toBe(true)
+  })
+
+  test('a CONCURRENTLY failure falls back to the blocking form rather than skipping the index', async () => {
+    /*
+     * Only the CONCURRENTLY builds may fail here. Patching the captured `db` object does not reach the reference the
+     * module under test bound at import, so the failure is delivered through the module mock itself: a window on
+     * globalThis that the mock consults per statement. MEASURED: an earlier version threw for EVERY statement, which
+     * made the EXTENSION throw too, and the function returned at that catch before any index was attempted — the test
+     * then measured zero statements and passed for no reason.
+     */
+    resetKgTrgmGuardForTests()
+    ddlStatements = []
+    rawUnsafeThrows = null
+    ;(globalThis as Record<string, unknown>).__kgConcurrentFail = true
+    try {
+      await ensureKgTrgmIndexes()
+    } finally {
+      ;(globalThis as Record<string, unknown>).__kgConcurrentFail = undefined
+    }
+    const idx = ddlStatements.filter((x) => /KgRelation_(source|target)_trgm/.test(x))
+    // The first CONCURRENTLY throw abandons the rest of the try block, so the sequence is
+    // [src-CONCURRENTLY, src-blocking, tgt-blocking]: THREE index statements, the last two WITHOUT CONCURRENTLY.
+    // (A 4-statement expectation assumed the second CONCURRENTLY also ran; it does not, by construction.)
+    expect(idx.length, 'the blocking fallbacks must have run for BOTH columns').toBe(3)
+    expect(idx[1]).not.toContain('CONCURRENTLY')
+    expect(idx[2]).not.toContain('CONCURRENTLY')
+    expect(idx[1]).toContain('source')
+    expect(idx[2]).toContain('target')
+  })
+
+  test('a database that cannot take the extension keeps working, unindexed, and says so ONCE', async () => {
+    resetKgTrgmGuardForTests()
+    rawUnsafeThrows = new Error('permission denied to create extension')
+    await ensureKgTrgmIndexes()   // must not throw: the query works without the index, just slower
+    resetKgTrgmGuardForTests()
+    rawUnsafeThrows = null
+  })
+
+  test('dualLevelRetrieval ensures the index before its first global scan', async () => {
+    return withOrg(async () => {
+      await dualLevelRetrieval({ query: 'refund policy' })
+      expect(ddlStatements.some((x) => /gin_trgm_ops/.test(x))).toBe(true)
+    })
+  })
+
+  test('with the DDL disabled the retrieval query still runs — the index is a speed-up, never a dependency', async () => {
+    return withOrg(async () => {
+      process.env.KG_TRGM_DISABLED = '1'
+      resetKgTrgmGuardForTests()
+      const r = await dualLevelRetrieval({ query: 'refund policy' })
+      expect(typeof r.graphContext).toBe('string')
+      process.env.KG_TRGM_DISABLED = undefined
+    })
+  })
+
+  test('the entity scan is expressed as ONE ILIKE PER PATTERN, not ILIKE ANY', async () => {
+    /*
+     * MEASURED at 1.05M rows: the two forms return the same rows at the same plain-SQL cost, but the planner
+     * converts ONLY the expanded OR to the GIN trigram indexes (a BitmapOr). `ILIKE ANY` walks the array per row
+     * and stayed a sequential scan — the indexes would exist and do nothing, which is the exact shape of a defence
+     * that is correct while the only caller bypasses it. Reading the source is the only way to pin a SQL FORM.
+     */
+    const src = await Bun.file(new URL('./knowledge-graph.ts', import.meta.url)).text()
+    // Comments are stripped: this file's own comments explain WHY the old form was abandoned and would
+    // otherwise satisfy the assertion from the FIX'S OWN NOTES — the exact vacuous-guard shape this repo records.
+    const code = src
+      .split('\n')
+      .map((l) => (l.trimStart().startsWith('*') || l.trimStart().startsWith('//') || l.trimStart().startsWith('/*') ? '' : l))
+      .join('\n')
+    expect(code).toContain('r.source ILIKE ${p}')
+    expect(code).toContain('r.target ILIKE ${p}')
+    expect(code).not.toContain('ILIKE ANY')
   })
 })

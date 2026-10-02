@@ -491,7 +491,7 @@ export async function evaluateEvidenceSufficiency(args: {
         // Higher stakes than the reflexion site — a document that talks its way past this check
         // suppresses the retrieval reflection pass entirely, which is a QUALITY effect a customer
         // would feel and could not attribute.
-        content: `Question: ${args.question}\n\n${wrapUntrusted('CONTEXT (EVIDENCE TO ASSESS):', args.evidence.slice(0, 2000))}\n\nIs the evidence above sufficient to answer the question?`,
+        content: `Question: ${args.question}\n\n${wrapUntrusted('CONTEXT (EVIDENCE TO ASSESS):', args.evidence.slice(0, 2000), { withRule: true })}\n\nIs the evidence above sufficient to answer the question?`,
       },
     ], 0, 'reflection')
 

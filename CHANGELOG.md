@@ -5,6 +5,34 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.9] - 2026-10-02
+
+### Fixed
+- **The knowledge-graph scan now survives a graph that grows.** The entity lookup ran an infix pattern
+  (`%token%`) against btree indexes that cannot serve infix matches, so the scan was proportional to the number
+  of relations — measured at one million rows with a selective token: **502 ms without an index, 0.054 ms with
+  one**. Two trigram indexes are created at startup like the existing full-text one, and the query is now written
+  as one condition per pattern, because the previous `ILIKE ANY` form is never converted to an index scan by the
+  planner — the indexes would have existed and done nothing.
+- **The REST router prompt was the one prompt that grew without limit.** Every enabled endpoint of every active
+  connector was listed with its full sample payload, an operator-entered JSON string. The list is now capped at
+  40 endpoints (with the true count stated to the model), the example payload is cut to its first 200 characters,
+  and the parameter schema stays complete because it is the contract.
+- **The data-instruction boundary is stated once per prompt, not once per block.** It was repeated for every
+  context block — documents, knowledge graph, database rows — so an ordinary document answer paid it twice
+  before any evidence arrived. It now lives in the answer prompt's system message; the fence and the source
+  label still travel with each block.
+- **Chat history is bounded at 6 turns of 800 characters** (was 10 of 2,000). The worst case drops from
+  ~5,500 to ~1,300 tokens re-sent per turn; turns older than the window are still covered by the rolling
+  session summary, which exists for exactly that.
+
+### Verified
+- The full evaluation ran **63/63 correct** — the highest result recorded, and one more than before these changes.
+- Every change is negative-controlled; two controls are worth recording. Removing the fences from the context
+  blocks initially left the tests green, and strengthening one assertion fixed that. And the fallback from a
+  concurrent index build to a blocking one first measured zero statements, because the test threw for every
+  statement rather than only the concurrent builds — an earlier version of it passed for no reason.
+
 ## [1.7.8] - 2026-10-01
 
 ### Fixed

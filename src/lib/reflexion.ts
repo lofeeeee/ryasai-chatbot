@@ -51,7 +51,7 @@ export async function selfCritique(
           // boundary marker is present at all. `wrapUntrusted` is the same defence the answer
           // prompts already use (tool-branches/stream-preparers wrap all four content kinds), and
           // its fence survives a document that tries to forge the delimiter to break out.
-          content: `Question: ${question}\n\nCurrent answer: ${answer.slice(0, 2000)}\n\n${wrapUntrusted('CONTEXT (EVIDENCE):', evidence.slice(0, 2000))}\n\nCritique and revise. Output JSON only.`,
+          content: `Question: ${question}\n\nCurrent answer: ${answer.slice(0, 2000)}\n\n${wrapUntrusted('CONTEXT (EVIDENCE):', evidence.slice(0, 2000), { withRule: true })}\n\nCritique and revise. Output JSON only.`,
         },
       ],
       0,
