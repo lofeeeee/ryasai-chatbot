@@ -7,6 +7,7 @@ import {
   RATE_LIMIT_UPLOAD,
 } from '@/lib/constants'
 import { getClientIp } from '@/lib/client-ip'
+import { checkRateLimit } from '@/lib/distributed-rate-limit'
 
 /**
  * Public paths that still need the middleware's generic per-request limiter.
@@ -69,9 +70,26 @@ const PUBLIC_API_PATHS = new Set([
 const RATE_LIMITED_METHODS = new Set(['POST', 'PUT', 'DELETE', 'PATCH'])
 
 // ponytail: in-memory rate limiting — Edge-safe, per-instance.
-// Ceiling: not distributed (each instance counts independently). Upgrade to
-// Redis-backed rate limiting when deploying >1 instance. Reset every 60s.
+// Ceiling: not distributed (each instance counts independently). Reset every 60s.
+// The four LLM routes below are the exception — they now consult Redis FIRST via
+// checkRateLimit (src/lib/distributed-rate-limit.ts), so instances SHARE one counter
+// there and an N-instance install no longer hands out N x the limit on the most
+// expensive paths. When Redis is unreachable that helper falls back to this same
+// per-instance ceiling (RATE_BUCKETS' memory fallback), so the middleware keeps
+// working with Redis entirely absent. Every OTHER route stays on this Map: it is
+// Edge-safe, adds no round-trip, and its per-instance ceiling is acceptable for
+// cheap routes that an N-instance install multiplies harmlessly.
 const RATE_BUCKETS = new Map<string, { count: number; resetAt: number }>()
+// The routes whose every request is an LLM call paid for out of the customer's own provider
+// key. NOTE the coupling: `usesDistributedLimiter()` matches on `limitFor()`'s resolved route,
+// so a path listed here but MISSING from ROUTE_LIMITS would resolve to '/api/_default' and
+// silently keep the Map path. Keep this set a subset of ROUTE_LIMITS' first column.
+const LLM_ROUTES = new Set([
+  '/api/chat/sessions',
+  '/api/v1/chat/completions',
+  '/api/v1/agent/run',
+  '/api/agent/dashboard',
+])
 const ROUTE_LIMITS: Array<[string, number]> = [
   ['/api/chat/sessions', RATE_LIMIT_CHAT], // chat POST = LLM call (expensive)
   ['/api/v1/chat/completions', RATE_LIMIT_CHAT],
@@ -107,6 +125,25 @@ function rateLimitKey(req: NextRequest, route: string): string {
 }
 
 /**
+ * The 429 the caller sees when a bucket is exhausted. One literal, shared by the Map path and the
+ * Redis path so the two cannot drift — a caller's retry behaviour must not depend on which
+ * counter happened to be consulted.
+ */
+function rateLimitDenied(limit: number): NextResponse {
+  return NextResponse.json(
+    { error: 'Rate limit reached. Try again later.' },
+    {
+      status: 429,
+      headers: {
+        'Retry-After': '60',
+        'X-RateLimit-Limit': String(limit),
+        'X-RateLimit-Remaining': '0',
+      },
+    },
+  )
+}
+
+/**
  * The rate-limit decision, shared by the public-credential path and the normal path so the two cannot drift.
  * Returns a 429 response when the bucket is exhausted, or null to continue. The periodic eviction is a memory
  * optimisation, not a correctness guard: the read path already resets a stale bucket, which is why removing the
@@ -126,20 +163,35 @@ function applyRateLimit(req: NextRequest, pathname: string): NextResponse | null
   }
   bucket.count += 1
   if (bucket.count <= limit) return null
-  return NextResponse.json(
-    { error: 'Rate limit reached. Try again later.' },
-    {
-      status: 429,
-      headers: {
-        'Retry-After': '60',
-        'X-RateLimit-Limit': String(limit),
-        'X-RateLimit-Remaining': '0',
-      },
-    },
-  )
+  return rateLimitDenied(limit)
 }
 
-export function middleware(req: NextRequest) {
+/**
+ * The four LLM routes go through the SHARED counter instead. Redis is asked first
+ * (src/lib/distributed-rate-limit.ts); on a Redis outage it degrades to its own per-instance
+ * memory bucket, so this never throws and never blocks the request on Redis being absent.
+ * The denial response is the same literal as the Map path's.
+ */
+async function applyDistributedRateLimit(req: NextRequest, pathname: string): Promise<NextResponse | null> {
+  const { limit, route } = limitFor(pathname)
+  const key = rateLimitKey(req, route)
+  const decision = await checkRateLimit({ key, maxPerMinute: limit })
+  if (decision.allowed) return null
+  return rateLimitDenied(limit)
+}
+
+/**
+ * Routes the Map limiter still owns. `LLM_ROUTES` are excluded because they are served by the
+ * distributed helper above; everything else — including the credential-creating public paths and
+ * the upload/connection-testing routes — keeps the cheap, Edge-safe, in-process counter.
+ */
+function usesDistributedLimiter(pathname: string): boolean {
+  return LLM_ROUTES.has(limitFor(pathname).route)
+}
+
+// Async because the four LLM routes await a Redis round-trip (see applyDistributedRateLimit).
+// Next.js middleware may be async; the await only happens on those four paths.
+export async function middleware(req: NextRequest): Promise<NextResponse> {
   const { pathname } = req.nextUrl
   const isApi = pathname === '/api' || pathname.startsWith('/api/')
 
@@ -147,6 +199,7 @@ export function middleware(req: NextRequest) {
 
   // Throttle the credential-CREATING public paths even though they are public. This MUST happen before the
   // public early-return below, which is exactly where the limiter used to be skipped.
+  // These are NOT LLM routes, so the Map path is used — no round-trip to Redis for a signup.
   if (PUBLIC_PATHS_RATE_LIMITED.has(pathname) && RATE_LIMITED_METHODS.has(req.method)) {
     const limited = applyRateLimit(req, pathname)
     if (limited) return limited
@@ -162,12 +215,30 @@ export function middleware(req: NextRequest) {
   // Rate limiting — only for state-changing/expensive methods (POST/PUT/DELETE/PATCH).
   // GET requests are read-only and cheap; limiting them breaks UI navigation.
   if (RATE_LIMITED_METHODS.has(req.method)) {
-    const limited = applyRateLimit(req, pathname)
+    // The LLM routes consult the SHARED (Redis-first) counter; everything else uses the Map.
+    // Both paths answer with the same 429, so the caller sees no difference between them.
+    const limited = usesDistributedLimiter(pathname)
+      ? await applyDistributedRateLimit(req, pathname)
+      : applyRateLimit(req, pathname)
     if (limited) return limited
   }
 
   return NextResponse.next()
 }
+
+/*
+ * RUNTIME: Node, not Edge — and this is load-bearing, not a preference.
+ *
+ * The distributed rate limiter resolves `@/lib/redis` lazily, which keeps the import out of the
+ * module-evaluation path but NOT out of the bundle: Turbopack still resolves it statically, and in an
+ * Edge build it rewrites `node:net`/`node:tls`/`node:dns` to `__import_unsupported` stubs (MEASURED in
+ * the built artifact after an integration review flagged it). The middleware then carried ~700 KB of
+ * ioredis it could never connect, and every Redis verdict degraded to the per-instance memory bucket —
+ * the shared counter existed in the code and not in the behaviour. Nothing here uses an Edge-only API
+ * (no crypto.subtle, no streams), so declaring the Node runtime makes the limiter actually work and
+ * drops the dead module from the bundle.
+ */
+export const runtime = 'nodejs'
 
 export const config = {
   matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],

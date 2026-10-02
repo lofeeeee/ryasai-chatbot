@@ -662,6 +662,32 @@ if [ "$IS_UPDATE" = true ]; then
 fi
 
 # --- Compose (Pure Prebuilt Images, NO source code build directives) --------
+#
+# OPTIONAL IMAGE PINNING. Three variables, one per image. When one is set in the
+# environment this installer runs in, it REPLACES that image reference in the
+# generated compose file; when it is unset, the default tag below is used as-is.
+#
+#   APP_IMAGE         the `app` service            (default: ghcr.io/…/…:app)
+#   SCHEDULER_IMAGE   the `scheduler` AND `migrate` services (both run the
+#                     scheduler image; default: ghcr.io/…/…:scheduler)
+#   EMBEDDINGS_IMAGE  the `local-embeddings` service (default: ghcr.io/…/…:embeddings)
+#
+# Use them to PIN BY DIGEST — the reason they exist. A moving tag (`:app`) can be
+# republished under the same name, so a later `docker compose pull` can silently
+# change what an install runs; a digest reference cannot move. Each variable takes
+# the WHOLE image string:
+#
+#   APP_IMAGE=ghcr.io/ryasrk/ryasai-chatbot@sha256:… bash install.sh
+#
+# THREE variables rather than one shared IMAGE_DIGEST, because the images are
+# built from one commit but pushed as three separately-built artifacts: their
+# digests differ, so no single digest describes all three. Tag-plus-digest
+# (`…:${INSTALLER_VERSION:-latest}@${IMAGE_DIGEST}`) is not a workaround — Docker
+# resolves that form only while the tag still points at the digest, so a moving
+# tag makes it fail at pull time.
+#
+# The substitution runs AFTER the file is written (see "Optional image pinning"
+# below), not inside the heredoc: the heredoc is deliberately quoted.
 cat > docker-compose.prod.yml <<'EOF'
 services:
   migrate:
@@ -963,6 +989,71 @@ services:
     restart: unless-stopped
     networks: [ryasai-net]
 EOF
+
+# --- Optional image pinning (see the comment block above the compose heredoc) ---
+#
+# Runs AFTER the file is written, on the four `image:` lines only, so the unset case
+# is BYTE-IDENTICAL to the previous behaviour: nothing is rewritten unless the
+# matching variable is present in this installer's environment.
+#
+# Two deliberate choices worth restating here, because they are the two ways this
+# could have been done wrong:
+#
+#   * NOT a `${VAR:-default}` inside the heredoc. That would need an UNQUOTED
+#     heredoc, which expands every other `${...}` in the compose at WRITE time —
+#     including the documented operator overridables (`${LLM_ALLOWED_HOSTS:-…}`,
+#     `${COGNEE_SERVER_URL:-…}`, `${APP_PORT:-…}`) that must stay literal for
+#     compose to read them from `.env` at `up` time. Reverting to tags would then
+#     require shipping a file full of doubled dollar signs. The substitution below
+#     is the whole cost of the feature: one conditional pass over a file we just
+#     wrote.
+#
+#   * NOT a variable interpolated into the IMAGE value at pull time either
+#     (`image: …:${SOME_TAG:-latest}`). The compose file is generated ONCE per
+#     install; a value that resolves later would let an operator's later `.env`
+#     edit redirect an install at an image nobody vetted, and a digest-pinned
+#     reference cannot be assembled from a moving tag anyway (see the comment
+#     block above for why tag+digest is not a valid pin).
+#
+# `awk` rather than `sed` so the variable's value is compared as a plain string,
+# never interpreted as a pattern. Each line is rewritten only when it is an
+# `image:` line naming OUR registry, and only for the service it belongs to —
+# third-party images (postgres, redis, cognee) are not ours to pin.
+if [ -n "${APP_IMAGE:-}" ] \
+  || [ -n "${SCHEDULER_IMAGE:-}" ] \
+  || [ -n "${EMBEDDINGS_IMAGE:-}" ]; then
+  info "Pinning images to operator-supplied references..."
+  [ -n "${APP_IMAGE:-}" ]        && info "  APP_IMAGE        = ${APP_IMAGE:-}"
+  [ -n "${SCHEDULER_IMAGE:-}" ]  && info "  SCHEDULER_IMAGE  = ${SCHEDULER_IMAGE:-}"
+  [ -n "${EMBEDDINGS_IMAGE:-}" ] && info "  EMBEDDINGS_IMAGE = ${EMBEDDINGS_IMAGE:-}"
+  # Every expansion carries `:-` even inside this guarded block: the block is
+  # entered when ANY of the three is set, so the other two may be unset, and the
+  # script runs under `set -u`. A bare "$APP_IMAGE" here is the same abort that
+  # once killed every update at `ENC_KEY: unbound variable`.
+  # `[[:space:]][[:space:]]` rather than `{2}`: mawk, the default awk on some
+  # Debian images, does not reliably honour interval expressions.
+  awk -v app="${APP_IMAGE:-}" -v sch="${SCHEDULER_IMAGE:-}" -v emb="${EMBEDDINGS_IMAGE:-}" '
+    /^[[:space:]][[:space:]][A-Za-z][A-Za-z0-9_-]*:[[:space:]]*$/ { service = $1; sub(/:$/, "", service) }
+    /^[[:space:]]*image:[[:space:]]*ghcr\.io\/ryasrk\/ryasai-chatbot:/ {
+      if (service == "migrate"     && sch != "") { print "    image: " sch; next }
+      if (service == "app"         && app != "") { print "    image: " app; next }
+      if (service == "scheduler"   && sch != "") { print "    image: " sch; next }
+      if (service == "local-embeddings" && emb != "") { print "    image: " emb; next }
+    }
+    { print }
+  ' docker-compose.prod.yml > docker-compose.prod.yml.pinned \
+    && mv docker-compose.prod.yml.pinned docker-compose.prod.yml
+  # Report what took effect, so a typo in a variable name is visible rather than
+  # silently producing an unpinned install. Informational only — a PARTIAL pin
+  # (one service pinned, the rest on tags) is a legitimate operator choice, which
+  # is why this does not fail the install. A count of 0 while the block ran means
+  # the values did not look like digests; the grep matches our registry only, so
+  # third-party images (postgres, redis, cognee) are never counted.
+  PINNED=$(grep -c 'image: ghcr.io/ryasrk/ryasai-chatbot@' docker-compose.prod.yml || true)
+  info "Image references now digest-pinned: $PINNED of 4 (migrate, app, scheduler, local-embeddings)."
+else
+  info "No image pinning variables set — using the published tags (ghcr.io/ryasrk/ryasai-chatbot)."
+fi
 
 # --- Optional: private SearXNG (--with-searxng) -----------------------------
 if [ "$WITH_SEARXNG" = true ]; then

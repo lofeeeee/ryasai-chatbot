@@ -14,7 +14,6 @@
  */
 import { mkdir, chmod, rm } from 'node:fs/promises'
 import { statSync, readdirSync } from 'node:fs'
-import { execSync } from 'node:child_process'
 import { join } from 'node:path'
 
 /**
@@ -162,9 +161,7 @@ export async function getSandboxMetadata(
     // Calculate cache size (approximate)
     let npxCacheSize = 0
     try {
-      npxCacheSize = parseInt(
-        execSync(`du -sb "${join(sandboxPath, 'npx-cache')}" 2>/dev/null | cut -f1`).toString()
-      ) || 0
+      npxCacheSize = directorySizeBytes(join(sandboxPath, 'npx-cache'))
     } catch {}
     
     return {
@@ -179,6 +176,41 @@ export async function getSandboxMetadata(
       totalDirectories: 0,
     }
   }
+}
+
+/**
+ * Sum the size of every file under `dir`, in bytes.
+ *
+ * WHY NATIVE `node:fs` AND NOT `du -sb` (which this replaced): the recursive
+ * walk is deterministic, has no shell-quoting surface (the old command built a
+ * shell string around a filesystem path), and does not depend on the host
+ * having GNU du's flag set — `-b` is a GNU extension, so a BusyBox or macOS
+ * `du` returns a different unit or fails outright, and the old `|| 0` then
+ * silently reported an empty cache. Unit is unchanged (bytes) and so is the
+ * failure behaviour (returns 0 on error, via the caller's catch).
+ *
+ * Symlinks are SKIPPED, not followed, which is the load-bearing part: `du` does
+ * not follow them either, and a symlink loop (an npm package linking back up
+ * its own tree) would otherwise make monitoring recurse forever on a path it is
+ * only meant to measure. MEASURED difference from `du -sb`: du also counts the
+ * symlink ENTRY itself (its target-path length, a handful of bytes), this walk
+ * does not. That is within the "approximate" this number has always been, and
+ * only file content is what a cache quota cares about.
+ */
+function directorySizeBytes(dir: string): number {
+  let total = 0
+  const entries = readdirSync(dir, { withFileTypes: true })
+  for (const entry of entries) {
+    const path = join(dir, entry.name)
+    // Checked FIRST so a link pointing at a directory is never descended into.
+    if (entry.isSymbolicLink()) continue
+    if (entry.isDirectory()) {
+      total += directorySizeBytes(path)
+    } else if (entry.isFile()) {
+      total += statSync(path).size
+    }
+  }
+  return total
 }
 
 /**

@@ -14,7 +14,7 @@ function mockReq(pathname: string, cookie?: string, method: string = 'GET'): Nex
 }
 
 describe('middleware config matcher', () => {
-  test('excludes _next/static, _next/image, favicon.ico; includes other paths', () => {
+  test('excludes _next/static, _next/image, favicon.ico; includes other paths', async () => {
     // ponytail: anchor to simulate Next.js full-path matcher semantics;
     // without ^...$ the unanchored regex would match at a later '/' in the path.
     const re = new RegExp('^' + config.matcher[0] + '$')
@@ -28,29 +28,29 @@ describe('middleware config matcher', () => {
 
 describe('middleware function', () => {
   test('no cookie on protected api path → 401', async () => {
-    const res = middleware(mockReq('/api/keys'))
+    const res = await middleware(mockReq('/api/keys'))
     expect(res.status).toBe(401)
     const body = await res.json()
     expect(body.error).toBe('Unauthorized')
   })
 
-  test('with cookie on protected api path GET → passes through (GET not rate limited)', () => {
-    const res = middleware(mockReq('/api/keys', 'userId.sig', 'GET'))
+  test('with cookie on protected api path GET → passes through (GET not rate limited)', async () => {
+    const res = await middleware(mockReq('/api/keys', 'userId.sig', 'GET'))
     expect(res.status).toBe(200)
   })
 
-  test('with cookie on protected api path POST → passes through under limit', () => {
-    const res = middleware(mockReq('/api/keys', 'userId.sig', 'POST'))
+  test('with cookie on protected api path POST → passes through under limit', async () => {
+    const res = await middleware(mockReq('/api/keys', 'userId.sig', 'POST'))
     expect(res.status).toBe(200)
   })
 
-  test('public api path → passes through without cookie', () => {
-    const res = middleware(mockReq('/api/auth/login'))
+  test('public api path → passes through without cookie', async () => {
+    const res = await middleware(mockReq('/api/auth/login'))
     expect(res.status).toBe(200)
   })
 
-  test('non-api path → passes through', () => {
-    const res = middleware(mockReq('/dashboard'))
+  test('non-api path → passes through', async () => {
+    const res = await middleware(mockReq('/dashboard'))
     expect(res.status).toBe(200)
   })
 })

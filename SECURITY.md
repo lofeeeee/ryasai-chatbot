@@ -15,4 +15,10 @@ This policy covers the application source code in this repository only. Vulnerab
 
 ## Supported Versions
 
-Only the latest `0.4.x` release line receives security fixes.
+Only the most recent minor release line receives security fixes.
+
+This section deliberately names no version. A literal here goes stale the moment
+a release ships and keeps assuring readers long after it stops being true (it
+read `0.4.x` for the whole of the 1.x series). Maintainers: keep it that way —
+describe the release line in words, and resist adding a number to make it feel
+more precise; "the latest minor" is a policy, not a version.

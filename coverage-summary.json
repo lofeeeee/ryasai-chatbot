@@ -1,14 +1,14 @@
 {
-  "linePct": 74.86,
-  "linesHit": 27140,
-  "linesFound": 36252,
-  "reachableLinePct": 87.16,
-  "reachableLinesHit": 23660,
-  "reachableLinesFound": 27146,
-  "fnPct": 88.88,
-  "fnsHit": 2421,
-  "fnsFound": 2724,
-  "filesMeasured": 254,
+  "linePct": 75.06,
+  "linesHit": 27461,
+  "linesFound": 36586,
+  "reachableLinePct": 87.26,
+  "reachableLinesHit": 23938,
+  "reachableLinesFound": 27433,
+  "fnPct": 88.98,
+  "fnsHit": 2455,
+  "fnsFound": 2759,
+  "filesMeasured": 258,
   "failedTestFiles": [],
   "files": [
     {
@@ -777,6 +777,15 @@
       "fPct": 100
     },
     {
+      "file": "src/lib/distributed-rate-limit.ts",
+      "hit": 41,
+      "found": 49,
+      "pct": 83.6734693877551,
+      "fHit": 7,
+      "fFound": 8,
+      "fPct": 87.5
+    },
+    {
       "file": "src/lib/admin-tools.ts",
       "hit": 569,
       "found": 675,
@@ -1044,6 +1053,15 @@
       "pct": 93.75,
       "fHit": 7,
       "fFound": 7,
+      "fPct": 100
+    },
+    {
+      "file": "src/lib/org-budget.ts",
+      "hit": 77,
+      "found": 82,
+      "pct": 93.90243902439023,
+      "fHit": 8,
+      "fFound": 8,
       "fPct": 100
     },
     {
@@ -2127,6 +2145,15 @@
       "fPct": 100
     },
     {
+      "file": "src/lib/audit-chain.ts",
+      "hit": 92,
+      "found": 92,
+      "pct": 100,
+      "fHit": 9,
+      "fFound": 9,
+      "fPct": 100
+    },
+    {
       "file": "src/lib/billing-ui.ts",
       "hit": 33,
       "found": 33,
@@ -2200,20 +2227,20 @@
     },
     {
       "file": "src/lib/mcp-sandbox.ts",
-      "hit": 99,
-      "found": 99,
+      "hit": 109,
+      "found": 109,
       "pct": 100,
-      "fHit": 13,
-      "fFound": 13,
+      "fHit": 14,
+      "fFound": 14,
       "fPct": 100
     },
     {
       "file": "src/middleware.ts",
-      "hit": 97,
-      "found": 97,
+      "hit": 117,
+      "found": 117,
       "pct": 100,
-      "fHit": 4,
-      "fFound": 4,
+      "fHit": 9,
+      "fFound": 9,
       "fPct": 100
     },
     {
@@ -2292,6 +2319,15 @@
       "file": "src/lib/themes.ts",
       "hit": 87,
       "found": 87,
+      "pct": 100,
+      "fHit": 4,
+      "fFound": 4,
+      "fPct": 100
+    },
+    {
+      "file": "src/lib/tool-policy.ts",
+      "hit": 81,
+      "found": 81,
       "pct": 100,
       "fHit": 4,
       "fFound": 4,

@@ -295,6 +295,13 @@ const FLOORS: Record<string, number> = {
   // Merged 72.72% (685/942).
   'src/lib/config.ts': 70, // merged 70.31%; floor from coverage-summary.json (merged)
   'src/lib/source-guidance.ts': 63, // merged 63.95%; floor from coverage-summary.json (merged)
+  // New modules (v2.0.0). Floors from their own merged measurements.
+  'src/lib/distributed-rate-limit.ts': 82, // merged 83.67% (41/49)
+  'src/lib/org-budget.ts': 92, // merged 93.90% (77/82)
+  'src/lib/audit-chain.ts': 99, // merged 100.00% (92/92)
+  'src/lib/tool-policy.ts': 80, // merged 100.00% (81/81) — floor left at 80 because the module is
+  // not yet consumed by the router (adoption is a deliberate follow-up), and a 100 floor on a layer
+  // with no caller would lock in shape changes that adoption itself will require.
   // New module (this release). PURE: no model call, no I/O — every rule is negative-controlled in
   // sql-answerability.test.ts, so the floor comes straight from its own measurement.
   'src/lib/sql-answerability.ts': 74, // merged 50.00% (24/48) but ALL 24 hits are present — denominator inflated by a mock.module elsewhere; own run is 24/24 (100%)

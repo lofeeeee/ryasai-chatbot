@@ -328,3 +328,22 @@ describe('getSandboxMetadata', () => {
     expect(meta).toBeNull()
   })
 })
+
+  test('npxCacheSize counts FILE bytes, not only directories — the branch du -sb used to cover', async () => {
+    /*
+     * The native walk that replaced `execSync('du -sb')` has an isFile() branch the suite never took
+     * (every fixture created only directories), which is why the coverage floor fell to 98.17%: the fix
+     * shipped with its own main path untested. This creates real files with known sizes and asserts the
+     * SUM, in bytes, so a walk that skipped files reads 0 and a walk that followed a symlink reads the
+     * target's size instead of the link's.
+     */
+    const sb = await ensureOrganizationalSandbox('org-size')
+    const { writeFile, symlink } = await import('node:fs/promises')
+    await writeFile(join(sb.npxCachePath, 'a.bin'), 'x'.repeat(1000))
+    await mkdir(join(sb.npxCachePath, 'sub'), { recursive: true })
+    await writeFile(join(sb.npxCachePath, 'sub', 'b.bin'), 'y'.repeat(2500))
+    // A symlink whose TARGET is large: a correct walk must skip the LINK itself, not read through it.
+    await symlink('/usr', join(sb.npxCachePath, 'big-link'))
+    const meta = await getSandboxMetadata('org-size')
+    expect(meta?.npxCacheSize).toBe(3500)
+  })
