@@ -437,3 +437,13 @@ driven through the real module.
 **Verified:** tsc 0 · lint 0 · 315 files, 7712 pass, 0 fail · coverage:gate OK (204 modules) · build · e2e 19 ·
 e2e:prod 19. Full eval: **62/63** (was 53/54 before this work).
 
+### 2026-10-03 — Datasource connectors, REST and source routing tested against real servers
+
+PostgreSQL 17, MySQL 8.4, MariaDB 11.4, CockroachDB 24.3, PgBouncer 1.24 (portable builds, no Docker). **Round 1
+(8/8 negative-controlled):** on MySQL/MariaDB `WHERE "city" = 'Jakarta'` returned 0 rows (now ANSI_QUOTES + a
+per-dialect quoting line); DATE/TIMESTAMP shifted by the host zone; BIGINT above 2^53 rounded; "Unknown database"
+and MariaDB's GSSAPI reply unclassified; `mariadb://` ignored. **Round 2 (controls NOT completed, full suite NOT
+re-run):** REST and plugin webhooks followed a redirect to an internal host (`guarded-fetch.ts` checks every hop,
+bounds the body); OAuth2 tokens uncached and auth errors thrown; `sslmode` in a connection string overrode the
+connector's TLS; the selector showed an arbitrary 8 tables and the first 40 endpoints (`source-relevance.ts`).
+NOT tested: SQL Server, ClickHouse, real-model routing. No connector for SQLite, Turso, Oracle, MongoDB.
