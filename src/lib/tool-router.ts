@@ -161,14 +161,17 @@ async function _runNonStreamingChatCompletion(args: {
       memoryContext: undefined, chatHistory: args.chatHistory,
       needsDatabaseListing: intCountForPrompt > 0,
     })
-    const needsMultiple = quickPick?.needsMultipleTools === true
+    const quickCalls: RequestedTool[] | undefined = quickPick?.toolId && quickPick.extraTools?.length
+      ? [{ toolId: quickPick.toolId, args: quickPick.args }, ...quickPick.extraTools]
+      : undefined
+    const needsMultiple = quickPick?.needsMultipleTools === true || quickCalls !== undefined
     // A FAILED selector (null) also enters the DAG: with no routing decision at
     // all, the planner is the only remaining way to answer, and skipping it
     // would turn a provider blip into an empty reply.
     const cannotRoute = quickPick === null
 
     if (needsMultiple || cannotRoute) {
-      const dagResult = await runMultiStepDag(args)
+      const dagResult = await runMultiStepDag({ ...args, requestedTools: quickCalls })
       if (dagResult) return remember(dagResult)
     }
   }
@@ -209,7 +212,7 @@ async function _runNonStreamingChatCompletion(args: {
     // Remembered like any other turn: the user SEES this question, so a session that omitted it would
     // leave a gap in the conversation memory — a later "what were we discussing?" would miss the very
     // turn where the assistant asked what they meant.
-    return remember({ answer: intent.clarificationQuestion, citations: [], chartData: null, toolRuns: [] })
+    return remember({ answer: intent.clarificationQuestion, citations: [], chartData: null, toolRuns: [], needsUserInput: true })
   }
 
   if (!intent.needsRetrieval) {
@@ -220,7 +223,17 @@ async function _runNonStreamingChatCompletion(args: {
 
   args.signal?.throwIfAborted()
 
-  const { decision, resolvedIntegrationId, extraToolIds = [] } = await settleRouting(speculativeRouting, () => resolveRouting(args, effectiveQuestion, dbData, memoryContext))
+  const { decision, resolvedIntegrationId, extraToolIds = [], requestedTools } = await settleRouting(speculativeRouting, () => resolveRouting(args, effectiveQuestion, dbData, memoryContext))
+
+  // Same hand-off as the streaming path: the model asked for several tools, so its calls run as one plan.
+  if (extraToolIds.length > 0 && args.allowMultiStepDag) {
+    const dag = await runMultiStepDag({
+      question: effectiveQuestion, userId: args.userId, sessionId: args.sessionId,
+      chatHistory: args.chatHistory, documentIds: args.documentIds, requestedTools,
+    })
+    if (dag) return remember(dag)
+  }
+  const unanswered = unansweredPartsNote(requestedTools)
 
   const effectiveDecision = applyToolGating(
     decision,
@@ -250,6 +263,7 @@ async function _runNonStreamingChatCompletion(args: {
   else if (effectiveDecision === 'PLUGIN') result = await runPluginBranch(branchArgs)
   else if (effectiveDecision === 'CONTEXTUAL_CHAT' && contextualContext) result = await runContextualChatBranch({ ...branchArgs, context: contextualContext })
   else result = await runChatBranch(branchArgs)
+  if (unanswered) result = { ...result, answer: `${result.answer}\n\n${unanswered}` }
 
   // Same wrapper as every other exit above — the fire-and-forget reasoning lives on `remember`, and
   // keeping one exit path means a future branch cannot be added with the write forgotten again.
@@ -351,7 +365,7 @@ async function _runStreamingChatCompletion(args: {
     return prepareChatStream({ question: effectiveQuestion, systemPromptPrefix: args.systemPromptPrefix, memoryContext, chatHistory: args.chatHistory ?? [] })
   }
 
-  const { decision, resolvedIntegrationId, extraToolIds = [] } = await settleRouting(speculativeRouting, () => resolveRouting(args, effectiveQuestion, dbData, memoryContext))
+  const { decision, resolvedIntegrationId, extraToolIds = [], requestedTools } = await settleRouting(speculativeRouting, () => resolveRouting(args, effectiveQuestion, dbData, memoryContext))
 
   const effectiveDecision = applyToolGating(
     decision,
@@ -393,6 +407,7 @@ async function _runStreamingChatCompletion(args: {
       sessionId: args.sessionId,
       chatHistory: args.chatHistory,
       documentIds: args.documentIds,
+      requestedTools,
     })
     // A planner that declines (single chat step, or any failure) leaves the single-source decision intact: the
     // first source still answers, which is exactly the behaviour before this change rather than a lost turn.
@@ -406,16 +421,20 @@ async function _runStreamingChatCompletion(args: {
     }
   }
 
+  let prepared: StreamingCompletionResult
   if (effectiveDecision === 'SQL') {
     // `args.integrationId` is what the USER pinned; `resolvedIntegrationId` may be the router's own choice. Only a
     // user's pin forbids the documents fallback — the router's choice is exactly what the fallback second-guesses.
-    return await prepareSqlStream({ ...branchArgs, userPinnedIntegration: Boolean(args.integrationId) })
-  }
-  if (effectiveDecision === 'RAG') return await prepareRagStream(branchArgs)
-  if (effectiveDecision === 'REST') return await prepareRestStream(branchArgs)
-  if (effectiveDecision === 'PLUGIN') return await preparePluginStream(branchArgs)
-  if (effectiveDecision === 'CONTEXTUAL_CHAT' && contextualContext) return await prepareContextualChatStream({ ...branchArgs, context: contextualContext })
-  return await prepareChatStream(branchArgs)
+    prepared = await prepareSqlStream({ ...branchArgs, userPinnedIntegration: Boolean(args.integrationId) })
+  } else if (effectiveDecision === 'RAG') prepared = await prepareRagStream(branchArgs)
+  else if (effectiveDecision === 'REST') prepared = await prepareRestStream(branchArgs)
+  else if (effectiveDecision === 'PLUGIN') prepared = await preparePluginStream(branchArgs)
+  else if (effectiveDecision === 'CONTEXTUAL_CHAT' && contextualContext) prepared = await prepareContextualChatStream({ ...branchArgs, context: contextualContext })
+  else prepared = await prepareChatStream(branchArgs)
+
+  // Reached with several requested tools only when the multi-step path did not answer.
+  const unanswered = unansweredPartsNote(requestedTools)
+  return unanswered ? { ...prepared, stream: withTrailer(prepared.stream, unanswered) } : prepared
 }
 
 async function loadIntentPipeline(args: {
@@ -603,6 +622,29 @@ function applyToolGating(
  * re-thrown only by the caller that actually uses the result.
  */
 /** Yield an already-complete answer as a one-chunk stream, for paths that synthesize before dispatching. */
+type RequestedTool = { toolId: string; args: Record<string, unknown> }
+
+/**
+ * Names the parts of a compound question that the single-source answer did not cover.
+ *
+ * Reached when the model asked for several tools and the multi-step path did not run (caller opted out, or it
+ * failed). The first tool still answers; without this the other parts vanish from a reply that looks complete.
+ */
+export function unansweredPartsNote(requested: RequestedTool[] | undefined): string {
+  const rest = (requested ?? []).slice(1)
+  if (rest.length === 0) return ''
+  const lines = rest.map((t) => {
+    const asked = String(t.args.question ?? t.args.query ?? '').trim()
+    return `- ${asked || t.toolId}`
+  })
+  return `**Not answered:** this question had several parts and only the first was answered. Ask these separately:\n${lines.join('\n')}`
+}
+
+async function* withTrailer(stream: AsyncGenerator<string, void, unknown>, trailer: string): AsyncGenerator<string, void, unknown> {
+  yield* stream
+  yield `\n\n${trailer}`
+}
+
 async function* singleShotStream(answer: string): AsyncGenerator<string, void, unknown> {
   yield answer
 }
@@ -657,7 +699,7 @@ async function resolveRouting(
   effectiveQuestion: string,
   dbData: DbData,
   memoryContext: string,
-): Promise<{ decision: RouteDecision; resolvedIntegrationId: string | undefined; extraToolIds?: string[] }> {
+): Promise<{ decision: RouteDecision; resolvedIntegrationId: string | undefined; extraToolIds?: string[]; requestedTools?: RequestedTool[] }> {
   const [docCount, intCount, , , , restEndpoints] = dbData
   const restEndpointCount = restEndpoints.length
   const hasHistory = args.chatHistory && args.chatHistory.length > 0
@@ -679,6 +721,7 @@ async function resolveRouting(
    * this: it reads a "MULTI_STEP" marker out of the model's text, and a reply carrying tool calls has no text.
    */
   let extraToolIds: string[] = []
+  let requestedTools: RequestedTool[] = []
 
   // The LLM chooses the tool on BOTH paths (with and without history). History
   // previously routed through `routeQuery` while the first turn used the
@@ -698,6 +741,7 @@ async function resolveRouting(
     // Compound questions: the model can ask for SEVERAL sources in one reply. Recorded here and acted on by
     // `runStreamingChatCompletion`, because only that layer can route the follow-up turn.
     extraToolIds = sel.extraTools?.map((t) => t.toolId) ?? []
+    if (sel.toolId && sel.extraTools?.length) requestedTools = [{ toolId: sel.toolId, args: sel.args }, ...sel.extraTools]
     // The model named the database it wants. Taking it here is what keeps SQL
     // working at all now that the heuristic router (which used to supply this)
     // is gone.
@@ -768,7 +812,7 @@ async function resolveRouting(
     }
   }
 
-  return { decision, resolvedIntegrationId, ...(extraToolIds.length > 0 ? { extraToolIds } : {}) }
+  return { decision, resolvedIntegrationId, ...(extraToolIds.length > 0 ? { extraToolIds, requestedTools } : {}) }
 }
 
 async function loadContextualContext(decision: RouteDecision, sessionId?: string): Promise<string> {

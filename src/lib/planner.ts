@@ -27,6 +27,7 @@ import { withToolSandbox } from '@/lib/tool-sandbox'
 import { toolCircuitBreaker } from '@/lib/tool-circuit-breaker'
 import { logSwallowed } from '@/lib/logger'
 import type { ToolDef } from '@/lib/tool-registry'
+import type { Citation } from '@/lib/types'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -51,6 +52,10 @@ export interface PlanStepResult {
   output: string
   error?: string
   latencyMs: number
+  /** The step stopped on a question only the user can answer; `error` holds that question. */
+  needsUserInput?: boolean
+  /** Sources the step answered from, so a multi-part answer can cite each part. */
+  citations?: Citation[]
 }
 
 export type StepStatus = 'running' | 'done' | 'error'
@@ -827,6 +832,13 @@ async function executeStep(
       userId: args.userId,
       documentIds: args.documentIds,
     })
+    if (completion.needsUserInput) {
+      args.onStatus?.(step.id, step.tool, 'error')
+      return {
+        stepId: step.id, tool: step.tool, ok: false, output: '',
+        error: completion.answer, needsUserInput: true, latencyMs: Date.now() - started,
+      }
+    }
     const hasFailedTool = completion.toolRuns.some(
       (tr) => tr.status === 'error' || tr.status === 'blocked',
     )
@@ -850,6 +862,7 @@ async function executeStep(
       tool: step.tool,
       ok: true,
       output: completion.answer,
+      citations: completion.citations,
       latencyMs: Date.now() - started,
     }
   } catch (e) {
@@ -934,6 +947,54 @@ export function formatStepContext(results: PlanStepResult[]): string {
         : `[Step ${r.stepId} — ${r.tool}] FAILED: ${stepFailureReason(r)}`,
     )
     .join('\n\n---\n\n')
+}
+
+/**
+ * Turn the tool calls the model made for a compound question into a plan, one independent step per call.
+ *
+ * The calls ARE the plan: asking a planner model to re-derive them costs a second LLM call and can come back
+ * covering fewer parts than the model asked for, with nothing to compare against.
+ */
+export function planFromToolCalls(
+  calls: Array<{ toolId: string; args: Record<string, unknown> }>,
+  question: string,
+): Plan {
+  const steps = calls.slice(0, MAX_STEPS).map((call, i): PlanStep => {
+    const input = stringifyEntries(call.args)
+    const asked = (input.question ?? input.query ?? '').trim() || question
+    // The step re-enters the router with only a question, so a database the model named travels in the text.
+    const database = (input.database ?? '').trim()
+    input.question = database && call.toolId === 'sql' ? `In ${database}: ${asked}` : asked
+    return { id: `step${i + 1}`, tool: call.toolId, input }
+  })
+  return { steps, needsSynthesis: true }
+}
+
+/**
+ * Append what a multi-part answer did NOT cover, deterministically.
+ *
+ * The synthesis model sees failed steps but is free to leave them out, and a dropped part is indistinguishable from
+ * a complete answer. A part that stopped on a question for the user is asked; any other failed part is named with
+ * its reason. When nothing succeeded and a part needs the user, the question is the whole reply.
+ */
+export function composePartialAnswer(answer: string, results: PlanStepResult[], plan: Plan): string {
+  const failed = results.filter((r) => !r.ok)
+  if (failed.length === 0) return answer
+  const label = (r: PlanStepResult) => {
+    const input = plan.steps.find((s) => s.id === r.stepId)?.input
+    return (input?.question ?? input?.query ?? '').trim() || r.tool
+  }
+  const asks = failed.filter((r) => r.needsUserInput)
+  const gaps = failed.filter((r) => !r.needsUserInput)
+  // One line per part: a multi-paragraph reason would break out of the list.
+  const line = (r: PlanStepResult) => `- ${label(r)}: ${stepFailureReason(r).replace(/\s+/g, ' ').trim()}`
+  if (failed.length === results.length) {
+    return asks.length > 0 && gaps.length === 0 ? asks.map(stepFailureReason).join('\n\n') : answer
+  }
+  const parts = [answer]
+  if (gaps.length > 0) parts.push('**Not answered:**\n' + gaps.map(line).join('\n'))
+  if (asks.length > 0) parts.push('**I need your input to answer the rest:**\n' + asks.map(line).join('\n'))
+  return parts.join('\n\n')
 }
 
 export async function synthesizeAnswer(args: {

@@ -192,6 +192,16 @@ async function translatedPhrasings(question: string): Promise<string[]> {
   }
 }
 
+/** Identity of one tool call: the tool plus its arguments, insensitive to JSON key order and spacing. */
+function callKey(toolId: string, rawArgs: string | undefined): string {
+  try {
+    const parsed = JSON.parse(rawArgs || '{}') as Record<string, unknown>
+    return `${toolId}:${JSON.stringify(Object.keys(parsed).sort().map((k) => [k, parsed[k]]))}`
+  } catch {
+    return `${toolId}:${rawArgs ?? ''}`
+  }
+}
+
 /**
  * Ask the model which tool to use.
  *
@@ -316,7 +326,10 @@ export async function selectToolWithLlm(args: {
   // trade-off: tool questions 40/40 and 40/40, a greeting 40/40 direct_chat,
   // thanks 40/40 text.
   const system = [
-    'You choose the single best tool for the user question, then call it.',
+    // NOT MEASURED against a real model: this line used to read "the single best tool", which told the model to
+    // drop every part of a compound question but one. The rule list above was tuned at N=40 and each added rule
+    // cost accuracy, so the compound case is stated HERE, in the opening sentence, rather than as another rule.
+    'You choose the best tool for the user question, then call it. If the question has several independent parts that need different sources, call one tool per part in the same reply.',
     '',
     'Rules:',
     '- For EVERYTHING else, call a tool. If the question names a table or column',
@@ -404,9 +417,13 @@ export async function selectToolWithLlm(args: {
      * sometimes repeats itself) is not carried twice.
      */
     const extraTools: Array<{ toolId: string; args: Record<string, unknown> }> = []
+    // A repeat is the same tool with the SAME arguments. The same tool with different arguments is a second part of
+    // the question (two databases, two endpoints) and used to be dropped as if it were a repeat.
+    const seenCalls = new Set([callKey(toolId, call.arguments)])
     for (const other of result.slice(1)) {
       const otherId = byFunctionName.get(other.name) ?? functionNameToToolId(other.name)
-      if (!otherId || otherId === toolId) continue
+      if (!otherId || seenCalls.has(callKey(otherId, other.arguments))) continue
+      seenCalls.add(callKey(otherId, other.arguments))
       let otherArgs: Record<string, unknown> = {}
       try {
         otherArgs = JSON.parse(other.arguments || '{}') as Record<string, unknown>
